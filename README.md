@@ -1,5 +1,9 @@
 # Whisper-WebUI Premium made for SECourses Patreon followers only : https://www.patreon.com/posts/145395299
 
+## Download Installers and App
+
+> https://www.patreon.com/posts/145395299
+
 ## Features
 
 - It has better interface, more features, default settings set for maximum accuracy
