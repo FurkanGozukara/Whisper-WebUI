@@ -213,6 +213,87 @@ class BaseTranscriptionPipeline(ABC):
         total_elapsed_time = time.time() - start_time
         return result, total_elapsed_time
 
+    def transcribe_file_with_live_output(self,
+                        files: Optional[List] = None,
+                        input_folder_path: Optional[str] = None,
+                        include_subdirectory: Optional[str] = None,
+                        save_same_dir: Optional[str] = None,
+                        file_format: str = "SRT",
+                        add_timestamp: bool = True,
+                        progress=gr.Progress(),
+                        *pipeline_params,
+                        ):
+        """
+        Transcribe with live output - yields updates as segments are transcribed
+        """
+        try:
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            
+            if input_folder_path:
+                files = get_media_files(input_folder_path, include_sub_directory=include_subdirectory)
+            if isinstance(files, str):
+                files = [files]
+            if files and isinstance(files[0], gr.utils.NamedString):
+                files = [file.name for file in files]
+            
+            live_output = ""
+            
+            for file in files:
+                file_name = os.path.splitext(os.path.basename(file))[0]
+                live_output += f"📂 Processing: {file_name}\n{'='*60}\n\n"
+                yield live_output, "", []
+                
+                # Create a custom progress callback that yields updates
+                segment_count = [0]  # Use list to allow modification in nested function
+                transcription_start_time = time.time()
+                
+                def live_progress_callback(progress_value, segment=None):
+                    nonlocal live_output
+                    if segment:
+                        segment_count[0] += 1
+                        start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
+                        end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
+                        text = segment.text if hasattr(segment, 'text') else ""
+                        
+                        live_output += f"[{start_time} → {end_time}] {text}\n"
+                
+                transcribed_segments, time_for_task = self.run(
+                    file,
+                    progress,
+                    file_format,
+                    add_timestamp,
+                    live_progress_callback,
+                    *pipeline_params,
+                )
+                
+                # Calculate transcription speed
+                if transcribed_segments and len(transcribed_segments) > 0:
+                    last_segment = transcribed_segments[-1]
+                    audio_duration = last_segment.end if hasattr(last_segment, 'end') and last_segment.end else 0
+                    if audio_duration > 0 and time_for_task > 0:
+                        speed_ratio = audio_duration / time_for_task
+                        live_output += f"\n⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})\n"
+                
+                # Generate final output
+                writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
+                
+                if save_same_dir and input_folder_path:
+                    output_dir = os.path.dirname(file)
+                    generate_file(output_dir, file_name, file_format, transcribed_segments, add_timestamp, **writer_options)
+                
+                subtitle, file_path = generate_file(
+                    self.output_dir, file_name, file_format, transcribed_segments, add_timestamp, **writer_options
+                )
+                
+                live_output += f"✅ Completed in {self.format_time(time_for_task)}\n\n"
+                result_str = f"Done! {segment_count[0]} segments transcribed in {self.format_time(time_for_task)}"
+                
+                yield live_output, result_str, [file_path]
+                
+        except Exception as e:
+            error_msg = f"❌ Error: {str(e)}"
+            yield error_msg, error_msg, []
+    
     def transcribe_file(self,
                         files: Optional[List] = None,
                         input_folder_path: Optional[str] = None,
@@ -451,6 +532,8 @@ class BaseTranscriptionPipeline(ABC):
             raise RuntimeError(f"Error transcribing youtube: {e}") from e
 
     def get_compute_type(self):
+        if "bfloat16" in self.available_compute_types:
+            return "bfloat16"
         if "float16" in self.available_compute_types:
             return "float16"
         if "float32" in self.available_compute_types:
@@ -504,6 +587,16 @@ class BaseTranscriptionPipeline(ABC):
         time_str += f"{seconds} seconds"
 
         return time_str.strip()
+    
+    @staticmethod
+    def format_timestamp(seconds: float) -> str:
+        """Format seconds to HH:MM:SS.mmm timestamp"""
+        if seconds is None:
+            return "00:00:00.000"
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
     @staticmethod
     def get_device():

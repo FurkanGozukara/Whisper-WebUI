@@ -15,6 +15,9 @@ from argparse import Namespace
 from modules.utils.paths import (FASTER_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR)
 from modules.whisper.data_classes import *
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
+from modules.utils.logger import get_logger
+
+logger = get_logger()
 
 
 class FasterWhisperInference(BaseTranscriptionPipeline):
@@ -104,15 +107,32 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         progress(0, desc="Loading audio..")
 
         segments_result = []
-        for segment in segments:
+        for idx, segment in enumerate(segments):
             progress_n = segment.start / info.duration
-            progress(progress_n, desc="Transcribing..")
+            seg_obj = Segment.from_faster_whisper(segment)
+            segments_result.append(seg_obj)
+            
+            # Live transcription display in terminal
+            logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
+            
+            # Update progress with current segment info
+            progress(progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
+            
             if progress_callback is not None:
-                progress_callback(progress_n)
-            segments_result.append(Segment.from_faster_whisper(segment))
+                progress_callback(progress_n, seg_obj)
 
         elapsed_time = time.time() - start_time
         return segments_result, elapsed_time
+    
+    @staticmethod
+    def format_timestamp(seconds: float) -> str:
+        """Format seconds to HH:MM:SS.mmm"""
+        if seconds is None:
+            return "00:00:00.000"
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
     def update_model(self,
                      model_size: str,

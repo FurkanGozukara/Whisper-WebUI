@@ -1,4 +1,20 @@
 CSS = """
+/* Readable font for all text */
+* {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', Arial, sans-serif !important;
+}
+
+/* Layout spacing */
+.markdown {
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+.tabs {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+/* Button styling */
 .bmc-button {
     padding: 2px 5px;
     border-radius: 5px;
@@ -19,17 +35,9 @@ CSS = """
 .bmc-button:focus {
     background-color: #FF5633;
 }
-.markdown {
-    margin-bottom: 0;
-    padding-bottom: 0;
-}
-.tabs {
-    margin-top: 0;
-    padding-top: 0;
-}
 
+/* Project link styling */
 #md_project a {
-  color: black;
   text-decoration: none;
 }
 #md_project a:hover {
@@ -38,7 +46,7 @@ CSS = """
 """
 
 MARKDOWN = """
-### [Whisper-WebUI](https://github.com/jhj0517/Whsiper-WebUI)
+### Whisper-WebUI Premium V1.0 : https://www.patreon.com/posts/145395299
 """
 
 

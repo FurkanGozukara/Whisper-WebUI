@@ -18,7 +18,7 @@ class Diarizer:
                  ):
         self.device = self.get_device()
         self.available_device = self.get_available_device()
-        self.compute_type = "float16"
+        self.compute_type = "bfloat16"
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
         self.pipe = None
