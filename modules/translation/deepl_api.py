@@ -140,7 +140,8 @@ class DeepLAPI:
 
         files_info = {}
         for file_path in fileobjs:
-            file_name, file_ext = os.path.splitext(os.path.basename(file_path))
+            file_name = safe_filename(os.path.splitext(os.path.basename(file_path))[0])
+            file_ext = os.path.splitext(os.path.basename(file_path))[1]
             writer = get_writer(file_ext, self.output_dir)
             segments = writer.to_segments(file_path)
 

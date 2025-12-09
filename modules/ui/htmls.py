@@ -46,7 +46,7 @@ CSS = """
 """
 
 MARKDOWN = """
-### Whisper-WebUI Premium V1.0 : https://www.patreon.com/posts/145395299
+### Whisper-WebUI Premium V2.0 : https://www.patreon.com/posts/145395299
 """
 
 

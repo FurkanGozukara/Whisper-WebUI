@@ -1,68 +1,66 @@
 whisper:
-  model_size: "large-v3"
-  file_format: "SRT"
-  lang: "english"
+  model_size: large-v3
+  lang: english
   is_translate: false
   beam_size: 10
   log_prob_threshold: -0.5
   no_speech_threshold: 0.6
+  compute_type: bfloat16
   best_of: 10
   patience: 2.0
   condition_on_previous_text: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
-  temperature: 0
+  temperature: 0.0
   compression_ratio_threshold: 2.4
-  chunk_length: 30
-  batch_size: 48
-  length_penalty: 1
+  length_penalty: 1.0
   repetition_penalty: 1.2
   no_repeat_ngram_size: 3
   prefix: null
   suppress_blank: true
-  suppress_tokens: "[-1]"
-  max_initial_timestamp: 1
+  suppress_tokens: '[-1]'
+  max_initial_timestamp: 1.0
   word_timestamps: false
   prepend_punctuations: '"''¿([{-'
   append_punctuations: '"''.。,，!！?？:：")]}、'
   max_new_tokens: null
+  chunk_length: 30
   hallucination_silence_threshold: 2.0
   hotwords: null
   language_detection_threshold: 0.5
   language_detection_segments: 3
-  add_timestamp: false
+  batch_size: 48
   enable_offload: false
-
+  add_timestamp: true
+  file_format: SRT
 vad:
   vad_filter: false
   threshold: 0.5
   min_speech_duration_ms: 250
-  max_speech_duration_s: inf
+  max_speech_duration_s: 9999
   min_silence_duration_ms: 2000
   speech_pad_ms: 400
-
 diarization:
   is_diarize: false
-  hf_token: ""
+  diarization_device: cuda
+  hf_token: ''
   enable_offload: false
-
 bgm_separation:
   is_separate_bgm: false
-  uvr_model_size: "UVR-MDX-NET-Inst_HQ_4"
+  uvr_model_size: UVR-MDX-NET-Inst_HQ_4
+  uvr_device: cuda
   segment_size: 512
   save_file: false
   enable_offload: false
-
 translation:
   deepl:
-    api_key: ""
+    api_key: ''
     is_pro: false
-    source_lang: "Automatic Detection"
-    target_lang: "English"
+    source_lang: Automatic Detection
+    target_lang: English
   nllb:
-    model_size: "facebook/nllb-200-1.3B"
+    model_size: facebook/nllb-200-1.3B
     source_lang: null
     target_lang: null
     max_length: 200
-  add_timestamp: false
-
+  add_timestamp: true

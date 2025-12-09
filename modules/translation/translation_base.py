@@ -95,7 +95,8 @@ class TranslationBase(ABC):
 
             files_info = {}
             for fileobj in fileobjs:
-                file_name, file_ext = os.path.splitext(os.path.basename(fileobj))
+                file_name = safe_filename(os.path.splitext(os.path.basename(fileobj))[0])
+                file_ext = os.path.splitext(os.path.basename(fileobj))[1]
                 writer = get_writer(file_ext, self.output_dir)
                 segments = writer.to_segments(fileobj)
                 for i, segment in enumerate(segments):

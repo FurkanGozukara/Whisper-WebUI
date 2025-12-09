@@ -389,7 +389,7 @@ class WriteJSON(ResultWriter):
     def write_result(
         self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
     ):
-        json.dump(result, file)
+        json.dump(result, file, indent=2, ensure_ascii=False)
 
 
 def get_writer(
@@ -421,14 +421,15 @@ def get_writer(
 
 
 def generate_file(
-    output_format: str, output_dir: str, result: Union[dict, List[Segment]], output_file_name: str,
+    output_dir: str, output_file_name: str, output_format: str, result: Union[dict, List[Segment]],
     add_timestamp: bool = True, **kwargs
 ) -> Tuple[str, str]:
     output_format = output_format.strip().lower().replace(".", "")
     output_format = "vtt" if output_format == "webvtt" else output_format
 
     if add_timestamp:
-        timestamp = datetime.now().strftime("%m%d%H%M%S")
+        # Use microsecond precision to ensure unique filenames even for rapid processing
+        timestamp = datetime.now().strftime("%m%d%H%M%S%f")
         output_file_name += f"-{timestamp}"
 
     file_path = os.path.join(output_dir, f"{output_file_name}.{output_format}")

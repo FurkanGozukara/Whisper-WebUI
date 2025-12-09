@@ -10,6 +10,7 @@ from argparse import Namespace
 from modules.utils.paths import (WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, UVR_MODELS_DIR)
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.whisper.data_classes import *
+from modules.whisper.data_classes import Segment, Word
 
 
 class WhisperInference(BaseTranscriptionPipeline):
@@ -74,13 +75,27 @@ class WhisperInference(BaseTranscriptionPipeline):
                                        patience=params.patience,
                                        temperature=params.temperature,
                                        compression_ratio_threshold=params.compression_ratio_threshold,
+                                       word_timestamps=True,  # Always enable word timestamps
                                        progress_callback=progress_callback,)["segments"]
         segments_result = []
         for segment in result:
+            # Extract word-level timestamps if available
+            words = None
+            if "words" in segment and segment["words"]:
+                words = [
+                    Word(
+                        start=w.get("start"),
+                        end=w.get("end"),
+                        word=w.get("word"),
+                        probability=w.get("probability")
+                    ) for w in segment["words"]
+                ]
+            
             segments_result.append(Segment(
                 start=segment["start"],
                 end=segment["end"],
-                text=segment["text"]
+                text=segment["text"],
+                words=words
             ))
 
         elapsed_time = time.time() - start_time

@@ -18,6 +18,7 @@ from modules.utils.paths import (WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUT
 from modules.utils.constants import *
 from modules.utils.logger import get_logger
 from modules.utils.subtitle_manager import *
+from modules.utils.subtitle_manager import safe_filename
 from modules.utils.youtube_manager import get_ytdata, get_ytaudio
 from modules.utils.files_manager import get_media_files, format_gradio_files, load_yaml, save_yaml, read_file
 from modules.utils.audio_manager import validate_audio
@@ -116,6 +117,14 @@ class BaseTranscriptionPipeline(ABC):
             elapsed time for running
         """
         start_time = time.time()
+        
+        # Log start of transcription with timestamp
+        audio_name = audio if isinstance(audio, str) else "audio stream"
+        logger.info("\n" + "="*80)
+        logger.info(f"🎬 TRANSCRIPTION STARTED")
+        logger.info(f"   File: {audio_name}")
+        logger.info(f"   Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*80 + "\n")
 
         if not validate_audio(audio):
             return [Segment()], 0
@@ -211,6 +220,16 @@ class BaseTranscriptionPipeline(ABC):
 
         progress(1.0, desc="Finished.")
         total_elapsed_time = time.time() - start_time
+        
+        # Log end of transcription with timestamp and duration
+        logger.info("\n" + "="*80)
+        logger.info(f"✅ TRANSCRIPTION COMPLETED")
+        logger.info(f"   File: {audio_name}")
+        logger.info(f"   Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"   Duration: {self.format_time(total_elapsed_time)}")
+        logger.info(f"   Segments: {len(result)}")
+        logger.info("="*80 + "\n")
+        
         return result, total_elapsed_time
 
     def transcribe_file_with_live_output(self,
@@ -239,7 +258,7 @@ class BaseTranscriptionPipeline(ABC):
             live_output = ""
             
             for file in files:
-                file_name = os.path.splitext(os.path.basename(file))[0]
+                file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
                 live_output += f"📂 Processing: {file_name}\n{'='*60}\n\n"
                 yield live_output, "", []
                 
@@ -360,7 +379,7 @@ class BaseTranscriptionPipeline(ABC):
                     *pipeline_params,
                 )
 
-                file_name, file_ext = os.path.splitext(os.path.basename(file))
+                file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
                 if save_same_dir and input_folder_path:
                     output_dir = os.path.dirname(file)
                     subtitle, file_path = generate_file(
