@@ -1,10 +1,11 @@
 import os
+import glob
 import whisper
 import ctranslate2
 import gradio as gr
 import torchaudio
 from abc import ABC, abstractmethod
-from typing import BinaryIO, Union, Tuple, List, Callable
+from typing import BinaryIO, Union, Tuple, List, Callable, Optional
 import numpy as np
 from datetime import datetime
 from faster_whisper.vad import VadOptions
@@ -80,7 +81,7 @@ class BaseTranscriptionPipeline(ABC):
     def run(self,
             audio: Union[str, BinaryIO, np.ndarray],
             progress: gr.Progress = gr.Progress(),
-            file_format: str = "SRT",
+            file_format: Union[str, List[str]] = "SRT",
             add_timestamp: bool = True,
             progress_callback: Optional[Callable] = None,
             *pipeline_params,
@@ -130,6 +131,8 @@ class BaseTranscriptionPipeline(ABC):
             return [Segment()], 0
 
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+        file_formats = self.normalize_file_formats(file_format)
+        primary_file_format = file_formats[0]
         params = self.validate_gradio_values(params)
         bgm_params, vad_params, whisper_params, diarization_params = params.bgm_separation, params.vad, params.whisper, params.diarization
 
@@ -210,7 +213,7 @@ class BaseTranscriptionPipeline(ABC):
 
         self.cache_parameters(
             params=params,
-            file_format=file_format,
+            file_format=primary_file_format,
             add_timestamp=add_timestamp
         )
 
@@ -234,10 +237,12 @@ class BaseTranscriptionPipeline(ABC):
 
     def transcribe_file_with_live_output(self,
                         files: Optional[List] = None,
+                        batch_mode: bool = False,
                         input_folder_path: Optional[str] = None,
-                        include_subdirectory: Optional[str] = None,
-                        save_same_dir: Optional[str] = None,
-                        file_format: str = "SRT",
+                        include_subdirectory: Optional[bool] = None,
+                        overwrite_existing: bool = False,
+                        output_dir: Optional[str] = None,
+                        file_formats: Union[str, List[str]] = "SRT",
                         add_timestamp: bool = True,
                         progress=gr.Progress(),
                         *pipeline_params,
@@ -247,25 +252,40 @@ class BaseTranscriptionPipeline(ABC):
         """
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
-            
-            if input_folder_path:
+            file_formats = self.normalize_file_formats(file_formats)
+            writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
+
+            if batch_mode and not input_folder_path:
+                raise ValueError("Input folder path is required when batch processing is enabled.")
+
+            if batch_mode and input_folder_path:
                 files = get_media_files(input_folder_path, include_sub_directory=include_subdirectory)
-            if isinstance(files, str):
-                files = [files]
-            if files and isinstance(files[0], gr.utils.NamedString):
-                files = [file.name for file in files]
-            
+
+            files = self.format_input_files(files)
+            if not files:
+                raise ValueError("No input files provided for transcription.")
+
             live_output = ""
-            
+            collected_paths: List[str] = []
+
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
+                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
+                existing_outputs = self._find_existing_outputs(file_name, target_output_dir, file_formats)
+
                 live_output += f"📂 Processing: {file_name}\n{'='*60}\n\n"
-                yield live_output, "", []
-                
+                yield live_output, "", collected_paths
+
+                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(file_formats):
+                    skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
+                    collected_paths.extend(skipped_paths)
+                    live_output += f"⏩ Skipped (outputs already exist in {target_output_dir})\n\n"
+                    result_str = f"Skipped {file_name}: outputs already present."
+                    yield live_output, result_str, collected_paths
+                    continue
+
                 # Create a custom progress callback that yields updates
                 segment_count = [0]  # Use list to allow modification in nested function
-                transcription_start_time = time.time()
-                
                 def live_progress_callback(progress_value, segment=None):
                     nonlocal live_output
                     if segment:
@@ -273,18 +293,18 @@ class BaseTranscriptionPipeline(ABC):
                         start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
                         end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
                         text = segment.text if hasattr(segment, 'text') else ""
-                        
+
                         live_output += f"[{start_time} → {end_time}] {text}\n"
-                
+
                 transcribed_segments, time_for_task = self.run(
                     file,
                     progress,
-                    file_format,
+                    file_formats[0],
                     add_timestamp,
                     live_progress_callback,
                     *pipeline_params,
                 )
-                
+
                 # Calculate transcription speed
                 if transcribed_segments and len(transcribed_segments) > 0:
                     last_segment = transcribed_segments[-1]
@@ -292,33 +312,42 @@ class BaseTranscriptionPipeline(ABC):
                     if audio_duration > 0 and time_for_task > 0:
                         speed_ratio = audio_duration / time_for_task
                         live_output += f"\n⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})\n"
-                
-                # Generate final output
-                writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
-                
-                if save_same_dir and input_folder_path:
-                    output_dir = os.path.dirname(file)
-                    generate_file(output_dir, file_name, file_format, transcribed_segments, add_timestamp, **writer_options)
-                
-                subtitle, file_path = generate_file(
-                    self.output_dir, file_name, file_format, transcribed_segments, add_timestamp, **writer_options
-                )
-                
+
+                # Generate final output(s)
+                generated_paths = []
+                for fmt in file_formats:
+                    fmt_key = self._normalize_format_key(fmt)
+                    if batch_mode and (not overwrite_existing) and fmt_key in existing_outputs:
+                        file_path = sorted(existing_outputs[fmt_key])[-1]
+                    else:
+                        _, file_path = generate_file(
+                            output_dir=target_output_dir,
+                            output_file_name=file_name,
+                            output_format=fmt,
+                            result=transcribed_segments,
+                            add_timestamp=add_timestamp,
+                            **writer_options
+                        )
+                    generated_paths.append(file_path)
+
+                collected_paths.extend(generated_paths)
                 live_output += f"✅ Completed in {self.format_time(time_for_task)}\n\n"
-                result_str = f"Done! {segment_count[0]} segments transcribed in {self.format_time(time_for_task)}"
-                
-                yield live_output, result_str, [file_path]
-                
+                result_str = f"Done! {segment_count[0]} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
+
+                yield live_output, result_str, collected_paths
+
         except Exception as e:
             error_msg = f"❌ Error: {str(e)}"
             yield error_msg, error_msg, []
     
     def transcribe_file(self,
                         files: Optional[List] = None,
+                        batch_mode: bool = False,
                         input_folder_path: Optional[str] = None,
-                        include_subdirectory: Optional[str] = None,
-                        save_same_dir: Optional[str] = None,
-                        file_format: str = "SRT",
+                        include_subdirectory: Optional[bool] = None,
+                        overwrite_existing: bool = False,
+                        output_dir: Optional[str] = None,
+                        file_formats: Union[str, List[str]] = "SRT",
                         add_timestamp: bool = True,
                         progress=gr.Progress(),
                         *pipeline_params,
@@ -330,17 +359,18 @@ class BaseTranscriptionPipeline(ABC):
         ----------
         files: list
             List of files to transcribe from gr.Files()
+        batch_mode: bool
+            Enable batch mode. Requires input_folder_path and processes every media file found.
         input_folder_path: Optional[str]
-            Input folder path to transcribe from gr.Textbox(). If this is provided, `files` will be ignored and
-            this will be used instead.
-        include_subdirectory: Optional[str]
-            When using `input_folder_path`, whether to include all files in the subdirectory or not
-        save_same_dir: Optional[str]
-            When using `input_folder_path`, whether to save output in the same directory as inputs or not, in addition
-            to the original output directory. This feature is only available when using `input_folder_path`, because
-            gradio only allows to use cached file path in the function yet.
-        file_format: str
-            Subtitle File format to write from gr.Dropdown(). Supported format: [SRT, WebVTT, txt]
+            Folder path to process. When provided in batch mode, uploaded files are ignored.
+        include_subdirectory: Optional[bool]
+            Whether to include files in subdirectories when batch mode is enabled.
+        overwrite_existing: bool
+            When False, existing outputs in the target directory are skipped.
+        output_dir: Optional[str]
+            Custom output directory. If omitted in batch mode, outputs are saved next to the input files.
+        file_formats: Union[str, List[str]]
+            One or more subtitle formats to generate.
         add_timestamp: bool
             Boolean value from gr.Checkbox() that determines whether to add a timestamp at the end of the subtitle filename.
         progress: gr.Progress
@@ -357,60 +387,89 @@ class BaseTranscriptionPipeline(ABC):
         """
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            file_formats = self.normalize_file_formats(file_formats)
             writer_options = {
                 "highlight_words": True if params.whisper.word_timestamps else False
             }
 
-            if input_folder_path:
+            if batch_mode and not input_folder_path:
+                raise ValueError("Input folder path is required when batch processing is enabled.")
+
+            if batch_mode and input_folder_path:
                 files = get_media_files(input_folder_path, include_sub_directory=include_subdirectory)
-            if isinstance(files, str):
-                files = [files]
-            if files and isinstance(files[0], gr.utils.NamedString):
-                files = [file.name for file in files]
+
+            files = self.format_input_files(files)
+            if not files:
+                raise ValueError("No input files provided for transcription.")
 
             files_info = {}
+            all_paths: List[str] = []
+            total_time = 0
+
             for file in files:
+                file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
+                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
+                existing_outputs = self._find_existing_outputs(file_name, target_output_dir, file_formats)
+
+                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(file_formats):
+                    skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
+                    all_paths.extend(skipped_paths)
+                    files_info[file_name] = {
+                        "subtitle": read_file(skipped_paths[0]) if skipped_paths else "",
+                        "time_for_task": 0,
+                        "paths": skipped_paths,
+                        "skipped": True
+                    }
+                    continue
+
                 transcribed_segments, time_for_task = self.run(
                     file,
                     progress,
-                    file_format,
+                    file_formats[0],
                     add_timestamp,
                     None,
                     *pipeline_params,
                 )
 
-                file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
-                if save_same_dir and input_folder_path:
-                    output_dir = os.path.dirname(file)
-                    subtitle, file_path = generate_file(
-                        output_dir=output_dir,
-                        output_file_name=file_name,
-                        output_format=file_format,
-                        result=transcribed_segments,
-                        add_timestamp=add_timestamp,
-                        **writer_options
-                    )
+                generated_paths = []
+                subtitle_preview = ""
+                for fmt in file_formats:
+                    fmt_key = self._normalize_format_key(fmt)
+                    if batch_mode and (not overwrite_existing) and fmt_key in existing_outputs:
+                        file_path = sorted(existing_outputs[fmt_key])[-1]
+                        subtitle_preview = subtitle_preview or read_file(file_path)
+                    else:
+                        subtitle, file_path = generate_file(
+                            output_dir=target_output_dir,
+                            output_file_name=file_name,
+                            output_format=fmt,
+                            result=transcribed_segments,
+                            add_timestamp=add_timestamp,
+                            **writer_options
+                        )
+                        subtitle_preview = subtitle_preview or subtitle
+                    generated_paths.append(file_path)
 
-                subtitle, file_path = generate_file(
-                    output_dir=self.output_dir,
-                    output_file_name=file_name,
-                    output_format=file_format,
-                    result=transcribed_segments,
-                    add_timestamp=add_timestamp,
-                    **writer_options
-                )
-                files_info[file_name] = {"subtitle": read_file(file_path), "time_for_task": time_for_task, "path": file_path}
+                all_paths.extend(generated_paths)
+                files_info[file_name] = {
+                    "subtitle": subtitle_preview,
+                    "time_for_task": time_for_task,
+                    "paths": generated_paths,
+                    "skipped": False
+                }
+                total_time += time_for_task
 
             total_result = ''
-            total_time = 0
             for file_name, info in files_info.items():
                 total_result += '------------------------------------\n'
                 total_result += f'{file_name}\n\n'
-                total_result += f'{info["subtitle"]}'
-                total_time += info["time_for_task"]
+                if info["skipped"]:
+                    total_result += "Skipped (outputs already exist)\n"
+                else:
+                    total_result += f'{info["subtitle"]}'
 
-            result_str = f"Done in {self.format_time(total_time)}! Subtitle is in the outputs folder.\n\n{total_result}"
-            result_file_path = [info['path'] for info in files_info.values()]
+            result_str = f"Done in {self.format_time(total_time)}! Subtitle files saved to selected output folders.\n\n{total_result}"
+            result_file_path = all_paths
 
             return result_str, result_file_path
 
@@ -419,7 +478,7 @@ class BaseTranscriptionPipeline(ABC):
 
     def transcribe_mic(self,
                        mic_audio: str,
-                       file_format: str = "SRT",
+                       file_format: Union[str, List[str]] = "SRT",
                        add_timestamp: bool = True,
                        progress=gr.Progress(),
                        *pipeline_params,
@@ -449,6 +508,7 @@ class BaseTranscriptionPipeline(ABC):
         """
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            file_formats = self.normalize_file_formats(file_format)
             writer_options = {
                 "highlight_words": True if params.whisper.word_timestamps else False
             }
@@ -457,7 +517,7 @@ class BaseTranscriptionPipeline(ABC):
             transcribed_segments, time_for_task = self.run(
                 mic_audio,
                 progress,
-                file_format,
+                file_formats[0],
                 add_timestamp,
                 None,
                 *pipeline_params,
@@ -465,23 +525,28 @@ class BaseTranscriptionPipeline(ABC):
             progress(1, desc="Completed!")
 
             file_name = "Mic"
-            subtitle, file_path = generate_file(
-                output_dir=self.output_dir,
-                output_file_name=file_name,
-                output_format=file_format,
-                result=transcribed_segments,
-                add_timestamp=add_timestamp,
-                **writer_options
-            )
+            file_paths = []
+            subtitle_preview = ""
+            for fmt in file_formats:
+                subtitle, file_path = generate_file(
+                    output_dir=self.output_dir,
+                    output_file_name=file_name,
+                    output_format=fmt,
+                    result=transcribed_segments,
+                    add_timestamp=add_timestamp,
+                    **writer_options
+                )
+                subtitle_preview = subtitle_preview or subtitle
+                file_paths.append(file_path)
 
-            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle}"
-            return result_str, file_path
+            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
+            return result_str, file_paths
         except Exception as e:
             raise RuntimeError(f"Error transcribing mic: {e}") from e
 
     def transcribe_youtube(self,
                            youtube_link: str,
-                           file_format: str = "SRT",
+                           file_format: Union[str, List[str]] = "SRT",
                            add_timestamp: bool = True,
                            progress=gr.Progress(),
                            *pipeline_params,
@@ -511,6 +576,7 @@ class BaseTranscriptionPipeline(ABC):
         """
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            file_formats = self.normalize_file_formats(file_format)
             writer_options = {
                 "highlight_words": True if params.whisper.word_timestamps else False
             }
@@ -522,7 +588,7 @@ class BaseTranscriptionPipeline(ABC):
             transcribed_segments, time_for_task = self.run(
                 audio,
                 progress,
-                file_format,
+                file_formats[0],
                 add_timestamp,
                 None,
                 *pipeline_params,
@@ -531,24 +597,77 @@ class BaseTranscriptionPipeline(ABC):
             progress(1, desc="Completed!")
 
             file_name = safe_filename(yt.title)
-            subtitle, file_path = generate_file(
-                output_dir=self.output_dir,
-                output_file_name=file_name,
-                output_format=file_format,
-                result=transcribed_segments,
-                add_timestamp=add_timestamp,
-                **writer_options
-            )
+            file_paths = []
+            subtitle_preview = ""
+            for fmt in file_formats:
+                subtitle, file_path = generate_file(
+                    output_dir=self.output_dir,
+                    output_file_name=file_name,
+                    output_format=fmt,
+                    result=transcribed_segments,
+                    add_timestamp=add_timestamp,
+                    **writer_options
+                )
+                subtitle_preview = subtitle_preview or subtitle
+                file_paths.append(file_path)
 
-            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle}"
+            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
 
             if os.path.exists(audio):
                 os.remove(audio)
 
-            return result_str, file_path
+            return result_str, file_paths
 
         except Exception as e:
             raise RuntimeError(f"Error transcribing youtube: {e}") from e
+
+    @staticmethod
+    def normalize_file_formats(file_formats: Union[str, List[str], None]) -> List[str]:
+        """Normalize a file format value coming from the UI to a non-empty list."""
+        if file_formats is None:
+            return ["SRT"]
+        if isinstance(file_formats, str):
+            file_formats = [file_formats]
+        cleaned = []
+        for fmt in file_formats:
+            if not fmt:
+                continue
+            cleaned.append(fmt.strip())
+        return cleaned or ["SRT"]
+
+    @staticmethod
+    def _normalize_format_key(file_format: str) -> str:
+        """Convert format label to a normalized key for lookups."""
+        normalized = file_format.strip().lower().replace(".", "")
+        return "vtt" if normalized == "webvtt" else normalized
+
+    def _get_output_dir_for_file(self, output_dir: Optional[str], input_file: str, batch_mode: bool) -> str:
+        """Decide which output directory to use for a given file."""
+        target_output_dir = output_dir or (os.path.dirname(input_file) if batch_mode and input_file else None) or self.output_dir
+        os.makedirs(target_output_dir, exist_ok=True)
+        return target_output_dir
+
+    def _find_existing_outputs(self, file_name: str, output_dir: str, file_formats: List[str]) -> dict:
+        """Find already generated outputs for a file (supports timestamped filenames)."""
+        existing = {}
+        for fmt in file_formats:
+            fmt_key = self._normalize_format_key(fmt)
+            pattern = os.path.join(output_dir, f"{file_name}*.{fmt_key}")
+            matches = glob.glob(pattern)
+            if matches:
+                existing[fmt_key] = matches
+        return existing
+
+    @staticmethod
+    def format_input_files(files: Optional[Union[str, List]]) -> List[str]:
+        """Normalize the files input from Gradio into a list of paths."""
+        if files is None:
+            return []
+        if isinstance(files, str):
+            return [files]
+        if isinstance(files, list) and files and isinstance(files[0], gr.utils.NamedString):
+            return [file.name for file in files]
+        return files
 
     def get_compute_type(self):
         if "bfloat16" in self.available_compute_types:

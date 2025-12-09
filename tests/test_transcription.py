@@ -50,9 +50,11 @@ def run_asr_pipeline(
 
     subtitle_str, file_paths = whisper_inferencer.transcribe_file(
         [audio_path],
-        None,
-        None,
-        None,
+        False,  # batch_mode
+        None,   # input_folder_path
+        None,   # include_subdirectory
+        False,  # overwrite_existing
+        None,   # output_dir
         "SRT",
         False,
         gr.Progress(),

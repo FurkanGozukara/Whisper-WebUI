@@ -43,8 +43,40 @@ class App:
         )
         self.i18n = load_yaml(I18N_YAML_PATH)
         self.default_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
+        user_allowed = []
+        if self.args.allowed_paths:
+            try:
+                user_allowed = list(eval(self.args.allowed_paths))
+            except Exception:
+                user_allowed = []
+        detected_drives = self.detect_allowed_paths()
+        # Always include output_dir to ensure writes are permitted
+        combined_paths = detected_drives + user_allowed + [self.args.output_dir]
+        # Deduplicate while preserving order
+        seen = set()
+        self.allowed_paths = []
+        for p in combined_paths:
+            if p and p not in seen:
+                self.allowed_paths.append(p)
+                seen.add(p)
         logger.info(f"Use \"{self.args.whisper_type}\" implementation\n"
                     f"Device \"{self.whisper_inf.device}\" is detected")
+
+    @staticmethod
+    def detect_allowed_paths():
+        """Scan available drives to build a permissive allowed_paths list for Gradio."""
+        paths = []
+        if os.name == "nt":
+            for code in range(ord('A'), ord('Z') + 1):
+                drive = f"{chr(code)}:\\"
+                if os.path.exists(drive):
+                    paths.append(drive)
+        else:
+            paths.append("/")
+        # Fallback to current working directory if nothing detected
+        if not paths:
+            paths.append(os.getcwd())
+        return paths
 
     def create_whisper_inputs_3col(self, whisper_params):
         """Create whisper advanced inputs in 3-column layout"""
@@ -103,7 +135,15 @@ class App:
             dd_lang = gr.Dropdown(choices=self.whisper_inf.available_langs + [AUTOMATIC_DETECTION],
                                   value=AUTOMATIC_DETECTION if whisper_params["lang"] == AUTOMATIC_DETECTION.unwrap()
                                   else whisper_params["lang"], label=_("Language"))
-            dd_file_format = gr.Dropdown(choices=["SRT", "WebVTT", "txt", "LRC", "JSON", "TSV"], value=whisper_params["file_format"], label=_("File Format"))
+            default_formats = whisper_params.get("file_format", "SRT")
+            if isinstance(default_formats, str):
+                default_formats = [default_formats]
+            cg_file_formats = gr.CheckboxGroup(
+                choices=["SRT", "WebVTT", "txt", "LRC", "JSON", "TSV"],
+                value=default_formats or ["SRT"],
+                label=_("File Formats"),
+                info=_("Select one or more output formats.")
+            )
         with gr.Row():
             cb_translate = gr.Checkbox(value=whisper_params["is_translate"], 
                                        label=_("Translate to English?"),
@@ -137,7 +177,7 @@ class App:
 
         return (
             pipeline_inputs,
-            dd_file_format,
+            cg_file_formats,
             cb_timestamp
         )
 
@@ -158,23 +198,28 @@ class App:
                         gr.Markdown(MARKDOWN, elem_id="md_project")
                 with gr.Tabs():
                     with gr.TabItem(_("File")):  # tab1
-                        with gr.Column():
-                            input_file = gr.Files(type="filepath", label=_("Upload File here"), file_types=MEDIA_EXTENSION)
-                            tb_input_folder = gr.Textbox(label="Input Folder Path (Optional)",
-                                                         info="Optional: Specify the folder path where the input files are located, if you prefer to use local files instead of uploading them."
-                                                              " Leave this field empty if you do not wish to use a local path.",
-                                                         visible=self.args.colab,
-                                                         value="")
-                            cb_include_subdirectory = gr.Checkbox(label="Include Subdirectory Files",
-                                                                  info="When using Input Folder Path above, whether to include all files in the subdirectory or not.",
-                                                                  visible=self.args.colab,
-                                                                  value=False)
-                            cb_save_same_dir = gr.Checkbox(label="Save outputs at same directory",
-                                                           info="When using Input Folder Path above, whether to save output in the same directory as inputs or not, in addition to the original"
-                                                                " output directory.",
-                                                           visible=self.args.colab,
-                                                           value=True)
-                        pipeline_params, dd_file_format, cb_timestamp = self.create_pipeline_inputs()
+                        with gr.Row():
+                            with gr.Column():
+                                input_file = gr.Files(type="filepath", label=_("Upload File here"), file_types=MEDIA_EXTENSION)
+                            with gr.Column():
+                                gr.Markdown(_("Batch Processing"))
+                                with gr.Row():
+                                    cb_batch_processing = gr.Checkbox(label=_("Enable Batch Processing"), value=False)
+                                    cb_include_subdirectory = gr.Checkbox(label=_("Include Subdirectory Files"),
+                                                                          info=_("Process files in nested folders when batch is enabled."),
+                                                                          value=False)
+                                    cb_overwrite_existing = gr.Checkbox(label=_("Overwrite Existing Files"), value=False,
+                                                                        info=_("Re-create outputs when they already exist."))
+                                with gr.Row():
+                                    tb_input_folder = gr.Textbox(label=_("Input Folder Path"),
+                                                                 placeholder="C:/path/to/folder or /workspace/audio",
+                                                                 info="Required when batch processing is enabled.",
+                                                                 value="")
+                                    tb_output_folder = gr.Textbox(label=_("Output Folder (Optional)"),
+                                                                  placeholder="Leave blank to save next to input files",
+                                                                  info="When provided, outputs are saved here instead of the input folder.",
+                                                                  value="")
+                        pipeline_params, file_formats_file, cb_timestamp = self.create_pipeline_inputs()
 
                         with gr.Row():
                             btn_run = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
@@ -192,8 +237,8 @@ class App:
                             files_subtitles = gr.Files(label=_("Downloadable output file"), scale=3, interactive=False)
                             btn_openfolder = gr.Button('📂', scale=1)
 
-                        params = [input_file, tb_input_folder, cb_include_subdirectory, cb_save_same_dir,
-                                  dd_file_format, cb_timestamp]
+                        params = [input_file, cb_batch_processing, tb_input_folder, cb_include_subdirectory,
+                                  cb_overwrite_existing, tb_output_folder, file_formats_file, cb_timestamp]
                         all_params = params + pipeline_params
                         
                         # Use the live transcription wrapper
@@ -202,7 +247,13 @@ class App:
                             inputs=all_params,
                             outputs=[tb_live_transcription, tb_indicator, files_subtitles]
                         )
-                        btn_openfolder.click(fn=lambda: self.open_folder("outputs"), inputs=None, outputs=None)
+                        btn_openfolder.click(
+                            fn=lambda output_dir, batch_input, batch_enabled: self.open_folder(
+                                output_dir if output_dir else (batch_input if (batch_enabled and batch_input) else self.args.output_dir)
+                            ),
+                            inputs=[tb_output_folder, tb_input_folder, cb_batch_processing],
+                            outputs=None
+                        )
 
                     with gr.TabItem(_("Youtube")):  # tab2
                         with gr.Row():
@@ -214,7 +265,7 @@ class App:
                                 tb_title = gr.Label(label=_("Youtube Title"))
                                 tb_description = gr.Textbox(label=_("Youtube Description"), max_lines=15)
 
-                        pipeline_params, dd_file_format, cb_timestamp = self.create_pipeline_inputs()
+                        pipeline_params, file_formats_yt, cb_timestamp = self.create_pipeline_inputs()
 
                         with gr.Row():
                             btn_run = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
@@ -232,7 +283,7 @@ class App:
                             files_subtitles = gr.Files(label=_("Downloadable output file"), scale=3)
                             btn_openfolder = gr.Button('📂', scale=1)
 
-                        params = [tb_youtubelink, dd_file_format, cb_timestamp]
+                        params = [tb_youtubelink, file_formats_yt, cb_timestamp]
 
                         btn_run.click(fn=self.whisper_inf.transcribe_youtube,
                                       inputs=params + pipeline_params,
@@ -246,7 +297,7 @@ class App:
                             mic_input = gr.Microphone(label=_("Record with Mic"), type="filepath", interactive=True,
                                                       show_download_button=True)
 
-                        pipeline_params, dd_file_format, cb_timestamp = self.create_pipeline_inputs()
+                        pipeline_params, file_formats_mic, cb_timestamp = self.create_pipeline_inputs()
 
                         with gr.Row():
                             btn_run = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
@@ -264,7 +315,7 @@ class App:
                             files_subtitles = gr.Files(label=_("Downloadable output file"), scale=3)
                             btn_openfolder = gr.Button('📂', scale=1)
 
-                        params = [mic_input, dd_file_format, cb_timestamp]
+                        params = [mic_input, file_formats_mic, cb_timestamp]
 
                         btn_run.click(fn=self.whisper_inf.transcribe_mic,
                                       inputs=params + pipeline_params,
@@ -393,7 +444,7 @@ class App:
             ssl_keyfile=args.ssl_keyfile,
             ssl_keyfile_password=args.ssl_keyfile_password,
             ssl_certfile=args.ssl_certfile,
-            allowed_paths=eval(args.allowed_paths) if args.allowed_paths else None
+            allowed_paths=self.allowed_paths
         )
 
     @staticmethod
