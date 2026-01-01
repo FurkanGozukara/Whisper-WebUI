@@ -39,8 +39,8 @@ class Diarizer:
         transcribed_result: List[Segment]
             transcribed result through whisper.
         use_auth_token: str
-            Huggingface token with READ permission. This is only needed the first time you download the model.
-            You must manually go to the website https://huggingface.co/pyannote/speaker-diarization-3.1 and agree to their TOS to download the model.
+            Optional Hugging Face token. Not required for the default public diarization pipeline,
+            but can help if you hit download/rate-limit issues.
         device: Optional[str]
             Device for diarization.
 
@@ -95,8 +95,8 @@ class Diarizer:
         Parameters
         ----------
         use_auth_token: str
-            Huggingface token with READ permission. This is only needed the first time you download the model.
-            You must manually go to the website https://huggingface.co/pyannote/speaker-diarization-3.1 and agree to their TOS to download the model.
+            Optional Hugging Face token. Not required for the default public diarization pipeline,
+            but can help if you hit download/rate-limit issues.
         device: str
             Device for diarization.
         """
@@ -106,22 +106,23 @@ class Diarizer:
 
         os.makedirs(self.model_dir, exist_ok=True)
 
-        if (not os.listdir(self.model_dir) and
-                not use_auth_token):
-            print(
-                "\nFailed to diarize. You need huggingface token and agree to their requirements to download the diarization model.\n"
-                "Go to \"https://huggingface.co/pyannote/speaker-diarization-3.1\" and follow their instructions to download the model.\n"
-            )
-            return
-
         logger = logging.getLogger("speechbrain.utils.train_logger")
         # Disable redundant torchvision warning message
         logger.disabled = True
-        self.pipe = DiarizationPipeline(
-            use_auth_token=use_auth_token,
-            device=device,
-            cache_dir=self.model_dir
-        )
+        try:
+            self.pipe = DiarizationPipeline(
+                use_auth_token=use_auth_token,
+                device=device,
+                cache_dir=self.model_dir
+            )
+        except Exception as e:
+            # Keep diarization optional: don't crash the whole app if diarization can't be initialized.
+            print(
+                "\nFailed to initialize diarization pipeline.\n"
+                f"Error: {type(e).__name__}: {e}\n"
+                "Tip: Ensure you have network access on first run, then it will be cached locally.\n"
+            )
+            self.pipe = None
         logger.disabled = False
 
     def offload(self):

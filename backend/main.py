@@ -16,6 +16,11 @@ from backend.routers.task.router import task_router
 from backend.common.config_loader import read_env, load_server_config
 from backend.common.cache_manager import cleanup_old_files
 from modules.utils.paths import SERVER_CONFIG_PATH, BACKEND_CACHE_DIR
+from modules.utils.torch_compat import enable_torch_2_6_weights_only_compat
+
+
+# Ensure torch>=2.6 weights-only loading doesn't break common model checkpoints.
+enable_torch_2_6_weights_only_compat()
 
 
 def clean_cache_thread(ttl: int, frequency: int) -> threading.Thread:

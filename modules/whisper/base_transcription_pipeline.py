@@ -202,14 +202,18 @@ class BaseTranscriptionPipeline(ABC):
 
         if diarization_params.is_diarize:
             progress(0.99, desc="Diarizing speakers..")
-            result, elapsed_time_diarization = self.diarizer.run(
-                audio=origin_audio,
-                use_auth_token=diarization_params.hf_token if diarization_params.hf_token else os.environ.get("HF_TOKEN"),
-                transcribed_result=result,
-                device=diarization_params.diarization_device
-            )
-            if diarization_params.enable_offload:
-                self.diarizer.offload()
+            try:
+                result, elapsed_time_diarization = self.diarizer.run(
+                    audio=origin_audio,
+                    use_auth_token=diarization_params.hf_token if diarization_params.hf_token else os.environ.get("HF_TOKEN"),
+                    transcribed_result=result,
+                    device=diarization_params.diarization_device
+                )
+                if diarization_params.enable_offload:
+                    self.diarizer.offload()
+            except Exception as e:
+                # Diarization is optional; don't fail the whole transcription if it can't run.
+                logger.warning(f"Diarization failed and will be skipped: {type(e).__name__}: {e}")
 
         self.cache_parameters(
             params=params,

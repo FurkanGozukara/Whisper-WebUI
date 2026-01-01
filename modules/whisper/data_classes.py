@@ -195,7 +195,7 @@ class DiarizationParams(BaseParams):
             inputs.append(gr.Textbox(
                 label=_("HuggingFace Token"),
                 value=defaults.get("hf_token", cls.__fields__["hf_token"].default),
-                info="🔑 Free token from huggingface.co/settings/tokens. Required ONLY for first-time model download. Accept terms at: huggingface.co/pyannote/speaker-diarization-3.1 and huggingface.co/pyannote/segmentation-3.0. Leave empty after first download."
+                info="🔑 Optional HuggingFace token (only needed if you hit download/rate-limit issues). The diarization pipeline is downloaded from the public repo: huggingface.co/MonsterMMORPG/Wan_GGUF (subfolder Speaker_Diarization_3_1)."
             ))
         
         # Row 2: Offload model (single item, but in a row for consistency)

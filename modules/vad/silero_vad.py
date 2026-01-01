@@ -10,6 +10,7 @@ from faster_whisper.transcribe import SpeechTimestampsMap
 import gradio as gr
 
 from modules.whisper.data_classes import *
+from modules.utils.torch_compat import torch_load_safe_globals
 
 
 class SileroVAD:
@@ -210,7 +211,10 @@ class SileroVAD:
         return speeches
 
     def update_model(self):
-        self.model = get_vad_model()
+        # `get_vad_model()` may use torch.load internally depending on faster-whisper version.
+        # Wrap it to stay compatible with torch>=2.6 weights-only loading behavior.
+        with torch_load_safe_globals():
+            self.model = get_vad_model()
 
     @staticmethod
     def collect_chunks(audio: np.ndarray, chunks: List[dict]) -> np.ndarray:

@@ -13,6 +13,7 @@ from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, UVR_MODELS_DIR, 
 from modules.utils.files_manager import load_yaml, save_yaml, is_video
 from modules.diarize.audio_loader import load_audio
 from modules.utils.logger import get_logger
+from modules.utils.torch_compat import torch_load_safe_globals
 logger = get_logger()
 
 try:
@@ -67,11 +68,13 @@ class MusicSeparator:
             "segment": segment_size,
             "split": True
         }
-        self.model = MDX(name=model_name,
-                         other_metadata=self.model_config,
-                         device=self.device,
-                         logger=None,
-                         model_dir=self.model_dir)
+        # Some UVR checkpoints can be loaded via torch.load internally; make it robust on torch>=2.6.
+        with torch_load_safe_globals():
+            self.model = MDX(name=model_name,
+                             other_metadata=self.model_config,
+                             device=self.device,
+                             logger=None,
+                             model_dir=self.model_dir)
 
     def separate(self,
                  audio: Union[str, np.ndarray],

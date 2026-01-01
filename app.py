@@ -16,9 +16,12 @@ from modules.utils.youtube_manager import get_ytmetas
 from modules.translation.deepl_api import DeepLAPI
 from modules.whisper.data_classes import *
 from modules.utils.logger import get_logger
+from modules.utils.torch_compat import enable_torch_2_6_weights_only_compat
 
 
 logger = get_logger()
+# Make torch.load(weights_only=True) on PyTorch 2.6+ compatible with common checkpoints (e.g. Whisper).
+enable_torch_2_6_weights_only_compat()
 
 
 class App:

@@ -41,7 +41,7 @@ vad:
   min_silence_duration_ms: 2000
   speech_pad_ms: 400
 diarization:
-  is_diarize: false
+  is_diarize: true
   diarization_device: cuda
   hf_token: ''
   enable_offload: false

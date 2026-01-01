@@ -11,6 +11,7 @@ from modules.utils.paths import (WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUT
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.whisper.data_classes import *
 from modules.whisper.data_classes import Segment, Word
+from modules.utils.torch_compat import torch_load_safe_globals
 
 
 class WhisperInference(BaseTranscriptionPipeline):
@@ -122,8 +123,11 @@ class WhisperInference(BaseTranscriptionPipeline):
         progress(0, desc="Initializing Model..")
         self.current_compute_type = compute_type
         self.current_model_size = model_size
-        self.model = whisper.load_model(
-            name=model_size,
-            device=self.device,
-            download_root=self.model_dir
-        )
+        # PyTorch 2.6 changed torch.load default to weights_only=True. Some Whisper checkpoints
+        # include TorchVersion metadata which must be allowlisted for weights-only loading.
+        with torch_load_safe_globals():
+            self.model = whisper.load_model(
+                name=model_size,
+                device=self.device,
+                download_root=self.model_dir
+            )
