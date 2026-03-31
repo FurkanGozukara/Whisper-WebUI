@@ -22,13 +22,19 @@ from modules.utils.torch_compat import enable_torch_2_6_weights_only_compat
 logger = get_logger()
 # Make torch.load(weights_only=True) on PyTorch 2.6+ compatible with common checkpoints (e.g. Whisper).
 enable_torch_2_6_weights_only_compat()
+FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 
 
 class App:
     def __init__(self, args):
         self.args = args
         # Check every 1 hour (3600) for cached files and delete them if older than 1 day (86400)
-        self.app = gr.Blocks(css=CSS, theme=self.args.theme, delete_cache=(3600, 86400))
+        self.app = gr.Blocks(
+            css=CSS,
+            theme=self.args.theme,
+            title="Web TTS V3",
+            delete_cache=(3600, 86400),
+        )
         self.whisper_inf = WhisperFactory.create_whisper_inference(
             whisper_type=self.args.whisper_type,
             whisper_model_dir=self.args.whisper_model_dir,
@@ -443,6 +449,7 @@ class App:
             inbrowser=True,
             auth=(args.username, args.password) if args.username and args.password else None,
             root_path=args.root_path,
+            favicon_path=FAVICON_PATH,
             ssl_verify=args.ssl_verify,
             ssl_keyfile=args.ssl_keyfile,
             ssl_keyfile_password=args.ssl_keyfile_password,
