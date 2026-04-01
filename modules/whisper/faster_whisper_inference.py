@@ -3,8 +3,9 @@ import time
 import huggingface_hub
 import numpy as np
 import torch
-from typing import BinaryIO, Union, Tuple, List, Callable
+from typing import BinaryIO, Union, Tuple, List, Callable, Optional
 import faster_whisper
+from faster_whisper.audio import decode_audio
 from faster_whisper.vad import VadOptions
 import ast
 import ctranslate2
@@ -74,7 +75,86 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
             self.update_model(params.model_size, params.compute_type, progress)
 
-        segments, info = self.model.transcribe(
+        progress(0, desc="Loading audio..")
+        segments, info = self._transcribe_with_batching(audio=audio, params=params)
+
+        segments_result = []
+        for idx, segment in enumerate(segments):
+            progress_n = 0.0 if not info.duration else min(segment.end / info.duration, 0.99)
+            seg_obj = Segment.from_faster_whisper(segment)
+            segments_result.append(seg_obj)
+
+            # Live transcription display in terminal
+            logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
+
+            # Update progress with current segment info
+            progress(progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
+
+            self.emit_progress_callback(progress_callback, progress_n, seg_obj)
+
+        elapsed_time = time.time() - start_time
+        return segments_result, elapsed_time
+
+    def _transcribe_with_batching(
+        self,
+        audio: Union[str, BinaryIO, np.ndarray],
+        params: WhisperParams,
+    ):
+        batch_pipeline_cls = getattr(faster_whisper, "BatchedInferencePipeline", None)
+        if batch_pipeline_cls is None:
+            logger.warning("Installed faster-whisper build does not support BatchedInferencePipeline. Falling back to standard transcription.")
+            return self._transcribe_with_standard_pipeline(audio=audio, params=params)
+
+        sampling_rate = self.model.feature_extractor.sampling_rate
+        audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        clip_timestamps = self.build_clip_timestamps(
+            audio=audio_array,
+            chunk_length=params.chunk_length,
+            sampling_rate=sampling_rate,
+        )
+
+        batch_pipeline = batch_pipeline_cls(model=self.model)
+        return batch_pipeline.transcribe(
+            audio=audio_array,
+            language=params.lang,
+            task="translate" if params.is_translate else "transcribe",
+            beam_size=params.beam_size,
+            log_prob_threshold=params.log_prob_threshold,
+            no_speech_threshold=params.no_speech_threshold,
+            best_of=params.best_of,
+            patience=params.patience,
+            temperature=params.temperature,
+            initial_prompt=params.initial_prompt,
+            compression_ratio_threshold=params.compression_ratio_threshold,
+            length_penalty=params.length_penalty,
+            repetition_penalty=params.repetition_penalty,
+            no_repeat_ngram_size=params.no_repeat_ngram_size,
+            prefix=params.prefix,
+            suppress_blank=params.suppress_blank,
+            suppress_tokens=params.suppress_tokens,
+            without_timestamps=False,
+            max_initial_timestamp=params.max_initial_timestamp,
+            word_timestamps=params.word_timestamps,
+            prepend_punctuations=params.prepend_punctuations,
+            append_punctuations=params.append_punctuations,
+            max_new_tokens=params.max_new_tokens,
+            chunk_length=params.chunk_length,
+            clip_timestamps=clip_timestamps,
+            hallucination_silence_threshold=params.hallucination_silence_threshold,
+            batch_size=max(1, int(params.batch_size)),
+            hotwords=params.hotwords,
+            language_detection_threshold=params.language_detection_threshold,
+            language_detection_segments=params.language_detection_segments,
+            condition_on_previous_text=params.condition_on_previous_text,
+            prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+        )
+
+    def _transcribe_with_standard_pipeline(
+        self,
+        audio: Union[str, BinaryIO, np.ndarray],
+        params: WhisperParams,
+    ):
+        return self.model.transcribe(
             audio=audio,
             language=params.lang,
             task="translate" if params.is_translate else "transcribe",
@@ -93,7 +173,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             suppress_blank=params.suppress_blank,
             suppress_tokens=params.suppress_tokens,
             max_initial_timestamp=params.max_initial_timestamp,
-            word_timestamps=True,  # Set it to always True as it reduces hallucinations
+            word_timestamps=params.word_timestamps,
             prepend_punctuations=params.prepend_punctuations,
             append_punctuations=params.append_punctuations,
             max_new_tokens=params.max_new_tokens,
@@ -102,27 +182,58 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             hotwords=params.hotwords,
             language_detection_threshold=params.language_detection_threshold,
             language_detection_segments=params.language_detection_segments,
+            condition_on_previous_text=params.condition_on_previous_text,
             prompt_reset_on_temperature=params.prompt_reset_on_temperature,
         )
-        progress(0, desc="Loading audio..")
 
-        segments_result = []
-        for idx, segment in enumerate(segments):
-            progress_n = segment.start / info.duration
-            seg_obj = Segment.from_faster_whisper(segment)
-            segments_result.append(seg_obj)
-            
-            # Live transcription display in terminal
-            logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
-            
-            # Update progress with current segment info
-            progress(progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
-            
-            if progress_callback is not None:
-                progress_callback(progress_n, seg_obj)
+    @staticmethod
+    def prepare_audio_array(audio: Union[str, BinaryIO, np.ndarray], sampling_rate: int) -> np.ndarray:
+        if not isinstance(audio, np.ndarray):
+            audio_array = decode_audio(audio, sampling_rate=sampling_rate)
+        else:
+            audio_array = np.asarray(audio, dtype=np.float32)
 
-        elapsed_time = time.time() - start_time
-        return segments_result, elapsed_time
+        if audio_array.ndim > 1:
+            channel_axis = 0 if audio_array.shape[0] <= audio_array.shape[-1] else -1
+            audio_array = audio_array.mean(axis=channel_axis)
+
+        return np.ascontiguousarray(audio_array.squeeze(), dtype=np.float32)
+
+    @staticmethod
+    def build_clip_timestamps(
+        audio: np.ndarray,
+        chunk_length: Optional[int],
+        sampling_rate: int,
+    ) -> List[dict]:
+        total_samples = int(audio.shape[-1]) if audio.size else 0
+        if total_samples <= 0:
+            return []
+
+        if chunk_length is None or chunk_length <= 0:
+            return [{"start": 0, "end": total_samples}]
+
+        chunk_samples = max(1, int(chunk_length * sampling_rate))
+        return [
+            {
+                "start": start,
+                "end": min(start + chunk_samples, total_samples),
+            }
+            for start in range(0, total_samples, chunk_samples)
+        ]
+
+    @staticmethod
+    def emit_progress_callback(
+        progress_callback: Optional[Callable],
+        progress_value: float,
+        segment: Optional[Segment] = None,
+    ):
+        if progress_callback is None:
+            return
+
+        try:
+            progress_callback(progress_value, segment)
+        except TypeError:
+            progress_callback(progress_value)
     
     @staticmethod
     def format_timestamp(seconds: float) -> str:

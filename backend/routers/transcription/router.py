@@ -7,7 +7,7 @@ from fastapi import (
 )
 import gradio as gr
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
-from typing import List, Dict
+from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 from modules.whisper.data_classes import *
@@ -27,7 +27,7 @@ transcription_router = APIRouter(prefix="/transcription", tags=["Transcription"]
 
 
 def create_progress_callback(identifier: str):
-    def progress_callback(progress_value: float):
+    def progress_callback(progress_value: float, segment: Optional[Segment] = None):
         update_task_status_in_db(
             identifier=identifier,
             update_data={

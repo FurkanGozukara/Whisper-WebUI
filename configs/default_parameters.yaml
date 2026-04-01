@@ -1,37 +1,37 @@
 whisper:
   model_size: large-v3
-  lang: english
+  lang: Automatic Detection
   is_translate: false
-  beam_size: 10
-  log_prob_threshold: -0.5
+  beam_size: 5
+  log_prob_threshold: -1.0
   no_speech_threshold: 0.6
   compute_type: bfloat16
-  best_of: 10
-  patience: 2.0
+  best_of: 5
+  patience: 1.0
   condition_on_previous_text: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
   temperature: 0.0
   compression_ratio_threshold: 2.4
   length_penalty: 1.0
-  repetition_penalty: 1.2
-  no_repeat_ngram_size: 3
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
   prefix: null
   suppress_blank: true
   suppress_tokens: '[-1]'
   max_initial_timestamp: 1.0
   word_timestamps: false
-  prepend_punctuations: '"''¿([{-'
-  append_punctuations: '"''.。,，!！?？:：")]}、'
+  prepend_punctuations: '"''“¿([{-'
+  append_punctuations: '"''.。,，!！?？:：”)]}、'
   max_new_tokens: null
-  chunk_length: 30
-  hallucination_silence_threshold: 2.0
+  chunk_length: 15
+  hallucination_silence_threshold: null
   hotwords: null
   language_detection_threshold: 0.5
-  language_detection_segments: 3
-  batch_size: 48
+  language_detection_segments: 1
+  batch_size: 4
   enable_offload: false
-  add_timestamp: true
+  add_timestamp: false
   file_format: SRT
 vad:
   vad_filter: false
@@ -41,17 +41,17 @@ vad:
   min_silence_duration_ms: 2000
   speech_pad_ms: 400
 diarization:
-  is_diarize: true
+  is_diarize: false
   diarization_device: cuda
   hf_token: ''
-  enable_offload: false
+  enable_offload: true
 bgm_separation:
   is_separate_bgm: false
   uvr_model_size: UVR-MDX-NET-Inst_HQ_4
   uvr_device: cuda
-  segment_size: 512
+  segment_size: 256
   save_file: false
-  enable_offload: false
+  enable_offload: true
 translation:
   deepl:
     api_key: ''

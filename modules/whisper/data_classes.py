@@ -571,7 +571,7 @@ class WhisperParams(BaseParams):
                 label="Chunk Length (s)",
                 value=defaults.get("chunk_length", cls.__fields__["chunk_length"].default),
                 precision=0,
-                info="✂️ Length of audio segments to process at once (seconds). Examples: 30 (default - balanced), 15 (shorter chunks, faster processing), 60 (longer chunks, better context). Shorter = faster but less context. 30s recommended."
+                info="✂️ Length of each audio window in seconds. With faster-whisper batching, `15` plus batch size `4` means four 15-second windows are decoded together (about 1 minute per pass). Shorter windows improve batching consistency; longer windows keep more context."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Hallucination Silence Threshold (sec)",
@@ -602,26 +602,29 @@ class WhisperParams(BaseParams):
             ))
         
 
-        insanely_fast_whisper_inputs = []
-        
-        # Row 10 (for insanely-fast-whisper): Batch Size
+        batch_size_inputs = []
+
+        # Row 10 (for faster-whisper and insanely-fast-whisper): Batch Size
         with gr.Row():
-            insanely_fast_whisper_inputs.append(gr.Number(
+            batch_size_inputs.append(gr.Number(
                 label="Batch Size",
                 value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
                 precision=0,
-                info="📦 Number of audio chunks processed simultaneously. Higher = faster BUT more VRAM. Examples: 24 (balanced), 48 (current - 2x faster, needs ~10GB VRAM), 16 (for 6-8GB VRAM), 64+ (for 16GB+ VRAM). Increase for better GPU utilization."
+                info="📦 Number of audio windows processed at the same time. With chunk length `15` and batch size `4`, the model decodes four 15-second windows together. Use `1` for the baseline result, then increase to `2`, `4`, or `8` if VRAM allows."
             ))
 
         if whisper_type != WhisperImpl.FASTER_WHISPER.value:
             for input_component in faster_whisper_inputs:
                 input_component.visible = False
 
-        if whisper_type != WhisperImpl.INSANELY_FAST_WHISPER.value:
-            for input_component in insanely_fast_whisper_inputs:
+        if whisper_type not in {
+            WhisperImpl.FASTER_WHISPER.value,
+            WhisperImpl.INSANELY_FAST_WHISPER.value,
+        }:
+            for input_component in batch_size_inputs:
                 input_component.visible = False
 
-        inputs += faster_whisper_inputs + insanely_fast_whisper_inputs
+        inputs += faster_whisper_inputs + batch_size_inputs
 
         # Final row: Offload model
         with gr.Row():
