@@ -9,13 +9,16 @@ NLLB_MODELS_DIR = os.path.join(MODELS_DIR, "NLLB")
 DIARIZATION_MODELS_DIR = os.path.join(MODELS_DIR, "Diarization")
 UVR_MODELS_DIR = os.path.join(MODELS_DIR, "UVR", "MDX_Net_Models")
 CONFIGS_DIR = os.path.join(WEBUI_DIR, "configs")
-DEFAULT_PARAMETERS_CONFIG_PATH = os.path.join(CONFIGS_DIR, "default_parameters.yaml")
+UI_DEFAULTS_DIR = os.path.join(WEBUI_DIR, "modules", "ui", "defaults")
+DEFAULT_PARAMETERS_PATH = os.path.join(UI_DEFAULTS_DIR, "default_parameters.yaml")
+DEFAULT_PARAMETERS_CONFIG_PATH = DEFAULT_PARAMETERS_PATH
 I18N_YAML_PATH = os.path.join(CONFIGS_DIR, "translation.yaml")
 OUTPUT_DIR = os.path.join(WEBUI_DIR, "outputs")
 TRANSLATION_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "translations")
 UVR_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "UVR")
 UVR_INSTRUMENTAL_OUTPUT_DIR = os.path.join(UVR_OUTPUT_DIR, "instrumental")
 UVR_VOCALS_OUTPUT_DIR = os.path.join(UVR_OUTPUT_DIR, "vocals")
+PRESETS_DIR = os.path.join(WEBUI_DIR, "presets")
 BACKEND_DIR_PATH = os.path.join(WEBUI_DIR, "backend")
 SERVER_CONFIG_PATH = os.path.join(BACKEND_DIR_PATH, "configs", "config.yaml")
 SERVER_DOTENV_PATH = os.path.join(BACKEND_DIR_PATH, "configs", ".env")
@@ -29,6 +32,7 @@ for dir_path in [MODELS_DIR,
                  DIARIZATION_MODELS_DIR,
                  UVR_MODELS_DIR,
                  CONFIGS_DIR,
+                 UI_DEFAULTS_DIR,
                  OUTPUT_DIR,
                  TRANSLATION_OUTPUT_DIR,
                  UVR_INSTRUMENTAL_OUTPUT_DIR,

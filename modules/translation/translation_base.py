@@ -6,11 +6,9 @@ import gc
 from typing import List
 from datetime import datetime
 
-import modules.translation.nllb_inference as nllb
 from modules.whisper.data_classes import *
 from modules.utils.subtitle_manager import *
-from modules.utils.files_manager import load_yaml, save_yaml
-from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, NLLB_MODELS_DIR, TRANSLATION_OUTPUT_DIR
+from modules.utils.paths import NLLB_MODELS_DIR, TRANSLATION_OUTPUT_DIR
 
 
 class TranslationBase(ABC):
@@ -81,12 +79,6 @@ class TranslationBase(ABC):
         try:
             if fileobjs and isinstance(fileobjs[0], gr.utils.NamedString):
                 fileobjs = [file.name for file in fileobjs]
-
-            self.cache_parameters(model_size=model_size,
-                                  src_lang=src_lang,
-                                  tgt_lang=tgt_lang,
-                                  max_length=max_length,
-                                  add_timestamp=add_timestamp)
 
             self.update_model(model_size=model_size,
                               src_lang=src_lang,
@@ -170,18 +162,5 @@ class TranslationBase(ABC):
                          tgt_lang: str,
                          max_length: int,
                          add_timestamp: bool):
-        def validate_lang(lang: str):
-            if lang in list(nllb.NLLB_AVAILABLE_LANGS.values()):
-                flipped = {value: key for key, value in nllb.NLLB_AVAILABLE_LANGS.items()}
-                return flipped[lang]
-            return lang
-
-        cached_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
-        cached_params["translation"]["nllb"] = {
-            "model_size": model_size,
-            "source_lang": validate_lang(src_lang),
-            "target_lang": validate_lang(tgt_lang),
-            "max_length": max_length,
-        }
-        cached_params["translation"]["add_timestamp"] = add_timestamp
-        save_yaml(cached_params, DEFAULT_PARAMETERS_CONFIG_PATH)
+        """Runtime parameter caching is disabled; presets are saved explicitly from the UI."""
+        return None

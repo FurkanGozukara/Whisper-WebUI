@@ -4,10 +4,9 @@ import os
 from datetime import datetime
 import gradio as gr
 
-from modules.utils.paths import TRANSLATION_OUTPUT_DIR, DEFAULT_PARAMETERS_CONFIG_PATH
+from modules.utils.paths import TRANSLATION_OUTPUT_DIR
 from modules.utils.constants import AUTOMATIC_DETECTION
 from modules.utils.subtitle_manager import *
-from modules.utils.files_manager import load_yaml, save_yaml
 
 """
 This is written with reference to the DeepL API documentation.
@@ -130,14 +129,6 @@ class DeepLAPI:
         if fileobjs and isinstance(fileobjs[0], gr.utils.NamedString):
             fileobjs = [fileobj.name for fileobj in fileobjs]
 
-        self.cache_parameters(
-            api_key=auth_key,
-            is_pro=is_pro,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            add_timestamp=add_timestamp
-        )
-
         files_info = {}
         for file_path in fileobjs:
             file_name = safe_filename(os.path.splitext(os.path.basename(file_path))[0])
@@ -207,12 +198,5 @@ class DeepLAPI:
                          source_lang: str,
                          target_lang: str,
                          add_timestamp: bool):
-        cached_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
-        cached_params["translation"]["deepl"] = {
-            "api_key": api_key,
-            "is_pro": is_pro,
-            "source_lang": source_lang,
-            "target_lang": target_lang
-        }
-        cached_params["translation"]["add_timestamp"] = add_timestamp
-        save_yaml(cached_params, DEFAULT_PARAMETERS_CONFIG_PATH)
+        """Runtime parameter caching is disabled; presets are saved explicitly from the UI."""
+        return None

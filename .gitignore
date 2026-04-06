@@ -12,3 +12,6 @@ models/
 modules/yt_tmp.wav
 configs/default_parameters.yaml
 .vs
+Trellis_2_3D_Generator/
+backend/cache/36932bb5-1fc3-42a5-8263-21c2baec6eed_bgm_separation.zip
+gradio/

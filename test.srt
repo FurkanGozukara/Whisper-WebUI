@@ -1,0 +1,3079 @@
+1
+00:00:00,160 --> 00:00:08,400
+Greetings everyone. Today I am going to show 
+you Wan 2.2 trainings. This will be an epic  
+
+2
+00:00:08,400 --> 00:00:14,880
+tutorial. I will cover so many topics, so check 
+out the video descriptions to learn all. So,  
+
+3
+00:00:14,880 --> 00:00:22,800
+what I am going to show you today? I will show 
+you how to train Wan 2.2 model to generate  
+
+4
+00:00:22,800 --> 00:00:28,720
+images like these ones. You see, these are 
+extremely high quality and extremely realistic,  
+
+5
+00:00:28,720 --> 00:00:35,520
+with massive amount of details, textures, 
+amazing quality, and amazing realism. The  
+
+6
+00:00:35,520 --> 00:00:44,000
+Wan 2.2 is currently the most realistic plus 
+most advanced model for generating images.
+
+7
+00:00:44,000 --> 00:00:50,080
+But I will not show only how to train images. 
+I will show also how to generate videos,  
+
+8
+00:00:50,080 --> 00:00:56,800
+how to train video model, so many things. I 
+will show how to train on your local computer  
+
+9
+00:00:56,800 --> 00:01:04,480
+with our SECourses Musubi Tuner application. 
+I have prepared configurations for every GPU,  
+
+10
+00:01:04,480 --> 00:01:12,640
+starting from 6 GB GPUs to 192 GB GPUs. The 
+configurations are all set. They are separated  
+
+11
+00:01:12,640 --> 00:01:19,520
+into qualities, so you can pick your configuration 
+according to your GPU and start training right  
+
+12
+00:01:19,520 --> 00:01:25,600
+away and get the most amazing results without 
+doing all the research that I did for you.
+
+13
+00:01:25,600 --> 00:01:33,200
+I have literally done over 64 separate 
+trainings to find out the best workflow,  
+
+14
+00:01:33,200 --> 00:01:41,040
+find out the best parameters, and prepare these 
+presets. I have used a cloud machine with 8 B200  
+
+15
+00:01:41,040 --> 00:01:46,720
+GPUs to complete these trainings, analyze them. 
+Moreover, I have developed this Gradio based  
+
+16
+00:01:46,720 --> 00:01:52,240
+application that you will be able to load the 
+configuration and start training right away.  
+
+17
+00:01:52,240 --> 00:01:57,360
+Furthermore, I will show how to do training on 
+RunPod. So if you don't have a powerful GPU,  
+
+18
+00:01:57,360 --> 00:02:02,880
+you will be able to train on RunPod. And I will 
+show how to do training on Massed Compute. Again,  
+
+19
+00:02:02,880 --> 00:02:07,200
+if you don't have a powerful GPU, you will be 
+able to train on Massed Compute. For example,  
+
+20
+00:02:07,200 --> 00:02:14,240
+you see with this GPU we are able to train with 
+like 70 minutes with only 2 dollars in 1 hour.
+
+21
+00:02:14,240 --> 00:02:19,520
+Everything is ready. Some people were asking 
+me how to train on RunPod and Massed Compute  
+
+22
+00:02:19,520 --> 00:02:25,840
+the Qwen image models. This tutorial 
+covers the Wan 2.2 training. However,  
+
+23
+00:02:25,840 --> 00:02:31,840
+all of the models that we support in SECourses 
+Musubi Tuner are exactly same. So you can train  
+
+24
+00:02:31,840 --> 00:02:37,920
+the Qwen image models, Wan models, or the future 
+models hopefully that will get added like Flux 2,  
+
+25
+00:02:37,920 --> 00:02:42,720
+like Z Image base model, will be 
+exactly same as in this tutorial.
+
+26
+00:02:42,720 --> 00:02:49,360
+Moreover, I have updated all of our presets 
+to the highest quality with lowest amount of  
+
+27
+00:02:49,360 --> 00:02:56,160
+time to generate highest quality images and 
+videos. So all the image generation and video  
+
+28
+00:02:56,160 --> 00:03:01,760
+generation presets are updated and ready 
+for you to use. To update these presets,  
+
+29
+00:03:01,760 --> 00:03:08,240
+I have done so many different tests. I have 
+compared all the results of these tests to  
+
+30
+00:03:08,240 --> 00:03:15,200
+generate videos or images. So many tests have 
+been made. This tutorial is a product of a massive  
+
+31
+00:03:15,200 --> 00:03:20,800
+research. So many different parameter testing, so 
+many different workflow testing, and all is ready  
+
+32
+00:03:20,800 --> 00:03:26,400
+for you to use right away with 1 click installers. 
+So you see from bad videos to good videos.
+
+33
+00:03:26,400 --> 00:03:30,320
+This tutorial covers text to image 
+training with only from images,  
+
+34
+00:03:30,320 --> 00:03:36,320
+text to video training with only images or 
+plus videos, but videos are not necessary,  
+
+35
+00:03:36,320 --> 00:03:43,280
+or image to video training. I have done so many 
+testing and training only text to video yields the  
+
+36
+00:03:43,280 --> 00:03:49,200
+best results for text to video generation or image 
+to video generation. The presets are separated,  
+
+37
+00:03:49,200 --> 00:03:55,280
+so if you are not interested in video generation, 
+you can only use the text to image generation  
+
+38
+00:03:55,280 --> 00:04:01,600
+workflow. Still, it is working on text to video 
+generation or image to video generation as well.
+
+39
+00:04:01,600 --> 00:04:04,480
+So all these configs are interchangeable. There  
+
+40
+00:04:04,480 --> 00:04:08,560
+are several tricks. If you want to 
+generate highest quality images,  
+
+41
+00:04:08,560 --> 00:04:13,680
+you use the text to image configs. If you 
+want to generate highest quality videos,  
+
+42
+00:04:13,680 --> 00:04:20,000
+you use Wan 2.2 text to video configs. If you want 
+to generate image to video, still I recommend to  
+
+43
+00:04:20,000 --> 00:04:25,600
+use text to video configs because this is working 
+better than image to video. It is weird, I know,  
+
+44
+00:04:25,600 --> 00:04:32,080
+but this is my findings. How do I know? Because 
+I have done so many different testings as you  
+
+45
+00:04:32,080 --> 00:04:38,560
+are seeing. This is a research of a week doing 
+a lot of comparisons, doing a lot of testing,  
+
+46
+00:04:38,560 --> 00:04:45,600
+experimentation, and all the presets are ready for 
+you to use right away with the highest quality.
+
+47
+00:04:45,600 --> 00:04:51,840
+So I will show everything: how to install, how 
+to set up, how to start training both Windows,  
+
+48
+00:04:51,840 --> 00:04:56,800
+RunPod, Massed Compute. And everything is 
+literally with 1 click install. Let's begin.  
+
+49
+00:04:56,800 --> 00:05:02,480
+So as usual, I have prepared an amazing post 
+where you will find everything to follow this  
+
+50
+00:05:02,480 --> 00:05:08,880
+tutorial. However, before starting this tutorial, 
+you need to watch this main tutorial. So open  
+
+51
+00:05:08,880 --> 00:05:16,400
+this tutorial. This tutorial is our Qwen image 
+models training tutorial. This is a masterpiece.  
+
+52
+00:05:16,400 --> 00:05:22,880
+This tutorial covers so many different topics 
+as you are seeing right now. So I recommend  
+
+53
+00:05:22,880 --> 00:05:30,720
+you to watch this tutorial and learn how to use 
+SECourses Kohya Musubi Tuner premium application.
+
+54
+00:05:30,720 --> 00:05:36,720
+So I will download the latest zip file. This 
+zip file includes our latest installers and  
+
+55
+00:05:36,720 --> 00:05:43,200
+configurations. I will move it into my existing 
+installation folder. Then I will extract the  
+
+56
+00:05:43,200 --> 00:05:48,400
+files here and I will overwrite existing 
+files. Don't forget that you can also do a  
+
+57
+00:05:48,400 --> 00:05:55,120
+fresh installation. After extraction, double 
+click Windows install and update.bat file.  
+
+58
+00:05:55,120 --> 00:06:01,520
+This will update the application to the latest 
+version. Moreover, now we are using uv package  
+
+59
+00:06:01,520 --> 00:06:08,000
+installer along with pip, therefore it is ultra 
+fast. So you see my update already completed.
+
+60
+00:06:08,000 --> 00:06:14,640
+Then double click Windows download training 
+models.bat file. This file will ask you download  
+
+61
+00:06:14,640 --> 00:06:21,200
+which training models. For this tutorial, we need 
+Wan 2.2 text to video training. If you want to  
+
+62
+00:06:21,200 --> 00:06:27,360
+train Wan 2.2 image to video, then you need to 
+download it with option 5. Since I already have  
+
+63
+00:06:27,360 --> 00:06:33,600
+downloaded the models, it will just verify their 
+hash values, and once the verification completed,  
+
+64
+00:06:33,600 --> 00:06:39,680
+we will be ready. This way we are ensuring 
+that our models are 100 percentage accurately  
+
+65
+00:06:39,680 --> 00:06:46,320
+downloaded, so we will never have any weird bugs, 
+issues, or problems. If the files were missing,  
+
+66
+00:06:46,320 --> 00:06:51,760
+it would have downloaded them with the maximum 
+speed with your network connection support.
+
+67
+00:06:51,760 --> 00:06:58,400
+So now we are ready to begin training. I will 
+double click Windows start up.bat file. This  
+
+68
+00:06:58,400 --> 00:07:05,200
+will start the latest version of the SECourses 
+Kohya Musubi Tuner premium application. You see  
+
+69
+00:07:05,200 --> 00:07:11,120
+currently we are at the version 24. This is 
+where you see the versioning. Then go to Wan  
+
+70
+00:07:11,120 --> 00:07:16,960
+models training. So we are going to use this 
+tab. Whenever you are going to reload a model,  
+
+71
+00:07:16,960 --> 00:07:23,520
+I recommend to refresh, go to the accurate tab, 
+and then begin loading. Then click this icon  
+
+72
+00:07:23,520 --> 00:07:29,840
+and go back to your installation folder, enter 
+inside Wan 2.2 training configs. Now there are  
+
+73
+00:07:29,840 --> 00:07:37,920
+3 configuration folders: Wan 2.2 image to video, 
+Wan 2.2 text to image, and Wan 2.2 text to video.
+
+74
+00:07:37,920 --> 00:07:44,880
+So what are the differences between these 3? From 
+the naming as you can see, Wan 2.2 image to video  
+
+75
+00:07:44,880 --> 00:07:49,360
+trains image to video model. However, there 
+is only single configuration because if you  
+
+76
+00:07:49,360 --> 00:07:54,080
+want to only generate images, it is not the 
+model that you need. This model is for only  
+
+77
+00:07:54,080 --> 00:07:59,840
+generating videos. However, I don't recommend to 
+use this model for training even if you are going  
+
+78
+00:07:59,840 --> 00:08:06,800
+to use image to video models because training 
+with Wan 2.2 text to video works better than  
+
+79
+00:08:06,800 --> 00:08:13,040
+training with Wan 2.2 image to video, even 
+for image to video presets. Even for image  
+
+80
+00:08:13,040 --> 00:08:20,080
+to video generation. So for video generation, I 
+recommend to always use Wan 2.2 text to video,  
+
+81
+00:08:20,080 --> 00:08:24,800
+and for only image generation, I 
+recommend to use Wan 2.2 text to image.
+
+82
+00:08:24,800 --> 00:08:30,560
+So let's begin with Wan 2.2 text to image. Now 
+you will see bunch of configurations like this.  
+
+83
+00:08:30,560 --> 00:08:36,800
+The first numbers are for GPU 
+VRAM. So if you have 6 GB of GPU,  
+
+84
+00:08:36,800 --> 00:08:42,320
+you need to pick it. If you have 24 GB of GPU, 
+then you need to pick it. It also shows the  
+
+85
+00:08:42,320 --> 00:08:48,560
+quality. The quality 1 is the maximum quality. 
+Then the quality as the number increases the  
+
+86
+00:08:48,560 --> 00:08:54,480
+quality get worse. So quality 1 is better than 
+quality 2, quality 2 better than quality 3,  
+
+87
+00:08:54,480 --> 00:09:02,000
+and so on. Since I have RTX 5090, I am going 
+to use 32 GB VRAM configuration. However,  
+
+88
+00:09:02,000 --> 00:09:09,680
+you will see that there are 2 versions: 32 
+GB of FP8 scaled and no FP8 scaled. The FP8  
+
+89
+00:09:09,680 --> 00:09:16,560
+scaled has a big advantage. It is usually faster 
+because it uses lesser VRAM. Moreover, it uses  
+
+90
+00:09:16,560 --> 00:09:23,920
+much lesser RAM memory. So if your RAM memory is 
+limited, then always go with FP8 scaled version.
+
+91
+00:09:23,920 --> 00:09:33,200
+So let's open nvitop to see our GPU and RAM 
+memory. pip install nvitop. nvitop. And this is  
+
+92
+00:09:33,200 --> 00:09:42,800
+my current usages. So I have 60 GB of empty RAM 
+memory. My first GPU is fully empty. Therefore,  
+
+93
+00:09:42,800 --> 00:09:50,960
+I will pick the very best configuration inside 
+Wan 2.2 trainings. Wan 2.2 text to image 32 GB.  
+
+94
+00:09:50,960 --> 00:09:57,280
+And it is loaded. You can also click this icon 
+to be sure it is loaded. Then it is same as in  
+
+95
+00:09:57,280 --> 00:10:02,720
+our Qwen image training tutorial. What I am 
+going to change here is the training dataset.
+
+96
+00:10:02,720 --> 00:10:09,520
+For text to image training, you only need to use 
+the images. For text to video training, if you  
+
+97
+00:10:09,520 --> 00:10:15,120
+only use images, it is still working perfect as 
+I have shown in the beginning of the tutorial.  
+
+98
+00:10:15,120 --> 00:10:21,120
+But you can also include videos. I will show 
+that later. So I will pick my training dataset,  
+
+99
+00:10:21,120 --> 00:10:28,880
+but first let's prepare it. This is exactly same 
+logic as in the Qwen images, so this is my folder.  
+
+100
+00:10:28,880 --> 00:10:35,840
+I will delete the other files to show you what 
+happens as a quick rewinding. But watch the Qwen  
+
+101
+00:10:35,840 --> 00:10:42,880
+image training tutorial. So this is my trigger 
+word ohwx and this is my parent path. Don't worry,  
+
+102
+00:10:42,880 --> 00:10:48,720
+it will automatically resize them. So this is 
+it. I copy pasted, I can also pick from here.
+
+103
+00:10:48,720 --> 00:10:56,880
+The best working resolution is 960 to 960. 
+How do I know? I have literally tested so  
+
+104
+00:10:56,880 --> 00:11:05,520
+many different configurations. So when you 
+see these configurations 1024, 1280, 1328,  
+
+105
+00:11:05,520 --> 00:11:12,720
+these are the resolutions that I have tested. 
+And the best yielding resolution is 960 to 960.  
+
+106
+00:11:12,720 --> 00:11:17,840
+Therefore, I recommend that. Then don't forget 
+to click generate dataset configuration and  
+
+107
+00:11:17,840 --> 00:11:23,200
+it is ready. So when you return back to your 
+images folder, you should see the txt files.  
+
+108
+00:11:23,200 --> 00:11:27,280
+These are the captions and when you open 
+one of them you will see only the folder  
+
+109
+00:11:27,280 --> 00:11:32,800
+name is used. If you want to use custom 
+captions, you need to change these files.
+
+110
+00:11:32,800 --> 00:11:38,560
+Okay, our training dataset is ready. Now we need 
+to set our output and other stuff same as in the  
+
+111
+00:11:38,560 --> 00:11:44,080
+Qwen image training tutorial. So I will save 
+them into my test trainings folder like this  
+
+112
+00:11:44,080 --> 00:11:50,320
+where the models will be saved. This is the model 
+LoRA models file names. Currently fine tuning is  
+
+113
+00:11:50,320 --> 00:11:55,920
+not supported so we can only train LoRA. Okay, 
+then the model settings. You need to pick the  
+
+114
+00:11:55,920 --> 00:12:02,560
+files for text to image training, we are only use 
+the low noise. There are 2 versions of Wan 2.2:  
+
+115
+00:12:02,560 --> 00:12:08,560
+high noise and low noise. High noise is the 
+initial generation which roughly generates  
+
+116
+00:12:08,560 --> 00:12:14,640
+the base of the image or video. The low noise 
+is the details. For generating only images,  
+
+117
+00:12:14,640 --> 00:12:21,040
+we are only using low noise. This is the higher 
+quality. So I will pick the accurate models from  
+
+118
+00:12:21,040 --> 00:12:27,360
+downloaded models training models Wan. So 
+this is the low noise text to video model.  
+
+119
+00:12:27,360 --> 00:12:34,240
+Like this. Then since other files are there, I 
+will just copy paste the folder paths like this,  
+
+120
+00:12:34,240 --> 00:12:38,800
+like this. But you can individually pick them. 
+We are not going to use Clip Vision, this is not  
+
+121
+00:12:38,800 --> 00:12:44,960
+used for Wan 2.2 training. And you see there is 
+high noise. This is used for dual model training  
+
+122
+00:12:44,960 --> 00:12:50,720
+which I will explain after this. So you don't need 
+to change anything else here. Don't change them.
+
+123
+00:12:50,720 --> 00:12:55,840
+In the training settings, you need to set your 
+training epochs as I have explained. Since I  
+
+124
+00:12:55,840 --> 00:13:02,000
+have 28 images, I am going to use 200 epochs. If 
+you have 100 images, then you can reduce this to  
+
+125
+00:13:02,000 --> 00:13:08,640
+100. That is the logic. But up to 50 images, I 
+recommend to train at least 200 epochs. Moreover,  
+
+126
+00:13:08,640 --> 00:13:15,520
+there is save every N epochs. So we are saving 
+every 20 epochs. It will save 10 checkpoints that  
+
+127
+00:13:15,520 --> 00:13:22,560
+I can compare later. Then don't forget to save 
+your configuration. So let's save this as like  
+
+128
+00:13:22,560 --> 00:13:30,080
+this. LoRA tutorial text to image TOML. Okay, I 
+will save it. Then I will click start training.
+
+129
+00:13:30,080 --> 00:13:36,480
+Then follow the CMD window. If you get 
+any errors, you need to report me that.  
+
+130
+00:13:36,480 --> 00:13:41,600
+So currently I have an error. Let's see where we 
+have the error. Maybe we forgot something. Yes,  
+
+131
+00:13:41,600 --> 00:13:49,440
+I have forgotten the VAE path. This can happen. 
+So let's open all the panels like this and  
+
+132
+00:13:49,440 --> 00:13:55,520
+search for VAE. Okay, the VAE is set here. 
+Okay, I can see the error that I have made,  
+
+133
+00:13:55,520 --> 00:14:00,800
+so I need to fix it. It will be like this. And 
+this is also error. Okay, it will be like this.  
+
+134
+00:14:00,800 --> 00:14:07,280
+So pay attention to the model paths save. You can 
+use the folder icon start training. And you see  
+
+135
+00:14:07,280 --> 00:14:14,640
+we are also supporting torch compile. I am using 
+your Visual Studio installation automatically.  
+
+136
+00:14:14,640 --> 00:14:20,240
+Therefore, it is super important for you to 
+follow the requirements tutorial which you  
+
+137
+00:14:20,240 --> 00:14:26,000
+must. So the requirements tutorial are listed 
+here in the post. Follow this requirements  
+
+138
+00:14:26,000 --> 00:14:31,120
+tutorial first. When you follow the Qwen image 
+models training, you will know this already.
+
+139
+00:14:31,120 --> 00:14:36,240
+Okay, let's follow our training. So now 
+it is loading model into the RAM memory,  
+
+140
+00:14:36,240 --> 00:14:42,240
+then it will load into the GPU memory. If you 
+don't have sufficient amount of RAM memory,  
+
+141
+00:14:42,240 --> 00:14:48,800
+training both models, both low and high noise, 
+is harder. And it is even not mandatory. You can  
+
+142
+00:14:48,800 --> 00:14:55,120
+also train only low noise model and even generate 
+videos. It will be a little bit lower quality,  
+
+143
+00:14:55,120 --> 00:15:01,040
+but it will work. Don't worry. So the training 
+is about to start. Yes, training starting. Okay,  
+
+144
+00:15:01,040 --> 00:15:07,120
+training started. It is not using my entire GPU 
+memory. This is good. You need to have some free  
+
+145
+00:15:07,120 --> 00:15:12,560
+memory. You will also see that your VRAM usage 
+is not static like this. This is because how  
+
+146
+00:15:12,560 --> 00:15:19,360
+Kohya developed the Wan 2.2 model training. It 
+clears the VRAM cache after every step because  
+
+147
+00:15:19,360 --> 00:15:25,200
+it is designed to be work with both models at 
+the same time during training. So the speed  
+
+148
+00:15:25,200 --> 00:15:31,200
+is around 5 seconds per IT. It will get a little 
+bit slower. This is how Kohya displays currently.  
+
+149
+00:15:31,200 --> 00:15:37,520
+But it is pretty decent. It is taking like 8 
+hours on my GPU. If I need faster training,  
+
+150
+00:15:37,520 --> 00:15:44,160
+then I can reduce the resolution or I can increase 
+the learning rate and I can do lesser epoch. So  
+
+151
+00:15:44,160 --> 00:15:51,680
+let's say you want 100 epochs, then you need to 
+multiply your learning rate with 2.5 and reduce  
+
+152
+00:15:51,680 --> 00:15:58,800
+the maximum epochs number. However, you will 
+lose some quality. So this set learning rate  
+
+153
+00:15:58,800 --> 00:16:04,800
+and number of epochs are the best overall. It is 
+a choice. It is a trade off. Either you need to  
+
+154
+00:16:04,800 --> 00:16:12,000
+reduce the resolution to speed up or you need to 
+lower the epoch count and increase your learning  
+
+155
+00:16:12,000 --> 00:16:18,000
+rate. So this will train text to image LoRAs for 
+us which you can use for text to video as well.
+
+156
+00:16:18,000 --> 00:16:23,040
+How we are going to use the trained models? 
+I will stop the training. So for using the  
+
+157
+00:16:23,040 --> 00:16:29,360
+trained models, we are going to use SwarmUI. The 
+SwarmUI link is here. So let's also proceed with  
+
+158
+00:16:29,360 --> 00:16:34,240
+it. If you don't know how to use SwarmUI 
+already, you need to follow this tutorial.  
+
+159
+00:16:34,240 --> 00:16:40,320
+You see this is the tutorial link in 
+the top of the post. When you open it,  
+
+160
+00:16:40,320 --> 00:16:46,000
+copy the zip file there. So let's download the 
+latest zip file from here. Then I will move it  
+
+161
+00:16:46,000 --> 00:16:54,000
+into my existing SwarmUI installation like this. 
+Copy the file there. Right click and extract files  
+
+162
+00:16:54,000 --> 00:17:00,400
+here and overwrite all. Then as a next step, we 
+will update our ComfyUI installation. So go to  
+
+163
+00:17:00,400 --> 00:17:06,640
+ComfyUI link from here. Download the latest 
+zip file. You see there are 2 versions with  
+
+164
+00:17:06,640 --> 00:17:13,280
+password protected one. If your antivirus, this 
+happens with Windows Defender, causes issues,  
+
+165
+00:17:13,280 --> 00:17:19,680
+download with the password protected, then move 
+your ComfyUI zip file into your folder or you can  
+
+166
+00:17:19,680 --> 00:17:27,120
+make a fresh installation. As usual, make an file 
+extraction overwrite all files. Then to update or  
+
+167
+00:17:27,120 --> 00:17:34,160
+install Windows install or update comfyui.bat 
+file. We have moved the installation to uv  
+
+168
+00:17:34,160 --> 00:17:40,960
+packages. So now it is much faster than before. 
+Both update and installation. So you see it is  
+
+169
+00:17:40,960 --> 00:17:48,480
+all updated. Then return back to your SwarmUI. In 
+the SwarmUI, we have Windows update swarmui. So  
+
+170
+00:17:48,480 --> 00:17:54,640
+double click it run. It will update SwarmUI and 
+start your application. Everything was already  
+
+171
+00:17:54,640 --> 00:18:00,240
+explained in other tutorials in more details, 
+so you should watch them. Okay, SwarmUI update  
+
+172
+00:18:00,240 --> 00:18:06,480
+succeed and it started. You will also get this 
+error. This is not important, just ignore that.
+
+173
+00:18:06,480 --> 00:18:13,120
+First of all, you need to get the latest presets. 
+So you can use import, choose file, go back to  
+
+174
+00:18:13,120 --> 00:18:20,240
+your SwarmUI installation and select the latest 
+preset from here. Then overwrite existing presets.  
+
+175
+00:18:20,240 --> 00:18:26,880
+Alternatively, while the application is running, 
+you can use the preset delete import. This will  
+
+176
+00:18:26,880 --> 00:18:33,680
+delete your existing presets and just refresh it. 
+Then click refresh and everything is here. The  
+
+177
+00:18:33,680 --> 00:18:40,560
+presets are important because I have updated the 
+presets for video generation for Wan 2.2 and also  
+
+178
+00:18:40,560 --> 00:18:48,000
+image generation. So use the latest presets. Now 
+how we are going to use our trained Wan 2.2 image  
+
+179
+00:18:48,000 --> 00:18:53,360
+generation LoRAs. So first of all, quick tools 
+reset params to default. Then from the presets,  
+
+180
+00:18:53,360 --> 00:18:58,880
+the preset that you need to use is Wan 2.2 
+generate realistic images. Click here and  
+
+181
+00:18:58,880 --> 00:19:07,120
+direct apply. This will let you generate 960 
+to 960 images. So let's type our prompt. Select  
+
+182
+00:19:07,120 --> 00:19:14,000
+your aspect ratio whichever you want. For example, 
+this one. And then you need to select your LoRA.
+
+183
+00:19:14,000 --> 00:19:19,600
+But there is one more thing. You need to have 
+models downloaded for this preset to work. So  
+
+184
+00:19:19,600 --> 00:19:25,520
+how you are going to download accurate models? 
+You see Windows start download models app.bat  
+
+185
+00:19:25,520 --> 00:19:30,720
+file. This will start the model downloader 
+latest version. We have upgraded this. Also  
+
+186
+00:19:30,720 --> 00:19:37,120
+it is using uv package. So now it is even faster 
+to start. Okay, the downloader started. So which  
+
+187
+00:19:37,120 --> 00:19:42,560
+models you need to download? You can download 
+complete image generation and editing bundle.  
+
+188
+00:19:42,560 --> 00:19:49,520
+Or you can download Wan 2.2 core 4 steps 
+bundle. This is my recommended bundle. So  
+
+189
+00:19:49,520 --> 00:19:56,000
+go to bottom and download all models inside 
+this bundle. This way you will have all the  
+
+190
+00:19:56,000 --> 00:20:03,360
+models that you need. Even the upscaler models 
+that you need to use to get maximum quality.  
+
+191
+00:20:03,360 --> 00:20:09,360
+You can follow the download process from the 
+CMD window. So if I am missing any models,  
+
+192
+00:20:09,360 --> 00:20:14,880
+they will get downloaded. If I already have some 
+models, they will be verified and it will skip  
+
+193
+00:20:14,880 --> 00:20:19,120
+the download. So currently it is downloading 
+some of my missing models, but I have the  
+
+194
+00:20:19,120 --> 00:20:26,160
+necessary models for image generation which is 
+Wan 2.2 text to video low noise. So it is set.
+
+195
+00:20:26,160 --> 00:20:33,440
+Now I need to set my LoRA. So these are the LoRAs 
+that it finds. It is compatible with Wan 2.2. My  
+
+196
+00:20:33,440 --> 00:20:42,160
+trained LoRA is inside here. Wan 2.2 low noise. 
+This is my trained LoRA. This is 200 epochs  
+
+197
+00:20:42,160 --> 00:20:47,440
+training results. As in the Qwen image training 
+tutorial, you should compare your checkpoints  
+
+198
+00:20:47,440 --> 00:20:54,400
+with grid system and verify which model, 
+which checkpoint is the best. Like 20 epochs,  
+
+199
+00:20:54,400 --> 00:21:01,840
+40 epochs, 60, 80. So this is 200 epochs. And 
+let's generate 4 random images. Currently this  
+
+200
+00:21:01,840 --> 00:21:07,040
+is using our ComfyUI installation. It 
+was updated. It is using Sage Attention,  
+
+201
+00:21:07,040 --> 00:21:12,160
+my first GPU. Everything was previously 
+explained in other tutorials. Moreover,  
+
+202
+00:21:12,160 --> 00:21:17,520
+you should follow your VRAM usage from nvitop 
+to see what is happening. I have the sufficient  
+
+203
+00:21:17,520 --> 00:21:23,680
+amount of RAM memory and VRAM. If your GPU 
+is weak like 6 GB GPU, don't worry. Since  
+
+204
+00:21:23,680 --> 00:21:29,520
+we are using the ComfyUI, it is automatically 
+doing block swapping and also CPU offloading,  
+
+205
+00:21:29,520 --> 00:21:35,440
+RAM offloading. Therefore, no matter what GPU 
+you have, it will work. This is the beauty of  
+
+206
+00:21:35,440 --> 00:21:41,280
+the SwarmUI with ComfyUI backend. So it is 
+doing all the optimizations that you need.
+
+207
+00:21:41,280 --> 00:21:46,720
+The image generation in the base resolution will 
+be pretty fast as you are seeing right now. Okay,  
+
+208
+00:21:46,720 --> 00:21:51,600
+this was the first image. The face is not that 
+great. We should do either face inpainting or  
+
+209
+00:21:51,600 --> 00:21:58,640
+we are going to do upscaling which I will show 
+in a moment. However, this took only 45 seconds.  
+
+210
+00:21:58,640 --> 00:22:04,800
+You can also reduce the number of steps if you 
+want. But this model is not a small model. This  
+
+211
+00:22:04,800 --> 00:22:11,040
+is a big model. 14 billion parameters. This 
+model is much more powerful than the Z Image  
+
+212
+00:22:11,040 --> 00:22:16,640
+turbo model if you ask my opinion. Okay, this is 
+another image. So generate few images like this.  
+
+213
+00:22:16,640 --> 00:22:22,480
+Okay. Let's say I liked this image. So I will 
+click reuse parameters. It will set its seed.  
+
+214
+00:22:22,480 --> 00:22:30,000
+Then I will go to presets and I will apply the our 
+upscale. You see there is 2x upscale direct apply.  
+
+215
+00:22:30,000 --> 00:22:36,560
+And I will regenerate. Let's see the difference. 
+Furthermore, you can change the base resolution  
+
+216
+00:22:36,560 --> 00:22:46,400
+of this model. Up to 1280 to 1280. 1280 to 1280. 
+This model is able to generate images. Sometimes  
+
+217
+00:22:46,400 --> 00:22:52,480
+it may add some hallucinations to the right and 
+left border. But you can increase the resolution,  
+
+218
+00:22:52,480 --> 00:22:59,200
+the base resolution to 1280 to 1280. I will 
+show after this how to do that. But let's  
+
+219
+00:22:59,200 --> 00:23:04,800
+see the upscaled result. So as a reminding, let 
+me remind you where you put your trained LoRAs.  
+
+220
+00:23:04,800 --> 00:23:10,640
+They are put inside SwarmUI inside models inside 
+LoRA folder. This is where you need to put your  
+
+221
+00:23:10,640 --> 00:23:15,840
+trained LoRAs. Inside LoRA folder. Okay, now 
+it is upscaling. The upscaling will take more  
+
+222
+00:23:15,840 --> 00:23:22,720
+time obviously because we are doubling the image 
+resolution. So as I said, don't worry if you don't  
+
+223
+00:23:22,720 --> 00:23:28,560
+have a powerful GPU, it will still work with 
+automatic block swapping and CPU offloading.  
+
+224
+00:23:28,560 --> 00:23:33,600
+Everything will be handled by the ComfyUI. 
+No matter what GPU you have, it will work.
+
+225
+00:23:33,600 --> 00:23:38,800
+And here it is. So let's make a comparison. 
+This was the base image. You see this was the  
+
+226
+00:23:38,800 --> 00:23:44,720
+base image. Then this is the upscaled image. 
+As you can see, it fixed the face. It added  
+
+227
+00:23:44,720 --> 00:23:50,640
+huge amount of details, quality. There is a 
+significant difference between the base image  
+
+228
+00:23:50,640 --> 00:23:58,160
+and the generated upscaled image. Again, as I 
+said, you can increase the base resolution even  
+
+229
+00:23:58,160 --> 00:24:06,480
+up to actually 1920 to 1080. However, it may add 
+some hallucinations. Let's try this and to see  
+
+230
+00:24:06,480 --> 00:24:14,640
+the difference. But in my experimentation what I 
+did was I selected my model which is low noise.  
+
+231
+00:24:14,640 --> 00:24:23,680
+So here low noise. So click this hamburger menu, 
+edit metadata, and change this to 1280 1280. Okay,  
+
+232
+00:24:23,680 --> 00:24:29,360
+like this. Save. Then select another model and 
+select your model. It will update resolutions  
+
+233
+00:24:29,360 --> 00:24:37,120
+accordingly. So when you select your aspect ratio 
+now, it will set it accordingly to 1280 to 1280  
+
+234
+00:24:37,120 --> 00:24:43,120
+base resolution. These are all optional. You can 
+do whichever you want. And generate another image  
+
+235
+00:24:43,120 --> 00:24:51,120
+with 1280 to 1280 total resolution. The aspect 
+ratio is like this. But let's see also 1920 to  
+
+236
+00:24:51,120 --> 00:24:58,320
+1080 result as well. Okay. Yeah, not bad. 
+Not as good as upscale but not bad at all.  
+
+237
+00:24:58,320 --> 00:25:07,840
+Now with this 1280 to 1280 base resolution, if I 
+also do upscale which I did in the example images,  
+
+238
+00:25:07,840 --> 00:25:15,280
+it will become much better. For example, let 
+me show you from the history row and Wan 2.2.  
+
+239
+00:25:15,280 --> 00:25:21,520
+I have shown in the beginning of the tutorial but 
+let's see again. So you see these images are huge,  
+
+240
+00:25:21,520 --> 00:25:34,480
+massive. If I open, this is 3360 to 1920 pixels. 
+Therefore, it has huge amount of details. I mean  
+
+241
+00:25:34,480 --> 00:25:40,240
+look at these details. So you can generate 
+massive images as well with this strategy.  
+
+242
+00:25:40,240 --> 00:25:46,320
+Set the base resolution and upscale. Okay, this 
+is 1280 to 1280. Now I will reuse parameters  
+
+243
+00:25:46,320 --> 00:25:53,760
+and enable my upscale preset one more time. It 
+is here direct apply and generate. Now it will  
+
+244
+00:25:53,760 --> 00:25:58,720
+upscale this image into twice resolution. 
+Of course, it will take time. However,  
+
+245
+00:25:58,720 --> 00:26:07,360
+it will be the maximum quality. So this image 
+full HD was generated in 73 seconds. This image  
+
+246
+00:26:07,360 --> 00:26:16,320
+1280 to 1280 was generated in 55 seconds. This 
+big image was generated in 2 minute 25 seconds.  
+
+247
+00:26:16,320 --> 00:26:21,200
+I mean these are the expected times because 
+we are generating really high quality images,  
+
+248
+00:26:21,200 --> 00:26:26,160
+really high resolution images with perfect 
+accuracy. And this is literally the first  
+
+249
+00:26:26,160 --> 00:26:30,880
+generation that we did. So I can generate 
+more and pick the better ones and as you  
+
+250
+00:26:30,880 --> 00:26:35,200
+do more generations you will understand 
+how the model works, what are the basics.
+
+251
+00:26:35,200 --> 00:26:41,680
+Okay, so the upscale of the 1280 to 1280 
+completed and let's look at the difference  
+
+252
+00:26:41,680 --> 00:26:47,680
+one more time. So this is upscaled and 
+this was the base. So from this base,  
+
+253
+00:26:47,680 --> 00:26:53,440
+we upscaled into this masterpiece. The 
+resolution is just amazing. The details,  
+
+254
+00:26:53,440 --> 00:27:01,680
+the realism, everything is mind blowing compared 
+to the other models. So can you use this model,  
+
+255
+00:27:01,680 --> 00:27:07,920
+this only images trained low noise model 
+for video generation? Yes. It will be  
+
+256
+00:27:07,920 --> 00:27:13,760
+a little bit lower quality, but yes. Let me 
+demonstrate that. So I will copy this prompt.  
+
+257
+00:27:13,760 --> 00:27:19,440
+You can also use this for image to video as well, 
+don't worry. Everything is same. So let's refresh.  
+
+258
+00:27:19,440 --> 00:27:26,800
+Reset params to default. And there are several 
+options that you can use. For the highest quality,  
+
+259
+00:27:26,800 --> 00:27:34,160
+you need to use Wan 2.2 high quality text to video 
+20 steps. This will take some time. On my GPU it  
+
+260
+00:27:34,160 --> 00:27:41,840
+takes like 6 to 7 minutes. Or you can use the 
+lightning LoRA based one. You see Wan 2.2 text to  
+
+261
+00:27:41,840 --> 00:27:47,040
+video. So let's see the lightning LoRA first, then 
+let's see the other one. Then let's proceed to  
+
+262
+00:27:47,040 --> 00:27:54,160
+dual model training. So direct apply. You see it 
+is going to set the low and high noise LoRAs like  
+
+263
+00:27:54,160 --> 00:28:00,800
+this automatically for you. Copy paste your prompt 
+and select your trained LoRA. So this was the low  
+
+264
+00:28:00,800 --> 00:28:09,440
+noise LoRA. Then generate. This will be pretty 
+fast because it is only total 4 steps. And again,  
+
+265
+00:28:09,440 --> 00:28:16,560
+for this preset to work flawlessly, you need to 
+download this bundle. Or you will be having issues  
+
+266
+00:28:16,560 --> 00:28:21,680
+with the models finding them, setting them. 
+I am doing everything automatically for you.
+
+267
+00:28:21,680 --> 00:28:28,960
+Okay, so the generation started. First it is 
+starting to use the high noise Wan 2.2 model.  
+
+268
+00:28:28,960 --> 00:28:35,440
+Then it will use the low noise model. However, 
+we should change the prompt to into a video  
+
+269
+00:28:35,440 --> 00:28:41,040
+of. So it will be a little bit better. When you 
+switch presets like this, since your base model  
+
+270
+00:28:41,040 --> 00:28:46,960
+will change, it will take some time for loading 
+reloading models, but everything is automatically  
+
+271
+00:28:46,960 --> 00:28:54,720
+and properly made by the ComfyUI. So you shouldn't 
+have any problems. And as you can see, it is able  
+
+272
+00:28:54,720 --> 00:29:05,280
+to 100 percentage utilize my GPU. It is using 
+my GPU 575 watts at once. So it is maximum power  
+
+273
+00:29:05,280 --> 00:29:12,160
+usage. Okay, it is starting to generate. Since 
+we trained our LoRA only on low noise model, this  
+
+274
+00:29:12,160 --> 00:29:18,720
+will work a little bit lower quality than training 
+on dual models which I will show. However,  
+
+275
+00:29:18,720 --> 00:29:24,880
+you can use this LoRA on image to video presets 
+as well. I will show that too after this. Okay,  
+
+276
+00:29:24,880 --> 00:29:30,160
+so the video has been generated. Let's see 
+the video. Yes, I can see the resemblance  
+
+277
+00:29:30,160 --> 00:29:35,120
+and accuracy. It is pretty good as you can 
+see. This is base video. If I upscale it,  
+
+278
+00:29:35,120 --> 00:29:42,000
+it would be better, but I can certainly see the 
+resemblance especially as it gets closer. Let me  
+
+279
+00:29:42,000 --> 00:29:49,840
+show you the final frame perhaps like this. And 
+it only took how many minutes. It only took 111  
+
+280
+00:29:49,840 --> 00:29:56,880
+seconds. So it takes lesser than 2 minutes. If I 
+want better quality, then I need to switch to this  
+
+281
+00:29:56,880 --> 00:30:04,080
+preset. This will do real 20 steps with real 
+CFG scale and it will be much higher quality.
+
+282
+00:30:04,080 --> 00:30:12,560
+What about using this on image to video. Can I do 
+that? Yes. So I will do reset params to default.  
+
+283
+00:30:12,560 --> 00:30:20,800
+Go to presets. With image to video again we have 2 
+quality presets. You can use this high quality or  
+
+284
+00:30:20,800 --> 00:30:27,280
+you can use Wan 2.2 image to video 4 steps. This 
+is also really good quality. So direct apply. Then  
+
+285
+00:30:27,280 --> 00:30:33,600
+let's select our prompt like this. I don't need 
+to copy this of course this time. Just copy paste  
+
+286
+00:30:33,600 --> 00:30:41,200
+the prompt. Then as an image for example let's use 
+this image. So I will go to init image choose file  
+
+287
+00:30:41,200 --> 00:30:48,800
+then choose this then resolution close use closest 
+aspect ratio. And the preset was not selected.  
+
+288
+00:30:48,800 --> 00:30:55,440
+Yes, I need to select the preset so refresh. Reset 
+params to default. Then refresh models to be sure  
+
+289
+00:30:55,440 --> 00:31:02,480
+you have everything. Then presets and let's go 
+to presets. Okay this one direct apply. Yes,  
+
+290
+00:31:02,480 --> 00:31:08,560
+you see it has selected the accurate model. This 
+is important apply. Then let's go to init image  
+
+291
+00:31:08,560 --> 00:31:15,920
+choose file select our photo closest aspect ratio. 
+Okay. Now I also need to select my LoRA. So my  
+
+292
+00:31:15,920 --> 00:31:24,080
+LoRA was let's see this one. This is only trained 
+with the images on low noise and generate. This is  
+
+293
+00:31:24,080 --> 00:31:30,160
+also 4 steps. So therefore it will be pretty good. 
+However, since we are switching a lot of models,  
+
+294
+00:31:30,160 --> 00:31:35,760
+it may leave some left over. Therefore what 
+I am going to do is I will cancel this first.  
+
+295
+00:31:35,760 --> 00:31:43,360
+Then server backend and restart all backends. 
+This will refresh my memory usages like this.  
+
+296
+00:31:43,360 --> 00:31:48,880
+You see it cleared everything. If you are going to 
+do a lot of model switching, you can restart your  
+
+297
+00:31:48,880 --> 00:31:56,240
+backend to clear your VRAM and RAM memory and then 
+generate. Now it should work better. Otherwise you  
+
+298
+00:31:56,240 --> 00:32:01,840
+need to trust the ComfyUI RAM management. So I 
+recommend to restart backends when you are going  
+
+299
+00:32:01,840 --> 00:32:08,640
+to do big models switching like this. Because 
+we switched from LoRA text to video to image  
+
+300
+00:32:08,640 --> 00:32:15,280
+to video. Okay, it is nice. It is loading into RAM 
+then starting generation. This should be also take  
+
+301
+00:32:15,280 --> 00:32:21,600
+lesser than 2 minutes especially the second and 
+third generations. By the way this was an image  
+
+302
+00:32:21,600 --> 00:32:28,080
+prompt. Therefore for video prompting you need 
+to do better. But I am just showing an example.  
+
+303
+00:32:28,080 --> 00:32:35,680
+So this prompt is not made for video generation. 
+This was made for image generation. Therefore it  
+
+304
+00:32:35,680 --> 00:32:42,640
+may not be perfect for video generation. However 
+still we should see the you know the quality and  
+
+305
+00:32:42,640 --> 00:32:49,680
+video. I have tested that training text to 
+video model LoRA improves image to video as  
+
+306
+00:32:49,680 --> 00:32:55,280
+well. Training image to video LoRA doesn't improve 
+that well. It is weird I know. Maybe it is because  
+
+307
+00:32:55,280 --> 00:33:00,960
+I have trained with only images static images 
+not with videos. But this is really improving  
+
+308
+00:33:00,960 --> 00:33:07,440
+image to video as well. So you can train an image 
+LoRA from text to video model with just images and  
+
+309
+00:33:07,440 --> 00:33:14,240
+it will improve your image to video generations 
+as well. Okay, it failed for some reason maybe.  
+
+310
+00:33:14,240 --> 00:33:21,760
+Let's see the logs. No I don't see any error. 
+Why it is showing an error. Okay, I think I  
+
+311
+00:33:21,760 --> 00:33:29,920
+was out of RAM memory so the ComfyUI crashed 
+probably because I am already using 2 GPUs.
+
+312
+00:33:29,920 --> 00:33:37,360
+RAM memory on my computer with all other stuff 
+that is open. Okay, it crashed again due to out of  
+
+313
+00:33:37,360 --> 00:33:45,600
+RAM memory. Therefore, I have added this argument: 
+--cache-none. When you add this into your backend,  
+
+314
+00:33:45,600 --> 00:33:52,080
+it will cache none of the models. So this is 
+really useful when you are working with Wan 2.2  
+
+315
+00:33:52,640 --> 00:33:58,800
+low and high noise models together at the same 
+time if you don't have sufficient amount of RAM  
+
+316
+00:33:58,800 --> 00:34:04,720
+memory, especially system RAM memory. So this 
+way, it will use a model, generate, it will  
+
+317
+00:34:04,720 --> 00:34:11,440
+then offload it, completely deleted, and load the 
+next model. This will minimize your RAM usage,  
+
+318
+00:34:11,440 --> 00:34:18,400
+also VRAM usage, with delay of loading models 
+from the disk. But since my disks are fast,  
+
+319
+00:34:18,400 --> 00:34:23,520
+it is not an issue. So it fixed the 
+issue. There is no more RAM leakage  
+
+320
+00:34:23,520 --> 00:34:30,480
+or RAM accumulation and we are about to 
+get the video ready. It is pretty fast.
+
+321
+00:34:30,480 --> 00:34:37,520
+Okay, we got the video. So this was from image 
+to video. As we get, you know, distant from the  
+
+322
+00:34:37,520 --> 00:34:44,960
+camera, the resemblance gets decreased, but 
+this was only static images trained model,  
+
+323
+00:34:44,960 --> 00:34:52,800
+not the auto model. However, it is decent 
+and it took only 2.4 minutes generation. So,  
+
+324
+00:34:52,800 --> 00:34:58,640
+how we are going to train on dual models? 
+Not only with the single model. If you want  
+
+325
+00:34:58,640 --> 00:35:04,640
+to generate videos, this is what you should do. 
+So I will just disable my backend to minimize my  
+
+326
+00:35:04,640 --> 00:35:13,440
+VRAM usage. Then go back to your SECourses 
+Musubi Tuner. So for dual model training,  
+
+327
+00:35:13,440 --> 00:35:20,320
+we are just going to change our preset. So I will 
+open a new tab here. Go to 1 Models Training,  
+
+328
+00:35:20,320 --> 00:35:24,960
+open folder. Go back to Wan 2.2 training 
+configurations. So we are going to use  
+
+329
+00:35:24,960 --> 00:35:32,080
+text to video configs. These configurations train 
+both high noise and low noise models at the same  
+
+330
+00:35:32,080 --> 00:35:38,320
+time. However, this will use more VRAM and this 
+will use more RAM memory since you need to have  
+
+331
+00:35:38,320 --> 00:35:45,680
+both of the models loaded into your RAM memory. 
+Therefore, be careful. I recommend to begin with  
+
+332
+00:35:45,680 --> 00:35:52,720
+fp8 scaled versions. Then once you verified it 
+is working, you can move to non-fp8. So let's  
+
+333
+00:35:52,720 --> 00:36:00,960
+begin with fp8 scaled. Again, always save your 
+configurations like this. Then we need to set  
+
+334
+00:36:00,960 --> 00:36:07,440
+the output directory. Don't forget that. So 
+I can just copy paste the directories here.
+
+335
+00:36:07,440 --> 00:36:13,840
+Training dataset. Again, I am only using static 
+images. If you use videos, the videos will use  
+
+336
+00:36:13,840 --> 00:36:20,080
+more VRAM memory. Therefore, be very careful. 
+If you use videos, then you need to have more  
+
+337
+00:36:20,080 --> 00:36:25,680
+VRAM memory, RAM memory. You need to do more 
+block swapping. You may need to reduce your  
+
+338
+00:36:25,680 --> 00:36:33,440
+training resolution. Everything changes. So first, 
+train with only static images, verify results,  
+
+339
+00:36:33,440 --> 00:36:39,920
+get some results, get some test done, then you can 
+include videos into your training dataset. You can  
+
+340
+00:36:39,920 --> 00:36:47,040
+have multiple subfolders for different training 
+datasets and for each dataset have different  
+
+341
+00:36:47,040 --> 00:36:54,160
+resolutions. So let me demonstrate an example. 
+So what I did is I generated another folder like  
+
+342
+00:36:54,160 --> 00:37:00,720
+this, 1_ohwx_video. However, I will be needed 
+to set different captions, not automatic ones.  
+
+343
+00:37:00,720 --> 00:37:06,640
+So I will copy paste it here. As I said, first I 
+recommend to train with only static images then  
+
+344
+00:37:06,640 --> 00:37:13,360
+include videos. But I will show how to include 
+videos. And generate dataset configuration. Now,  
+
+345
+00:37:13,360 --> 00:37:22,000
+it will generate datasets like this. You need to 
+edit this TOML file. Why? Because you will see  
+
+346
+00:37:22,000 --> 00:37:28,880
+that it is using the same resolution for both 
+images and videos. What does this mean? This  
+
+347
+00:37:28,880 --> 00:37:32,720
+means that if your images are high resolution, 
+the videos will be too high resolution. Either  
+
+348
+00:37:32,720 --> 00:37:40,960
+you need to auto downscale your videos to lower 
+resolution or you need to edit this TOML file.  
+
+349
+00:37:40,960 --> 00:37:47,040
+So I will open this TOML file. It is saved 
+inside this folder. You need to do this manually.
+
+350
+00:37:47,040 --> 00:37:53,200
+So this is the generated TOML file. You can see 
+that there are 2 different datasets. The first  
+
+351
+00:37:53,200 --> 00:37:58,640
+one is the image dataset and the second one is 
+the video dataset. And in the video dataset,  
+
+352
+00:37:58,640 --> 00:38:03,360
+it is going to use some frame extraction method 
+and it is going to use some methods like frame  
+
+353
+00:38:03,360 --> 00:38:09,280
+extraction head, target frames, number of repeats, 
+max frames. So I am going to set resolution here  
+
+354
+00:38:09,280 --> 00:38:17,280
+as well and change the resolution like 480 to 
+480. So that it will use this resolution for  
+
+355
+00:38:17,280 --> 00:38:23,600
+this dataset. You can also change the resolution 
+of the image dataset from here. So you can have  
+
+356
+00:38:23,600 --> 00:38:28,480
+different dataset resolutions. And if you are 
+wondering what are these other options for  
+
+357
+00:38:28,480 --> 00:38:33,840
+video datasets, it is all written here with 
+details. When you scroll down, you will see  
+
+358
+00:38:33,840 --> 00:38:41,040
+dataset preparation details. Open this and read 
+here. However, as I said multiple times now,  
+
+359
+00:38:41,040 --> 00:38:49,280
+train with only images then verify your results 
+then do training with video dataset. Moreover,  
+
+360
+00:38:49,280 --> 00:38:54,480
+now since we have 2 different folders, you will 
+see that it generated the captions like this  
+
+361
+00:38:54,480 --> 00:39:01,120
+for the video dataset. So you need to change the 
+caption of the video as well. I didn't test this.  
+
+362
+00:39:01,120 --> 00:39:07,600
+Probably this will work best with just trigger 
+word or you can describe the video action as  
+
+363
+00:39:07,600 --> 00:39:13,840
+well in these captions. However, for using the 
+static images, I recommend only trigger word  
+
+364
+00:39:13,840 --> 00:39:20,000
+as a caption. So I will delete this and I will 
+regenerate dataset configuration. Yes. Now it will  
+
+365
+00:39:20,000 --> 00:39:27,920
+use only my images dataset. It shows 56 double 
+times but it is okay. There is actually 28 images.
+
+366
+00:39:27,920 --> 00:39:32,160
+Okay, we did set the dataset. This is 
+how you prepare your video training  
+
+367
+00:39:32,160 --> 00:39:39,440
+datasets. Then we set the other things same 
+as the previous training. So in the models,  
+
+368
+00:39:39,440 --> 00:39:46,640
+I will just copy paste the paths here, here, 
+here. And additionally, for this model,  
+
+369
+00:39:46,640 --> 00:39:53,440
+you need to set the high noise model as well. So 
+it is here. So I will set it like this. You see,  
+
+370
+00:39:53,440 --> 00:40:01,200
+high noise. And that's it. Now I will save my 
+configuration and click training. It should  
+
+371
+00:40:01,200 --> 00:40:08,880
+start and work right away. However, you need 
+to have more RAM memory for this to work and it  
+
+372
+00:40:08,880 --> 00:40:15,440
+will use a little bit more VRAM memory as well. 
+So let's see what happens. The training window  
+
+373
+00:40:15,440 --> 00:40:24,560
+is here. You will see that it will load both low 
+noise and high noise models into the your system.  
+
+374
+00:40:24,560 --> 00:40:30,480
+You should see them in the CMD window. So first 
+it is loading the low noise then it is loading  
+
+375
+00:40:30,480 --> 00:40:35,600
+the high noise. Low noise is for details, 
+high noise is for the initial generation,  
+
+376
+00:40:35,600 --> 00:40:42,160
+the base structure. We train only low noise for 
+image generation. However, if you want to generate  
+
+377
+00:40:42,160 --> 00:40:48,800
+videos, you should train on both of them. You can 
+also train them individually one by one. However,  
+
+378
+00:40:48,800 --> 00:40:54,960
+its quality is lower than training this dual 
+model configuration. So you can load the image  
+
+379
+00:40:54,960 --> 00:40:59,840
+configuration, image training configuration, 
+change low noise model to high noise model. It  
+
+380
+00:40:59,840 --> 00:41:05,520
+will work exactly same and train high noise 
+model. If your system is not able to train  
+
+381
+00:41:05,520 --> 00:41:11,520
+both models at the same time, you can follow 
+that strategy. But what I recommend is rent  
+
+382
+00:41:11,520 --> 00:41:16,880
+a machine from the RunPod or Massed Compute 
+which I will show and train there and use.
+
+383
+00:41:16,880 --> 00:41:23,040
+Okay, it started. As you can see, both of the 
+models is running at the same time now. You will  
+
+384
+00:41:23,040 --> 00:41:31,920
+see that it will fluctuate the VRAM usage and how 
+it changes model is like 87 percent. Okay, you see  
+
+385
+00:41:31,920 --> 00:41:37,600
+the RAM usage increased because now it is loading 
+the other model and it is switching between them.  
+
+386
+00:41:37,600 --> 00:41:43,120
+Okay, you see. It is working nice. It is using 
+almost my entire RAM memory right now so I should  
+
+387
+00:41:43,120 --> 00:41:50,560
+decrease my RAM memory usage. I can also reduce my 
+block swap count because I still have some VRAM.  
+
+388
+00:41:50,560 --> 00:41:57,280
+So where you increase or decrease the block swap? 
+So let's open all panels, search for swap and  
+
+389
+00:41:57,280 --> 00:42:04,240
+you will see that there is block swap. So you can 
+change block swaps. Currently since it is fitting  
+
+390
+00:42:04,240 --> 00:42:10,880
+into my VRAM entirely with fp8 scaled, I am not 
+doing any block swap. But if it doesn't fit in  
+
+391
+00:42:10,880 --> 00:42:18,240
+your case, you need to increase this like 10, 20, 
+15. Moreover, I can use offload inactive DiT to  
+
+392
+00:42:18,240 --> 00:42:24,160
+CPU. This requires more RAM memory and it is not 
+compatible with blocks to swap. So when you do  
+
+393
+00:42:24,160 --> 00:42:30,560
+block swap, you cannot use this unfortunately. 
+Therefore, it is the fastest training that I  
+
+394
+00:42:30,560 --> 00:42:34,880
+can get right now. Its speed is very good as 
+you can see. It is also faster than training  
+
+395
+00:42:34,880 --> 00:42:41,760
+only image model right now because I am doing fp8 
+scaled training. If I were doing not fp8 scaling,  
+
+396
+00:42:41,760 --> 00:42:47,760
+I would be needed to do block swapping and block 
+swapping reduces your speed. So this dual model  
+
+397
+00:42:47,760 --> 00:42:54,800
+training takes like 6 hours on my GPU, maybe 
+even faster. This is how you train dual model.
+
+398
+00:42:54,800 --> 00:43:01,520
+And how you use dual model? Exactly same as the 
+single image training. I only change my LoRA to  
+
+399
+00:43:01,520 --> 00:43:10,160
+use it. So let's enable back our backend and let's 
+open a new tab. Copy our prompt. Quick tools,  
+
+400
+00:43:10,160 --> 00:43:16,480
+reset params to default presets. And let's use 
+this high quality preset this time. Direct apply.  
+
+401
+00:43:16,480 --> 00:43:22,720
+Type our prompt like this. Okay. Make sure to 
+not include the LoRAs in your prompt when you  
+
+402
+00:43:22,720 --> 00:43:30,080
+copy paste. Okay, it is like this. And I need to 
+select my LoRA. So my LoRA is this one. High noise  
+
+403
+00:43:30,080 --> 00:43:36,960
+low noise auto. So this was trained exactly as I 
+have just shown you. This is the highest quality  
+
+404
+00:43:36,960 --> 00:43:43,440
+and let's generate. So this generation will 
+take significantly more time compared to the  
+
+405
+00:43:43,440 --> 00:43:50,880
+fast generation which is Wan 2.2 text to video 8 
+steps. Actually this is 4 steps. I forgotten to  
+
+406
+00:43:50,880 --> 00:43:57,120
+change its name. Yes, this is 4 steps. So it will 
+take more time but this is the highest quality  
+
+407
+00:43:57,120 --> 00:44:02,800
+that you are going to get with video generation, 
+with text to video generation. For image to video,  
+
+408
+00:44:02,800 --> 00:44:09,440
+it doesn't make that much big difference. You can 
+perfectly use this preset. But for text to video  
+
+409
+00:44:09,440 --> 00:44:15,520
+generation, it makes really big difference 
+still because none of the recent LoRAs are,  
+
+410
+00:44:15,520 --> 00:44:22,320
+the lightning LoRAs are still as good as the image 
+to video LoRAs. I am using the latest LoRA which  
+
+411
+00:44:22,320 --> 00:44:30,560
+was published only 3 days ago. You see they 
+are 17 December 2025 LoRAs but it is as I say.
+
+412
+00:44:30,560 --> 00:44:37,360
+So the generation started. As you can see, it 
+should be done in like 6 minutes if I remember  
+
+413
+00:44:37,360 --> 00:44:43,600
+correctly. We will see. Okay, so we got our video 
+generated. It is not the best video. The quality  
+
+414
+00:44:43,600 --> 00:44:50,320
+is good but the prompt is bad. So therefore I 
+need to edit my prompt and generate new one.  
+
+415
+00:44:50,320 --> 00:44:58,160
+The prompting do matters a lot. So play with your 
+prompts to get the best results. Remember all the  
+
+416
+00:44:58,160 --> 00:45:06,000
+generations will be inside your SwarmUI, inside 
+output, inside local, inside raw folder. So you  
+
+417
+00:45:06,000 --> 00:45:13,040
+will see all of your generations here. They will 
+be saved by the date, latest date folder. You will  
+
+418
+00:45:13,040 --> 00:45:19,280
+see and find your images and videos in this 
+folder if you need them later. Furthermore,  
+
+419
+00:45:19,280 --> 00:45:25,520
+you will see them in the history tab as well 
+from the raw and with the folders like this.
+
+420
+00:45:25,520 --> 00:45:32,160
+So as a next step, I will show how to train on 
+Massed Compute then I will show on RunPod. So  
+
+421
+00:45:32,160 --> 00:45:38,000
+for Massed Compute, enter inside the extracted zip 
+file folder and open Massed Compute instructions  
+
+422
+00:45:38,000 --> 00:45:43,840
+read txt. Reading this file is mandatory 
+and watching the Windows tutorial part are  
+
+423
+00:45:43,840 --> 00:45:50,480
+mandatory. Please use this link to register. I 
+appreciate that very much. Then go to billing  
+
+424
+00:45:50,480 --> 00:45:57,200
+and set up some credits. They accept crypto 
+payments as well. Then go to deploy. In here,  
+
+425
+00:45:57,200 --> 00:46:04,720
+I recommend you to use RTX Pro 6000 Blackwell GPU. 
+This is working really great. From the category,  
+
+426
+00:46:04,720 --> 00:46:10,640
+select creator, select SECourses. Then enter 
+your coupon. This is important. We are going  
+
+427
+00:46:10,640 --> 00:46:16,960
+to use Category Creator, Image SECourses 
+and discount coupon SECourses. You see the,  
+
+428
+00:46:16,960 --> 00:46:23,520
+this very powerful GPU is 1.8 dollars 
+per hour. When I apply my coupon,  
+
+429
+00:46:23,520 --> 00:46:29,440
+it becomes 1.35 dollars. If you want 
+even more powerful GPU, faster training,  
+
+430
+00:46:29,440 --> 00:46:38,880
+select H200 NVL. This is even more powerful than 
+RTX Pro 6000. It is 2.6 dollars. With our coupon,  
+
+431
+00:46:38,880 --> 00:46:46,880
+it becomes 1.95 dollars. This is the fastest GPU. 
+So you can use either of them. Let's use H200 for  
+
+432
+00:46:46,880 --> 00:46:53,040
+this demonstration, for this tutorial. Deploy. 
+Now we need to wait for machine to initialize.
+
+433
+00:46:53,040 --> 00:46:57,760
+To connect our machine, we are going to 
+use ThinLinc Client. Download it. If you  
+
+434
+00:46:57,760 --> 00:47:03,680
+followed other tutorials, you already know. After 
+downloading, just next, next, next. Then you need  
+
+435
+00:47:03,680 --> 00:47:09,360
+to set your shared folder from local devices. 
+You see clipboard synchronization and drives.  
+
+436
+00:47:09,360 --> 00:47:14,720
+And in here I have a shared folder with read 
+and write permission. So I can copy my small  
+
+437
+00:47:14,720 --> 00:47:21,120
+files and I can connect. For big files, you 
+need to watch this tutorial. This will show  
+
+438
+00:47:21,120 --> 00:47:26,560
+you how to upload and download big files to 
+Hugging Face. You can also use Google Drive  
+
+439
+00:47:26,560 --> 00:47:33,280
+or OneDrive. So other cloud services as well. You 
+know how to use them. But you cannot use ThinLinc  
+
+440
+00:47:33,840 --> 00:47:39,200
+Client to transfer big files. So let's just 
+wait for initialization to be complete. Okay,  
+
+441
+00:47:39,200 --> 00:47:45,520
+now it is running. You may refresh page time to 
+time to update but it was auto updated for me.  
+
+442
+00:47:45,520 --> 00:47:52,000
+Then click here and copy login URL. Open ThinLinc 
+Client. Copy username for first time users and  
+
+443
+00:47:52,000 --> 00:48:00,080
+copy password and connect. Then continue. Then 
+click start. It will start the machine and  
+
+444
+00:48:00,080 --> 00:48:05,760
+connect from the ThinLinc Client. Remember this 
+is running on a remote machine, not on my machine.
+
+445
+00:48:05,760 --> 00:48:13,760
+Now I need to transfer my file, my installer file. 
+You can use Patreon login from this browser or you  
+
+446
+00:48:13,760 --> 00:48:21,360
+can use the shared folder which I prefer. So I 
+will copy my file into my shared folder. You can  
+
+447
+00:48:21,360 --> 00:48:26,960
+also put your training images here. Go back to 
+home from here. Go to Thin Drives. This is your  
+
+448
+00:48:26,960 --> 00:48:33,040
+shared folder. Do not run anything inside here. 
+Run everything from downloads folder. Whatever it  
+
+449
+00:48:33,040 --> 00:48:38,320
+is. It doesn't matter. The transfer speeds are not 
+great with ThinLinc Client. Therefore you should  
+
+450
+00:48:38,320 --> 00:48:44,160
+use the other method that I have just shown you, 
+the link. You see this link for big files. Okay,  
+
+451
+00:48:44,160 --> 00:48:53,200
+I will copy paste my images. Drag and drop or copy 
+paste both works. And our latest SECourses Musubi  
+
+452
+00:48:53,200 --> 00:48:59,680
+Tuner Premium Installer. So it is here. Drag and 
+drop into downloads folder. Wait for files to be  
+
+453
+00:48:59,680 --> 00:49:05,920
+transferred. You see it is being transferred right 
+now. Then go to downloads folder. Extract the  
+
+454
+00:49:05,920 --> 00:49:12,960
+Musubi Tuner. Extract here. And I will open the 
+Massed Compute instructions. Copy this command.  
+
+455
+00:49:12,960 --> 00:49:18,320
+While I am inside this folder, open in terminal. 
+This is important. And paste. You need to be  
+
+456
+00:49:18,320 --> 00:49:23,600
+in the accurate folder. Then it will start the 
+installation. You will see that installation is  
+
+457
+00:49:23,600 --> 00:49:30,000
+lightning fast. Actually let's see in real time. 
+So it is going to use uv package installation.
+
+458
+00:49:30,000 --> 00:49:33,600
+I mean look at the speed. Look at the 
+installation speed. It will take like  
+
+459
+00:49:33,600 --> 00:49:40,320
+30 seconds. Maybe 1 minute maximum. So it is 
+almost done. Also we need to download training  
+
+460
+00:49:40,320 --> 00:49:46,720
+models. So in here you see there is this command. 
+python3 download_train_models. Again while I am  
+
+461
+00:49:46,720 --> 00:49:53,600
+inside this folder, open in terminal. Paste. And 
+it will ask you which models to download. So let's  
+
+462
+00:49:53,600 --> 00:50:00,480
+download text to video option 4. The download will 
+begin. The downloader is also optimized. It will  
+
+463
+00:50:00,480 --> 00:50:08,160
+be pretty fast. You see 500 megabytes per second. 
+So it is 4 gigabits per second. 4 gigabits. So it  
+
+464
+00:50:08,160 --> 00:50:15,120
+will be done almost in no time. The installation 
+also completed and the trainer started. You see  
+
+465
+00:50:15,120 --> 00:50:22,240
+installation take like 60 seconds. The rest 
+is exactly same as in the Windows tutorial.  
+
+466
+00:50:22,240 --> 00:50:27,280
+You will open your configuration. And there 
+is one advantage because configuration is  
+
+467
+00:50:27,280 --> 00:50:34,720
+set for Massed Compute folders directly. So 
+I will download the Wan 2.2 training configs,  
+
+468
+00:50:34,720 --> 00:50:41,040
+text to video configs. Whether you want to 
+use dual GPU or whichever GPU. So this one  
+
+469
+00:50:41,040 --> 00:50:49,120
+is using 140 gigabytes of GPU. Let's see our 
+VRAM. nvidia-smi. Okay we have 140 gigabytes.  
+
+470
+00:50:49,120 --> 00:50:54,160
+Therefore I am going to use this config. I 
+hope it fits. You see it is maximum. Then  
+
+471
+00:50:54,160 --> 00:51:00,160
+I need to set my output folder and other thing. 
+I think output folder is already set. So I need  
+
+472
+00:51:00,160 --> 00:51:08,400
+to set my training images or videos. So 
+extract here. Okay. So copy this path and  
+
+473
+00:51:08,400 --> 00:51:14,480
+copy paste here. Then don't forget to click 
+generate dataset configuration. And let's see  
+
+474
+00:51:14,480 --> 00:51:22,560
+if the model download is completed. Yes almost 
+completed. You see 3 over 4. It is verifying.
+
+475
+00:51:22,560 --> 00:51:29,200
+So literally with like 5 minutes setup, you 
+can begin training in Massed Compute. Like 5  
+
+476
+00:51:29,200 --> 00:51:35,120
+minutes. Maybe 4 minutes. Once you do this like 1 
+or 2 times, you will get used to it. You will be  
+
+477
+00:51:35,120 --> 00:51:42,080
+immediately setup a machine and start training 
+right away. Okay high noise model is getting  
+
+478
+00:51:42,080 --> 00:51:47,360
+verified. I am also verifying files. Therefore 
+you will never have any issues with downloaded  
+
+479
+00:51:47,360 --> 00:51:52,720
+models. This is super important because sometimes 
+models get corrupted and it is causing a lot of  
+
+480
+00:51:52,720 --> 00:51:58,720
+issues. Okay it is downloading the last model. 
+It is 50 seconds remaining time. Okay so all  
+
+481
+00:51:58,720 --> 00:52:05,120
+the downloads have been completed. Now I did 
+set the training dataset and start training.  
+
+482
+00:52:05,120 --> 00:52:11,200
+It should work if the folder paths are accurate 
+if I remember but probably we need to change one  
+
+483
+00:52:11,200 --> 00:52:18,560
+more thing. Not ready yet. So in the 1 Models 
+Settings, yes. You see this is 23 version so I  
+
+484
+00:52:18,560 --> 00:52:26,080
+need to make this 24. You also need to change 
+that. The output folder should be okay. Yes  
+
+485
+00:52:26,080 --> 00:52:33,200
+it is okay. And start training. Now let's see. 
+Oh by the way if this was a 2 model training,  
+
+486
+00:52:33,200 --> 00:52:38,240
+yes it was. I need to also change this. So 
+dual model. Okay. Now it will give another  
+
+487
+00:52:38,240 --> 00:52:45,760
+error and I will click training again. So first 
+it is caching the training dataset. Okay it  
+
+488
+00:52:45,760 --> 00:52:51,920
+is loading. Okay I will stop and click start 
+again. Yes now it should work perfectly fine.  
+
+489
+00:52:51,920 --> 00:52:59,760
+Let's follow both of that. So let's zoom in. 
+Another zoom. Okay. Let's see in real time. So  
+
+490
+00:52:59,760 --> 00:53:06,480
+starting training. Loading models. You see loading 
+models are amazingly fast. Blazing fast on Massed  
+
+491
+00:53:06,480 --> 00:53:12,880
+Compute. This is why I like Massed Compute over 
+RunPod. The disk speed on Massed Compute is like  
+
+492
+00:53:12,880 --> 00:53:20,880
+10x, maybe 20x faster than the RunPod. Okay 77 
+gigabytes. Okay now it is training the low noise  
+
+493
+00:53:20,880 --> 00:53:27,040
+then it will begin the high noise. Okay training 
+is starting. 4 steps done on the first model then  
+
+494
+00:53:27,040 --> 00:53:33,920
+it will load the second model. The logic of dual 
+training is that it switches models between. Okay  
+
+495
+00:53:33,920 --> 00:53:43,520
+why it is taking time? I think the first step is 
+taking time. Okay. Now it did begin. Yes. So the  
+
+496
+00:53:43,520 --> 00:53:50,240
+training started. We will see the training speed 
+gets better. Okay it is using 80 gigabytes right  
+
+497
+00:53:50,240 --> 00:53:57,680
+now. But the training speed is getting better. 
+You see 2.2 second. It will get faster than 1 IT  
+
+498
+00:53:57,680 --> 00:54:04,320
+per second. But it is still switching models. 
+So what we can do, we can disable this and  
+
+499
+00:54:04,320 --> 00:54:10,560
+see if it works. So let's disable this to get 
+even faster. Did we load the inaccurate model?  
+
+500
+00:54:10,560 --> 00:54:15,680
+Yeah this should be disabled. I will update 
+this configuration for you so you won't have  
+
+501
+00:54:15,680 --> 00:54:21,040
+this issue. Now it should be even faster than 
+before because it will not offload each model.  
+
+502
+00:54:21,040 --> 00:54:27,120
+It will load both of the models into the GPU. 
+Let's see the speed. Of course you can enable  
+
+503
+00:54:27,120 --> 00:54:35,200
+fp8 scaled. It will take even lesser VRAM so you 
+can load it into like 80 gigabytes GPUs as well.
+
+504
+00:54:35,200 --> 00:54:45,120
+Okay training started. You see it is 1.5 
+IT per second using only 106 gigabytes of  
+
+505
+00:54:45,120 --> 00:54:49,440
+GPU. I will update the configuration so 
+you won't have this issue. But this is  
+
+506
+00:54:49,440 --> 00:54:54,880
+the training speed. It is going to 
+take only 67 minutes. So with like  
+
+507
+00:54:54,880 --> 00:55:02,160
+2 dollars, you will be able to train very best 
+Wan 2.2 model. And it's a dual model training,  
+
+508
+00:55:02,160 --> 00:55:09,120
+not single model. You are seeing the speed right 
+now. 1.35 IT per second. It is amazing. And it  
+
+509
+00:55:09,120 --> 00:55:17,520
+will take only 68 minutes and we are doing 5600 
+steps. Not a low number of steps. So it is working  
+
+510
+00:55:17,520 --> 00:55:25,920
+just amazing. Yes I have updated the config as 
+140 gigabytes and it is using 107 gigabytes GPU.
+
+511
+00:55:25,920 --> 00:55:32,400
+So now I will show how to train on RunPod. The 
+rest of the Massed Compute is same. You just  
+
+512
+00:55:32,400 --> 00:55:37,440
+need to download your LoRA files and use 
+on your computer or you can use in Massed  
+
+513
+00:55:37,440 --> 00:55:44,320
+Compute as well. If you wonder how to use 
+on Massed Compute, on our channel SECourses,  
+
+514
+00:55:44,320 --> 00:55:50,800
+we have a video for this. The video is this one. 
+Generate AI art 10x faster. The ultimate SwarmUI  
+
+515
+00:55:50,800 --> 00:55:57,760
+and ComfyUI cloud tutorial. You can watch this 
+tutorial to learn how to use SwarmUI on Massed  
+
+516
+00:55:57,760 --> 00:56:05,360
+Compute or on RunPod. This tutorial covers both 
+of them. So for training on RunPod, we have RunPod  
+
+517
+00:56:05,360 --> 00:56:12,640
+instructions. Open that file. Always you need 
+to follow this file for RunPod. Please register  
+
+518
+00:56:12,640 --> 00:56:20,240
+RunPod from this link. After registering and 
+logging in, go to billing and set up some credits.  
+
+519
+00:56:20,240 --> 00:56:26,400
+Then once you have the credits, go to pods. 
+If you want to use permanent storage, I have  
+
+520
+00:56:26,400 --> 00:56:31,520
+a tutorial for that. It is here. If you want 
+to learn how to upload and download big files,  
+
+521
+00:56:31,520 --> 00:56:36,720
+the tutorial is here. And if you want to learn 
+RunPod usage, there is another tutorial here.
+
+522
+00:56:36,720 --> 00:56:45,440
+So I will show on RunPod with RTX 5090. One of 
+the most commonly used one. But you can use bigger  
+
+523
+00:56:45,440 --> 00:56:51,920
+GPUs like B200 for even faster training. So this 
+is the disk type and this is the RAM GPU filters  
+
+524
+00:56:51,920 --> 00:56:58,960
+that I use. Let's select RTX 5090. Now a lot of 
+people are getting confused here. You are not  
+
+525
+00:56:58,960 --> 00:57:05,360
+going to use this template. You are always going 
+to use the template that I write in this file.  
+
+526
+00:57:05,360 --> 00:57:10,880
+Always. Because my installers are optimized for 
+whatever it is written here. Otherwise you will  
+
+527
+00:57:10,880 --> 00:57:18,240
+get errors. So change template. Select PyTorch 
+2.2.0. This is official template. Click edit  
+
+528
+00:57:18,240 --> 00:57:24,960
+and increase the disk size like 200. It is up to 
+you. If you want to save more checkpoints, you  
+
+529
+00:57:24,960 --> 00:57:32,640
+need to increase this. Set overrides and deploy on 
+demand. Now we need to wait for machine to become  
+
+530
+00:57:32,640 --> 00:57:37,200
+ready but it should be very fast because this 
+is official template. This is very lightweight  
+
+531
+00:57:37,200 --> 00:57:43,760
+template. So let's see. Time to time click here. 
+Okay it is ready. Jupyter Lab. If this doesn't  
+
+532
+00:57:43,760 --> 00:57:49,120
+open, you need to refresh, click some several 
+times. If still doesn't work, get a new machine.
+
+533
+00:57:49,120 --> 00:57:54,960
+Then I will upload my downloaded zip file. Wait 
+for upload to complete. You see in the bottom it  
+
+534
+00:57:54,960 --> 00:58:00,800
+shows. Then right click and extract archive. 
+Click refresh. Then open RunPod instructions  
+
+535
+00:58:00,800 --> 00:58:07,280
+read txt file. Copy this command. Open a new 
+terminal from here. And terminal. Make sure  
+
+536
+00:58:07,280 --> 00:58:12,320
+that you are in the workspace and copy paste 
+like this. Then it will start the installation.  
+
+537
+00:58:12,320 --> 00:58:18,800
+So run the commands inside workspace folder. 
+Open new terminal. Make sure that you are in the  
+
+538
+00:58:18,800 --> 00:58:25,120
+workspace wherever you have extracted the files. 
+The installation will be extremely fast compared  
+
+539
+00:58:25,120 --> 00:58:31,600
+to before. Why? Because we are using uv package. 
+While installation is continuing, let's download  
+
+540
+00:58:31,600 --> 00:58:38,320
+the model because model download may be slow. 
+Open another terminal. Copy paste. Select the  
+
+541
+00:58:38,320 --> 00:58:44,800
+model text to video. It will start downloading. 
+This is also super optimized. Let's see. You  
+
+542
+00:58:44,800 --> 00:58:50,800
+see it is downloading with like 300 megabytes per 
+second. Pretty good. The uv installation is also  
+
+543
+00:58:50,800 --> 00:58:56,640
+ultra fast. Before it was taking sometimes 10 
+minutes, 20 minutes, 30 minutes to install. Now  
+
+544
+00:58:56,640 --> 00:59:03,040
+it will take only few minutes to install. This 
+is our latest optimization. I will move my all  
+
+545
+00:59:03,040 --> 00:59:10,160
+installers to uv installation hopefully slowly. 
+So you will always install my applications much  
+
+546
+00:59:10,160 --> 00:59:15,520
+faster now compared to before. Also models 
+are getting downloading meanwhile. So after  
+
+547
+00:59:15,520 --> 00:59:20,400
+installation it will auto start the application. 
+This warning is not important. You will get  
+
+548
+00:59:20,400 --> 00:59:27,920
+this in all installers. The model merging and 
+verification on RunPod is sadly slow compared  
+
+549
+00:59:27,920 --> 00:59:32,800
+to Massed Compute because its disk speed 
+is very slow compared to Massed Compute.
+
+550
+00:59:32,800 --> 00:59:38,000
+Okay application installation completed and 
+started. I will open the Gradio live link.  
+
+551
+00:59:38,000 --> 00:59:44,560
+However model downloading is still continuing. 
+Meanwhile let's also upload our training images.  
+
+552
+00:59:44,560 --> 00:59:50,160
+So for upload click this icon. Select your 
+training images as a zip file. Upload. I  
+
+553
+00:59:50,160 --> 00:59:56,480
+prefer this way of uploading. So we can set up the 
+configuration while models are getting downloaded.  
+
+554
+00:59:56,480 --> 01:00:02,800
+Wait for upload to be completed. You see it is 
+slow. You can also use runpodctl for uploading.  
+
+555
+01:00:02,800 --> 01:00:08,240
+I explain that in another tutorial video. For 
+example you can watch this one. But it is not  
+
+556
+01:00:08,240 --> 01:00:14,320
+mandatory to learn or you can use this tutorial 
+to upload and download big files very fast. This  
+
+557
+01:00:14,320 --> 01:00:20,880
+is the recommended tutorial. And interface 
+is here. This is running on RunPod. 1 Models  
+
+558
+01:00:20,880 --> 01:00:26,320
+Training. So from the configurations, let's 
+pick the configuration we want to use. Let's  
+
+559
+01:00:26,320 --> 01:00:32,640
+use the text to image configuration. So you see 
+we have 32 gigabytes. Copy path. Right click and  
+
+560
+01:00:32,640 --> 01:00:39,840
+copy path. Put a backslash. Always RunPod 
+puts a backslash to beginning of path and  
+
+561
+01:00:39,840 --> 01:00:46,560
+paste it. Then click this. It will auto load the 
+config. You see it is loaded successfully. Then  
+
+562
+01:00:46,560 --> 01:00:54,240
+set your output folder. Let's save them inside 
+workspace a new folder: Trained LoRAs. Right  
+
+563
+01:00:54,240 --> 01:01:00,480
+click and copy path. Then paste it here. Put a 
+backslash to the beginning. This is important.
+
+564
+01:01:00,480 --> 01:01:06,880
+If you want to do Qwen training, it is same. We 
+only load Qwen training into here. So this is how  
+
+565
+01:01:06,880 --> 01:01:12,640
+you train on RunPod. You can change your save 
+name or save every n epochs. And the training  
+
+566
+01:01:12,640 --> 01:01:19,280
+dataset. So I have uploaded my images. Right click 
+and extract archive. And they are named like this.  
+
+567
+01:01:19,280 --> 01:01:28,560
+Remember this is mandatory. 1_ohwx. ohwx will be 
+our captions. 1 is the repeating. So I am going to  
+
+568
+01:01:28,560 --> 01:01:35,520
+give the path of the parent folder. Copy as, right 
+click and copy as path. Backslash, put the path  
+
+569
+01:01:35,520 --> 01:01:41,440
+then click generate dataset configuration. 
+It is done. Then the 1 Models Settings,  
+
+570
+01:01:41,440 --> 01:01:49,200
+we need to set the folder paths. So the models are 
+downloaded inside Training Models 1. So copy path  
+
+571
+01:01:49,200 --> 01:01:57,200
+and change them like this. And backslash. Okay. 
+No not like this. It needs to be like this. Yes.  
+
+572
+01:01:57,200 --> 01:02:06,240
+So this is the accurate pathing on RunPod. So like 
+this. Yes. Verify the paths. And like this. Okay  
+
+573
+01:02:06,240 --> 01:02:12,960
+all paths are set. This is single model so there 
+is no high noise. And what else is left? Nothing  
+
+574
+01:02:12,960 --> 01:02:18,560
+else is left. Save your configuration always. 
+So you can load later if any error happens,  
+
+575
+01:02:18,560 --> 01:02:24,400
+if you restart. Okay the models are still being 
+downloaded. We need to wait them to be completed.  
+
+576
+01:02:24,400 --> 01:02:30,720
+If you use RunPod permanent network storage 
+system, you won't be needed to wait. However  
+
+577
+01:02:30,720 --> 01:02:36,720
+currently we are not using. But it is also 
+very slow. I mean unbearably slow. And you  
+
+578
+01:02:36,720 --> 01:02:43,680
+see only 260 megabyte per second disk speed. On 
+Massed Compute this is 2 gigabytes per second.
+
+579
+01:02:43,680 --> 01:02:50,080
+Okay all models downloaded. It is verifying the 
+last one. So we can start training. So make sure  
+
+580
+01:02:50,080 --> 01:02:58,160
+to save and click start training. Then we will 
+follow what is happening on CMD window. This  
+
+581
+01:02:58,160 --> 01:03:04,800
+is where we see the actual logs. If there is any 
+error, you need to report from here. Unfortunately  
+
+582
+01:03:04,800 --> 01:03:11,600
+setting up RunPod, starting training is like 
+10x slower than the Massed Compute. But it has  
+
+583
+01:03:11,600 --> 01:03:18,480
+some other advantages like permanent storage or 
+more GPU options. However this is the reality.  
+
+584
+01:03:18,480 --> 01:03:24,800
+You see I click start training and I am still 
+waiting for it to read from the disk to start  
+
+585
+01:03:24,800 --> 01:03:34,240
+caching, loading models. Okay let's also install 
+nvitop. pip install nvitop and just type nvitop.  
+
+586
+01:03:34,240 --> 01:03:41,120
+So we can monitor the GPU usage as well. If 
+you don't see GPU here, that means that your  
+
+587
+01:03:41,120 --> 01:03:47,600
+machine is broken. It is going to start caching 
+the text encoder outputs. It is started. Nice.  
+
+588
+01:03:47,600 --> 01:03:54,160
+Now it will load model. Oh one more thing. We can 
+increase the model loading speed. So I will stop  
+
+589
+01:03:54,160 --> 01:04:02,640
+training. How? Open all panels and search for 
+loading and disable numpy memory mapping. This  
+
+590
+01:04:02,640 --> 01:04:08,800
+will increase your loading speed significantly 
+on RunPod. So start training. Don't worry it  
+
+591
+01:04:08,800 --> 01:04:14,400
+will just resume from wherever it is left. So we 
+didn't lose any time. This is really speeding up  
+
+592
+01:04:14,400 --> 01:04:20,240
+the model loadings on RunPod. Okay now we need 
+to wait again. Okay it is loading the model.  
+
+593
+01:04:20,240 --> 01:04:27,200
+Pretty fast. This optimization is making huge 
+difference on RunPod. This has been implemented  
+
+594
+01:04:27,200 --> 01:04:34,720
+after I have taught this issue to Kohya. But 
+still nothing fast as the Massed Compute.
+
+595
+01:04:34,720 --> 01:04:41,520
+Okay training starting. You can monitor the GPU 
+from nvitop. Yes started. You see the first step  
+
+596
+01:04:41,520 --> 01:04:50,800
+speed was very slow. Now 1.46, 2 second IT, 2.15 
+second IT. This is slower than the other GPUs  
+
+597
+01:04:50,800 --> 01:04:57,600
+because we are also doing some block swapping 
+since this is not fp8 scaled. So when we go  
+
+598
+01:04:57,600 --> 01:05:03,200
+to swap, let's see how many we are doing. We are 
+doing 10 block swapping. If you want even faster  
+
+599
+01:05:03,200 --> 01:05:09,200
+training, you can do fp8 scaled training and 
+you can make the block swap zero and it will be  
+
+600
+01:05:09,200 --> 01:05:16,720
+faster. But this is okay speed. It is going to 
+take like 4 5 hours. So it is bearable maybe a  
+
+601
+01:05:16,720 --> 01:05:23,840
+little bit more. But this is how you do training 
+on RunPod. The models will be saved inside my  
+
+602
+01:05:23,840 --> 01:05:29,040
+Trained LoRAs folder. You see it is already 
+generated and the dataset TOML file is saved  
+
+603
+01:05:29,040 --> 01:05:33,600
+there. The training TOML file also saved there 
+when you click training. So you will download  
+
+604
+01:05:33,600 --> 01:05:39,600
+LoRAs from here and use them. Or if you want to 
+use them on RunPod, we have a tutorial for how  
+
+605
+01:05:39,600 --> 01:05:45,840
+to use SwarmUI and ComfyUI on RunPod. It is here. 
+This is a very recent tutorial. Fully up to date.  
+
+606
+01:05:45,840 --> 01:05:52,080
+So you can follow this tutorial to learn how 
+to use SwarmUI and ComfyUI on RunPod and Massed  
+
+607
+01:05:52,080 --> 01:05:59,200
+Compute. So this is it. I hope you have enjoyed. 
+Don't forget to stop your machine, terminate your  
+
+608
+01:05:59,200 --> 01:06:04,880
+machine. On Massed Compute, you need to delete 
+your machine. Stopping your machine will not  
+
+609
+01:06:04,880 --> 01:06:11,440
+stop your credit spending. Don't forget that. But 
+before deleting, make sure to backup all of your  
+
+610
+01:06:11,440 --> 01:06:17,920
+data. On RunPod, you can stop your machine and 
+it will keep your data then you need to terminate  
+
+611
+01:06:17,920 --> 01:06:24,320
+your machine to completely avoid credit usage. But 
+stopping machine will make it very minimal amount  
+
+612
+01:06:24,320 --> 01:06:31,200
+of credit usage. If you have any questions, always 
+ask me. We have Z Image Turbo LoRA training, very  
+
+613
+01:06:31,200 --> 01:06:40,000
+up to date, working amazing, very lightweight. 
+We have Flux SRPO training updated. We have Qwen  
+
+614
+01:06:40,000 --> 01:06:45,200
+training that you need to watch. Hopefully more 
+videos are coming, more applications are coming.  
+
+615
+01:06:45,200 --> 01:06:53,840
+I am working 7 days every week literally like 10 
+hours a day. So stay subscribed, leave a comment,  
+
+616
+01:06:53,840 --> 01:06:59,520
+ask questions, join our Discord, ask questions, 
+message me from Patreon. Hopefully see you later.
+

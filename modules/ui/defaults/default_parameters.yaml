@@ -21,15 +21,15 @@ whisper:
   suppress_tokens: '[-1]'
   max_initial_timestamp: 1.0
   word_timestamps: false
-  prepend_punctuations: '"''“¿([{-'
-  append_punctuations: '"''.。,，!！?？:：”)]}、'
+  prepend_punctuations: '"''([{-'
+  append_punctuations: '"''.,!?:)]}'
   max_new_tokens: null
   chunk_length: 15
   hallucination_silence_threshold: null
   hotwords: null
   language_detection_threshold: 0.5
   language_detection_segments: 1
-  batch_size: 4
+  batch_size: 8
   enable_offload: false
   add_timestamp: false
   file_format: SRT
@@ -64,3 +64,9 @@ translation:
     target_lang: null
     max_length: 200
   add_timestamp: true
+file:
+  batch_processing: false
+  include_subdirectory: false
+  overwrite_existing: false
+  input_folder: ''
+  output_folder: ''

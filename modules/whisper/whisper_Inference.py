@@ -76,7 +76,7 @@ class WhisperInference(BaseTranscriptionPipeline):
                                        patience=params.patience,
                                        temperature=params.temperature,
                                        compression_ratio_threshold=params.compression_ratio_threshold,
-                                       word_timestamps=True,  # Always enable word timestamps
+                                       word_timestamps=params.word_timestamps,
                                        progress_callback=progress_callback,)["segments"]
         segments_result = []
         for segment in result:

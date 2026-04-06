@@ -9,8 +9,8 @@ import gradio as gr
 from datetime import datetime
 import traceback
 
-from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, UVR_MODELS_DIR, UVR_OUTPUT_DIR
-from modules.utils.files_manager import load_yaml, save_yaml, is_video
+from modules.utils.paths import UVR_MODELS_DIR, UVR_OUTPUT_DIR
+from modules.utils.files_manager import is_video
 from modules.diarize.audio_loader import load_audio
 from modules.utils.logger import get_logger
 from modules.utils.torch_compat import torch_load_safe_globals
@@ -157,8 +157,6 @@ class MusicSeparator:
                        progress: gr.Progress = gr.Progress()) -> List[str]:
         """Separate the background music from the audio files. Returns only last Instrumental and vocals file paths
         to display into gr.Audio()"""
-        self.cache_parameters(model_size=model_name, segment_size=segment_size)
-
         for file_path in files:
             instrumental, vocals, file_paths = self.separate(
                 audio=file_path,
@@ -199,12 +197,5 @@ class MusicSeparator:
     @staticmethod
     def cache_parameters(model_size: str,
                          segment_size: int):
-        cached_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
-        cached_uvr_params = cached_params["bgm_separation"]
-        uvr_params_to_cache = {
-            "model_size": model_size,
-            "segment_size": segment_size
-        }
-        cached_uvr_params = {**cached_uvr_params, **uvr_params_to_cache}
-        cached_params["bgm_separation"] = cached_uvr_params
-        save_yaml(cached_params, DEFAULT_PARAMETERS_CONFIG_PATH)
+        """Runtime parameter caching is disabled; presets are saved explicitly from the UI."""
+        return None

@@ -1,6 +1,15 @@
-from gradio_i18n import Translate, gettext as _
+from modules.utils.i18n import _
 
-AUTOMATIC_DETECTION = _("Automatic Detection")
+class _StaticI18nString(str):
+    def unwrap(self):
+        return str(self)
+
+
+try:
+    AUTOMATIC_DETECTION = _("Automatic Detection")
+except LookupError:
+    AUTOMATIC_DETECTION = _StaticI18nString("Automatic Detection")
+
 GRADIO_NONE_STR = ""
 GRADIO_NONE_NUMBER_MAX = 9999
 GRADIO_NONE_NUMBER_MIN = 0

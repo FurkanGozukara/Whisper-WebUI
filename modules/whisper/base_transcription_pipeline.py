@@ -14,14 +14,13 @@ from copy import deepcopy
 import time
 
 from modules.uvr.music_separator import MusicSeparator
-from modules.utils.paths import (WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, DEFAULT_PARAMETERS_CONFIG_PATH,
-                                 UVR_MODELS_DIR)
+from modules.utils.paths import WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, UVR_MODELS_DIR
 from modules.utils.constants import *
 from modules.utils.logger import get_logger
 from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
 from modules.utils.youtube_manager import get_ytdata, get_ytaudio
-from modules.utils.files_manager import get_media_files, format_gradio_files, load_yaml, save_yaml, read_file
+from modules.utils.files_manager import get_media_files, format_gradio_files, read_file
 from modules.utils.audio_manager import validate_audio
 from modules.whisper.data_classes import *
 from modules.diarize.diarizer import Diarizer
@@ -214,12 +213,6 @@ class BaseTranscriptionPipeline(ABC):
             except Exception as e:
                 # Diarization is optional; don't fail the whole transcription if it can't run.
                 logger.warning(f"Diarization failed and will be skipped: {type(e).__name__}: {e}")
-
-        self.cache_parameters(
-            params=params,
-            file_format=primary_file_format,
-            add_timestamp=add_timestamp
-        )
 
         if not result:
             logger.info(f"Whisper did not detected any speech segments in the audio.")
@@ -543,8 +536,9 @@ class BaseTranscriptionPipeline(ABC):
                 subtitle_preview = subtitle_preview or subtitle
                 file_paths.append(file_path)
 
+            result_file_path = file_paths[0] if len(file_paths) == 1 else file_paths
             result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
-            return result_str, file_paths
+            return result_str, result_file_path
         except Exception as e:
             raise RuntimeError(f"Error transcribing mic: {e}") from e
 
@@ -620,7 +614,8 @@ class BaseTranscriptionPipeline(ABC):
             if os.path.exists(audio):
                 os.remove(audio)
 
-            return result_str, file_paths
+            result_file_path = file_paths[0] if len(file_paths) == 1 else file_paths
+            return result_str, result_file_path
 
         except Exception as e:
             raise RuntimeError(f"Error transcribing youtube: {e}") from e
@@ -817,29 +812,8 @@ class BaseTranscriptionPipeline(ABC):
         file_format: str = "SRT",
         add_timestamp: bool = True
     ):
-        """Cache parameters to the yaml file"""
-        cached_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
-        param_to_cache = params.to_dict()
-
-        cached_yaml = {**cached_params, **param_to_cache}
-        cached_yaml["whisper"]["add_timestamp"] = add_timestamp
-        cached_yaml["whisper"]["file_format"] = file_format
-
-        supress_token = cached_yaml["whisper"].get("suppress_tokens", None)
-        if supress_token and isinstance(supress_token, list):
-            cached_yaml["whisper"]["suppress_tokens"] = str(supress_token)
-
-        if cached_yaml["whisper"].get("lang", None) is None:
-            cached_yaml["whisper"]["lang"] = AUTOMATIC_DETECTION.unwrap()
-        else:
-            language_dict = whisper.tokenizer.LANGUAGES
-            cached_yaml["whisper"]["lang"] = language_dict[cached_yaml["whisper"]["lang"]]
-
-        if cached_yaml["vad"].get("max_speech_duration_s", float('inf')) == float('inf'):
-            cached_yaml["vad"]["max_speech_duration_s"] = GRADIO_NONE_NUMBER_MAX
-
-        if cached_yaml is not None and cached_yaml:
-            save_yaml(cached_yaml, DEFAULT_PARAMETERS_CONFIG_PATH)
+        """Runtime parameter caching is disabled; presets are saved explicitly from the UI."""
+        return None
 
     @staticmethod
     def resample_audio(audio: Union[str, np.ndarray],
