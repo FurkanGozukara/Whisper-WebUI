@@ -1,13 +1,18 @@
 import argparse
 import html
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
+
+from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
+
+enable_cuda_runtime_autodiscovery()
 
 import gradio as gr
 import torch
@@ -235,6 +240,87 @@ class App:
     def get_gradio_file_url(self, file_path):
         normalized_path = Path(os.path.abspath(str(file_path))).as_posix()
         return f"{self.get_gradio_api_prefix()}/file={quote(normalized_path, safe='/')}"
+
+    @staticmethod
+    def _strip_wrapping_quotes(value):
+        normalized = str(value or "").strip()
+        while len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+            normalized = normalized[1:-1].strip()
+        return normalized
+
+    @staticmethod
+    def _is_windows_style_path(path):
+        return bool(re.match(r"^[A-Za-z]:[\\/]", path)) or path.startswith("\\\\")
+
+    def resolve_media_input_path(self, raw_path):
+        user_path = self._strip_wrapping_quotes(raw_path)
+        if not user_path:
+            raise ValueError("Enter a file path to load.")
+
+        candidate = user_path
+        if candidate.lower().startswith("file://"):
+            parsed = urlparse(candidate)
+            candidate = unquote(parsed.path or "")
+
+            if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+                candidate = f"//{parsed.netloc}{candidate}"
+
+            if os.name == "nt" and re.match(r"^/[A-Za-z]:", candidate):
+                candidate = candidate[1:]
+
+        candidate = os.path.expandvars(os.path.expanduser(candidate))
+
+        raw_candidates = [candidate]
+        if os.name == "nt":
+            raw_candidates.extend([
+                candidate.replace("/", "\\"),
+                candidate.replace("\\", "/"),
+            ])
+            if candidate.startswith("/") and re.match(r"^/[A-Za-z]:", candidate):
+                raw_candidates.append(candidate[1:].replace("/", "\\"))
+        else:
+            raw_candidates.append(candidate.replace("\\", "/"))
+
+        seen = set()
+        last_normalized_candidate = None
+
+        for raw_candidate in raw_candidates:
+            if not raw_candidate or raw_candidate in seen:
+                continue
+            seen.add(raw_candidate)
+
+            normalized_candidate = os.path.normpath(raw_candidate)
+            normalized_candidate = os.path.abspath(normalized_candidate)
+            last_normalized_candidate = normalized_candidate
+
+            if os.path.isfile(normalized_candidate):
+                extension = os.path.splitext(normalized_candidate)[1].lower()
+                if extension not in MEDIA_EXTENSION:
+                    raise ValueError(
+                        f"Unsupported media file type: {extension or '[no extension]'}. "
+                        "Load an audio or video file."
+                    )
+                return normalized_candidate
+
+        if os.name != "nt" and self._is_windows_style_path(candidate):
+            raise FileNotFoundError(
+                "Windows-style path is not accessible from this host. "
+                "If the file is mounted in Linux, enter that Linux path instead."
+            )
+
+        if last_normalized_candidate and os.path.exists(last_normalized_candidate):
+            raise ValueError(f"Path is not a file: {last_normalized_candidate}")
+
+        raise FileNotFoundError(f"File not found: {last_normalized_candidate or user_path}")
+
+    def load_media_from_path(self, file_path):
+        try:
+            normalized_path = self.resolve_media_input_path(file_path)
+        except Exception as exc:
+            raise gr.Error(str(exc))
+
+        summary_update, preview_update = self.update_uploaded_media_preview([normalized_path])
+        return [normalized_path], gr.update(value=normalized_path), summary_update, preview_update
 
     def update_uploaded_media_preview(self, files):
         hidden_markdown = gr.update(value="", visible=False)
@@ -677,6 +763,14 @@ class App:
                             )
                         with gr.Row():
                             file_output = gr.Textbox(label=_("Output"), interactive=False)
+                        with gr.Row():
+                            tb_load_file_path = gr.Textbox(
+                                label=_("Load From File Path"),
+                                placeholder="C:\\media\\clip.mp4, /workspace/media/clip.mp4, ./media/clip.mp4, or file:///path/to/clip.mp4",
+                                info=_("Supports Windows, Linux, relative, absolute, quoted, and file:// paths."),
+                                scale=6,
+                            )
+                            btn_load_file_path = gr.Button(_("Load"), scale=1)
                         file_inputs = [
                             input_file,
                             cb_batch_processing,
@@ -691,6 +785,20 @@ class App:
                             fn=self.update_uploaded_media_preview,
                             inputs=[input_file],
                             outputs=[upload_media_summary, upload_media_preview],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        btn_load_file_path.click(
+                            fn=self.load_media_from_path,
+                            inputs=[tb_load_file_path],
+                            outputs=[input_file, tb_load_file_path, upload_media_summary, upload_media_preview],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        tb_load_file_path.submit(
+                            fn=self.load_media_from_path,
+                            inputs=[tb_load_file_path],
+                            outputs=[input_file, tb_load_file_path, upload_media_summary, upload_media_preview],
                             queue=False,
                             show_progress="hidden",
                         )

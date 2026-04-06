@@ -8,6 +8,10 @@ import os
 import time
 import threading
 
+from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
+
+enable_cuda_runtime_autodiscovery()
+
 from backend.db.db_instance import init_db
 from backend.routers.transcription.router import transcription_router, get_pipeline
 from backend.routers.vad.router import get_vad_model, vad_router
