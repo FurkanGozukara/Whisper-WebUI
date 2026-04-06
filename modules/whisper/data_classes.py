@@ -1,6 +1,7 @@
 import faster_whisper.transcribe
 import gradio as gr
 import torch
+import whisper
 from typing import Optional, Dict, List, Union, NamedTuple
 from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -368,10 +369,55 @@ class WhisperParams(BaseParams):
         description="Offload Whisper model after transcription"
     )
 
+    @staticmethod
+    def normalize_lang_value(v):
+        from modules.utils.constants import AUTOMATIC_DETECTION
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            return v
+
+        normalized = v.strip()
+        if not normalized:
+            return None
+
+        if normalized.casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
+            return None
+
+        lowered = normalized.lower()
+        if lowered in whisper.tokenizer.LANGUAGES:
+            return whisper.tokenizer.LANGUAGES[lowered]
+        if lowered in whisper.tokenizer.LANGUAGES.values():
+            return lowered
+        if lowered in whisper.tokenizer.TO_LANGUAGE_CODE:
+            code = whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
+            return whisper.tokenizer.LANGUAGES[code]
+        return normalized
+
+    @staticmethod
+    def normalize_lang_choice(v):
+        from modules.utils.constants import AUTOMATIC_DETECTION
+
+        normalized = WhisperParams.normalize_lang_value(v)
+        if normalized is None:
+            if isinstance(v, str) and v.strip() and v.strip().casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
+                return AUTOMATIC_DETECTION.unwrap()
+            return "english"
+        return normalized
+
+    @staticmethod
+    def get_language_choices(available_langs: Optional[List]) -> List:
+        from modules.utils.constants import AUTOMATIC_DETECTION
+
+        choices = list(available_langs or [])
+        auto = AUTOMATIC_DETECTION.unwrap()
+        return [auto, *choices] if auto not in choices else choices
+
     @field_validator('lang')
     def validate_lang(cls, v):
-        from modules.utils.constants import AUTOMATIC_DETECTION
-        return None if v == AUTOMATIC_DETECTION.unwrap() else v
+        return cls.normalize_lang_value(v)
 
     @field_validator('suppress_tokens')
     def validate_supress_tokens(cls, v):
@@ -430,6 +476,7 @@ class WhisperParams(BaseParams):
 
         inputs = []
         if not only_advanced:
+            language_choices = cls.get_language_choices(available_langs)
             inputs += [
                 gr.Dropdown(
                     label=_("Model"),
@@ -438,8 +485,8 @@ class WhisperParams(BaseParams):
                 ),
                 gr.Dropdown(
                     label=_("Language"),
-                    choices=available_langs,
-                    value=defaults.get("lang", AUTOMATIC_DETECTION),
+                    choices=language_choices,
+                    value=cls.normalize_lang_choice(defaults.get("lang")),
                 ),
                 gr.Checkbox(
                     label=_("Translate to English?"),
@@ -668,9 +715,10 @@ class WhisperParams(BaseParams):
         
         # Define all input configurations
         if not only_advanced:
+            language_choices = cls.get_language_choices(available_langs)
             input_configs.extend([
                 ("dropdown", "Model", available_models, defaults.get("model_size", cls.__fields__["model_size"].default)),
-                ("dropdown", "Language", available_langs, defaults.get("lang", AUTOMATIC_DETECTION)),
+                ("dropdown", "Language", language_choices, cls.normalize_lang_choice(defaults.get("lang"))),
                 ("checkbox", "Translate to English?", None, defaults.get("is_translate", cls.__fields__["is_translate"].default)),
             ])
         

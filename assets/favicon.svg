@@ -1,21 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Whisper TTS Premium favicon">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0f172a" />
-      <stop offset="100%" stop-color="#1d4ed8" />
+      <stop offset="0%" stop-color="#0b1324" />
+      <stop offset="100%" stop-color="#1a2743" />
     </linearGradient>
-    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#f8fafc" />
-      <stop offset="100%" stop-color="#bfdbfe" />
+    <linearGradient id="accent" x1="18%" y1="12%" x2="82%" y2="88%">
+      <stop offset="0%" stop-color="#ffb066" />
+      <stop offset="55%" stop-color="#ff813f" />
+      <stop offset="100%" stop-color="#ff5633" />
+    </linearGradient>
+    <linearGradient id="mark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#fff0e6" />
     </linearGradient>
   </defs>
+
   <rect width="64" height="64" rx="16" fill="url(#bg)" />
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#ffffff" stroke-opacity="0.08" />
+
   <path
-    d="M14 34c3.5 0 3.5-12 7-12s3.5 20 7 20 3.5-28 7-28 3.5 36 7 36 3.5-16 7-16 3.5 8 7 8"
+    d="M12 23c-4 5-4 13 0 18"
     fill="none"
-    stroke="url(#wave)"
+    stroke="#ffb066"
+    stroke-linecap="round"
+    stroke-width="3"
+    opacity="0.28"
+  />
+  <path
+    d="M52 23c4 5 4 13 0 18"
+    fill="none"
+    stroke="#ffb066"
+    stroke-linecap="round"
+    stroke-width="3"
+    opacity="0.28"
+  />
+
+  <circle cx="32" cy="32" r="18" fill="url(#accent)" />
+  <circle cx="32" cy="32" r="18" fill="none" stroke="#fff7f2" stroke-opacity="0.2" />
+
+  <path
+    d="M18 23 24 41 30 26 32 33 34 26 40 41 46 23"
+    fill="none"
+    stroke="url(#mark)"
     stroke-linecap="round"
     stroke-linejoin="round"
     stroke-width="5"
+  />
+
+  <path
+    d="M49 10 50.6 14.4 55 16 50.6 17.6 49 22 47.4 17.6 43 16 47.4 14.4Z"
+    fill="#ffd6bf"
   />
 </svg>

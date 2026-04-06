@@ -1,4 +1,5 @@
 import json
+import whisper
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -122,9 +123,28 @@ def _as_ui_optional_number(value: Any) -> Any:
     return value
 
 
+def _normalize_ui_lang(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "english"
+
+    normalized = value.strip()
+    if normalized.casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
+        return AUTOMATIC_DETECTION.unwrap()
+
+    lowered = normalized.lower()
+    if lowered in whisper.tokenizer.LANGUAGES:
+        return whisper.tokenizer.LANGUAGES[lowered]
+    if lowered in whisper.tokenizer.LANGUAGES.values():
+        return lowered
+    if lowered in whisper.tokenizer.TO_LANGUAGE_CODE:
+        code = whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
+        return whisper.tokenizer.LANGUAGES[code]
+    return lowered
+
+
 def _normalize_whisper_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
     whisper = deepcopy(defaults)
-    whisper["lang"] = whisper.get("lang") or AUTOMATIC_DETECTION.unwrap()
+    whisper["lang"] = _normalize_ui_lang(whisper.get("lang"))
     for key in ("initial_prompt", "prefix", "hotwords"):
         whisper[key] = _as_ui_optional_text(whisper.get(key))
     for key in ("max_new_tokens", "hallucination_silence_threshold", "language_detection_threshold"):

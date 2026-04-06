@@ -72,6 +72,15 @@ def test_merge_ui_config_restores_missing_sections():
     assert merged["file_tab"]["batch_processing"] is True
     assert merged["mic_tab"] == defaults["mic_tab"]
     assert merged["file_tab"]["whisper"]["model_size"] == defaults["file_tab"]["whisper"]["model_size"]
+    assert merged["file_tab"]["whisper"]["lang"] == "english"
+
+
+def test_whisper_lang_is_normalized_for_ui_and_runtime():
+    defaults = build_default_ui_config()
+
+    assert defaults["file_tab"]["whisper"]["lang"] == "english"
+    assert WhisperParams(lang="English").lang == "english"
+    assert WhisperParams(lang="en").lang == "english"
 
 
 def test_last_used_preset_is_persisted_and_cleared_when_missing(tmp_path, monkeypatch):

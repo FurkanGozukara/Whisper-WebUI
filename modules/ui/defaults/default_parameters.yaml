@@ -1,6 +1,6 @@
 whisper:
   model_size: large-v3
-  lang: English
+  lang: english
   is_translate: false
   beam_size: 8
   log_prob_threshold: -1.0
