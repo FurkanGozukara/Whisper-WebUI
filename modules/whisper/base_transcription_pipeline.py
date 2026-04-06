@@ -3,6 +3,9 @@ import glob
 import whisper
 import ctranslate2
 import gradio as gr
+from modules.utils.torch_compat import enable_torchaudio_2_9_compat
+
+enable_torchaudio_2_9_compat()
 import torchaudio
 from abc import ABC, abstractmethod
 from typing import BinaryIO, Union, Tuple, List, Callable, Optional

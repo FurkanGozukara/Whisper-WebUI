@@ -1,5 +1,8 @@
 from typing import Optional, Union, List, Dict
 import numpy as np
+from modules.utils.torch_compat import enable_torchaudio_2_9_compat, torch_load_safe_globals
+
+enable_torchaudio_2_9_compat()
 import torchaudio
 import soundfile as sf
 import os
@@ -13,7 +16,6 @@ from modules.utils.paths import UVR_MODELS_DIR, UVR_OUTPUT_DIR
 from modules.utils.files_manager import is_video
 from modules.diarize.audio_loader import load_audio
 from modules.utils.logger import get_logger
-from modules.utils.torch_compat import torch_load_safe_globals
 logger = get_logger()
 
 try:

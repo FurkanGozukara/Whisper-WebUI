@@ -45,14 +45,19 @@ from modules.utils.paths import (
     UVR_MODELS_DIR,
     WHISPER_MODELS_DIR,
 )
-from modules.utils.torch_compat import enable_torch_2_6_weights_only_compat
+from modules.utils.torch_compat import (
+    enable_torch_2_6_weights_only_compat,
+    enable_torchaudio_2_9_compat,
+)
 from modules.utils.youtube_manager import get_ytmetas
 from modules.whisper.data_classes import *
-from modules.whisper.whisper_factory import WhisperFactory
 
 
 logger = get_logger()
 enable_torch_2_6_weights_only_compat()
+enable_torchaudio_2_9_compat()
+from modules.whisper.whisper_factory import WhisperFactory
+
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_TITLE = "Whisper TTS Premium App by SECourses V4.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (

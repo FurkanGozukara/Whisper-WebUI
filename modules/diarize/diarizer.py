@@ -7,7 +7,6 @@ import logging
 import gc
 
 from modules.utils.paths import DIARIZATION_MODELS_DIR
-from modules.diarize.diarize_pipeline import DiarizationPipeline, assign_word_speakers
 from modules.diarize.audio_loader import load_audio
 from modules.whisper.data_classes import *
 
@@ -62,7 +61,11 @@ class Diarizer:
                 use_auth_token=use_auth_token
             )
 
+        if self.pipe is None:
+            raise RuntimeError("Diarization pipeline is unavailable.")
+
         audio = load_audio(audio)
+        from modules.diarize.diarize_pipeline import assign_word_speakers
 
         diarization_segments = self.pipe(audio)
         diarized_result = assign_word_speakers(
@@ -110,6 +113,8 @@ class Diarizer:
         # Disable redundant torchvision warning message
         logger.disabled = True
         try:
+            from modules.diarize.diarize_pipeline import DiarizationPipeline
+
             self.pipe = DiarizationPipeline(
                 use_auth_token=use_auth_token,
                 device=device,

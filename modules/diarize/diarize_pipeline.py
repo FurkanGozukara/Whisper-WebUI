@@ -3,14 +3,16 @@
 import numpy as np
 import pandas as pd
 import os
-from pyannote.audio import Pipeline
 from typing import Optional, Union
 import torch
 import huggingface_hub
 
 from modules.whisper.data_classes import *
 from modules.utils.paths import DIARIZATION_MODELS_DIR
+from modules.utils.torch_compat import enable_torchaudio_2_9_compat
 from modules.diarize.audio_loader import load_audio, SAMPLE_RATE
+
+enable_torchaudio_2_9_compat()
 
 
 DEFAULT_DIARIZATION_REPO_ID = "MonsterMMORPG/Wan_GGUF"
@@ -97,6 +99,8 @@ class DiarizationPipeline:
         use_auth_token=None,
         device: Optional[Union[str, torch.device]] = "cpu",
     ):
+        from pyannote.audio import Pipeline
+
         if isinstance(device, str):
             device = torch.device(device)
         pipeline_dir = _resolve_pipeline_dir(
