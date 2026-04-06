@@ -1,7 +1,12 @@
 import argparse
 import os
+import shutil
+import subprocess
+import sys
 
 import gradio as gr
+import torch
+from faster_whisper.audio import decode_audio
 
 from modules.translation.deepl_api import DeepLAPI
 from modules.translation.nllb_inference import NLLBInference
@@ -21,7 +26,7 @@ from modules.ui.presets import (
     set_last_used_ui_preset,
 )
 from modules.utils.cli_manager import str2bool
-from modules.utils.files_manager import MEDIA_EXTENSION, load_yaml
+from modules.utils.files_manager import MEDIA_EXTENSION, is_video, load_yaml
 from modules.utils.i18n import Translate, _
 from modules.utils.logger import get_logger
 from modules.utils.paths import (
@@ -71,7 +76,9 @@ class App:
             output_dir=os.path.join(self.args.output_dir, "translations"),
         )
         self.i18n = load_yaml(I18N_YAML_PATH)
-        self.default_params = load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
+        self.default_params = self.apply_dynamic_batch_size_defaults(
+            load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
+        )
         self.ui_default_config = build_default_ui_config(default_params=self.default_params)
 
         user_allowed = []
@@ -107,6 +114,162 @@ class App:
         if not paths:
             paths.append(os.getcwd())
         return paths
+
+    @staticmethod
+    def get_gpu_total_memory_gb():
+        try:
+            if torch.cuda.is_available():
+                device_index = torch.cuda.current_device()
+                properties = torch.cuda.get_device_properties(device_index)
+                return properties.total_memory / (1024 ** 3)
+
+            xpu = getattr(torch, "xpu", None)
+            if xpu is not None and xpu.is_available():
+                device_index = xpu.current_device() if hasattr(xpu, "current_device") else 0
+                properties = xpu.get_device_properties(device_index)
+                total_memory = getattr(properties, "total_memory", None)
+                if total_memory:
+                    return total_memory / (1024 ** 3)
+        except Exception as exc:
+            logger.warning(f"Unable to detect GPU memory size: {exc}")
+
+        return None
+
+    def apply_dynamic_batch_size_defaults(self, default_params):
+        whisper_defaults = default_params.get("whisper", {})
+        if not isinstance(whisper_defaults, dict):
+            return default_params
+
+        gpu_memory_gb = self.get_gpu_total_memory_gb()
+        if gpu_memory_gb is None:
+            return default_params
+
+        recommended_batch_size = None
+        if gpu_memory_gb < 11:
+            recommended_batch_size = 8
+        elif gpu_memory_gb < 23:
+            recommended_batch_size = 16
+
+        if recommended_batch_size is not None:
+            whisper_defaults["batch_size"] = recommended_batch_size
+            logger.info(
+                f"Detected {gpu_memory_gb:.1f} GB GPU memory. "
+                f"Default batch size set to {recommended_batch_size}."
+            )
+
+        return default_params
+
+    @staticmethod
+    def format_media_duration(seconds):
+        if seconds is None:
+            return "Unknown"
+
+        total_seconds = max(0, int(round(seconds)))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def get_media_duration_seconds(file_path):
+        absolute_path = os.path.abspath(str(file_path))
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    absolute_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            raw_duration = result.stdout.strip()
+            if raw_duration:
+                duration = float(raw_duration)
+                if duration >= 0:
+                    return duration
+        except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+            pass
+
+        try:
+            audio = decode_audio(absolute_path)
+            if audio is not None and len(audio) > 0:
+                return len(audio) / 16000.0
+        except Exception:
+            return None
+
+        return None
+
+    @classmethod
+    def update_uploaded_media_preview(cls, files):
+        hidden_markdown = gr.update(value="", visible=False)
+        hidden_video = gr.update(value=None, visible=False)
+        hidden_audio = gr.update(value=None, visible=False)
+
+        if not files:
+            return hidden_markdown, hidden_video, hidden_audio
+
+        file_paths = [str(file) for file in (files if isinstance(files, list) else [files]) if file]
+        if not file_paths:
+            return hidden_markdown, hidden_video, hidden_audio
+
+        summary_lines = ["**Uploaded Media**"]
+        first_video = None
+        first_audio = None
+        video_count = 0
+        audio_count = 0
+
+        for file_path in file_paths:
+            absolute_path = os.path.abspath(file_path)
+            if not os.path.exists(absolute_path):
+                continue
+
+            media_type = "Video" if is_video(absolute_path) else "Audio"
+            duration_text = cls.format_media_duration(cls.get_media_duration_seconds(absolute_path))
+            summary_lines.append(
+                f"- `{os.path.basename(absolute_path)}` ({media_type}) | Duration: `{duration_text}`"
+            )
+
+            if media_type == "Video":
+                video_count += 1
+                if first_video is None:
+                    first_video = absolute_path
+            else:
+                audio_count += 1
+                if first_audio is None:
+                    first_audio = absolute_path
+
+        if len(summary_lines) == 1:
+            return hidden_markdown, hidden_video, hidden_audio
+
+        if video_count > 1 or audio_count > 1:
+            summary_lines.append("")
+            summary_lines.append("Preview shows the first uploaded audio file and the first uploaded video file.")
+
+        return (
+            gr.update(value="\n".join(summary_lines), visible=True),
+            gr.update(value=first_video, visible=bool(first_video)),
+            gr.update(value=first_audio, visible=bool(first_audio)),
+        )
+
+    def resolve_file_output_folder(self, output_dir, batch_input, batch_enabled):
+        if output_dir and str(output_dir).strip():
+            return str(output_dir).strip()
+        if batch_enabled and batch_input and str(batch_input).strip():
+            return str(batch_input).strip()
+        return self.args.output_dir
+
+    def open_file_output_folder(self, output_dir, batch_input, batch_enabled):
+        self.open_folder(self.resolve_file_output_folder(output_dir, batch_input, batch_enabled))
 
     def create_whisper_inputs_3col(self, whisper_params):
         inputs = []
@@ -215,11 +378,15 @@ class App:
                 label=_("File Formats"),
                 info=_("Select one or more output formats."),
             )
-        with gr.Row():
+        with gr.Row(equal_height=True):
             run_btn = gr.Button(
                 _("GENERATE SUBTITLE FILE"),
                 variant="primary",
                 elem_classes=["action-button", "generate-subtitle-button"],
+            )
+            open_outputs_btn = gr.Button(
+                "OPEN OUTPUTS FOLDER",
+                elem_classes=["action-button", "open-outputs-folder-button"],
             )
         with gr.Row():
             cb_translate = gr.Checkbox(
@@ -275,6 +442,7 @@ class App:
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
             "run_button": run_btn,
+            "open_outputs_button": open_outputs_btn,
         }
 
     def launch(self, prevent_thread_lock: bool = False, quiet: bool = False):
@@ -334,6 +502,14 @@ class App:
                                     label=_("Upload File here"),
                                     file_types=MEDIA_EXTENSION,
                                 )
+                                upload_media_summary = gr.Markdown(visible=False)
+                                with gr.Row():
+                                    upload_video_preview = gr.Video(label="Video Preview", visible=False)
+                                    upload_audio_preview = gr.Audio(
+                                        label="Audio Preview",
+                                        type="filepath",
+                                        visible=False,
+                                    )
                             with gr.Column():
                                 gr.Markdown(_("Batch Processing"))
                                 with gr.Row():
@@ -377,8 +553,7 @@ class App:
                             )
                         with gr.Row():
                             file_output = gr.Textbox(label=_("Output"), scale=5)
-                            file_outputs = gr.Files(label=_("Downloadable output file"), scale=3, interactive=False)
-                            file_open_btn = gr.Button('Open', scale=1)
+                            file_outputs = gr.Files(label=_("Downloadable output file"), scale=4, interactive=False)
 
                         file_inputs = [
                             input_file,
@@ -390,19 +565,24 @@ class App:
                             file_transcription_ui["file_formats"],
                             file_transcription_ui["add_timestamp"],
                         ]
+                        input_file.change(
+                            fn=self.update_uploaded_media_preview,
+                            inputs=[input_file],
+                            outputs=[upload_media_summary, upload_video_preview, upload_audio_preview],
+                            queue=False,
+                            show_progress="hidden",
+                        )
                         file_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_file_with_live_output,
                             inputs=file_inputs + file_transcription_ui["pipeline"],
                             outputs=[tb_live_transcription, file_output, file_outputs],
                         )
-                        file_open_btn.click(
-                            fn=lambda output_dir, batch_input, batch_enabled: self.open_folder(
-                                output_dir if output_dir else (
-                                    batch_input if (batch_enabled and batch_input) else self.args.output_dir
-                                )
-                            ),
+                        file_transcription_ui["open_outputs_button"].click(
+                            fn=self.open_file_output_folder,
                             inputs=[tb_output_folder, tb_input_folder, cb_batch_processing],
                             outputs=None,
+                            queue=False,
+                            show_progress="hidden",
                         )
 
                     with gr.TabItem(_("Youtube")):
@@ -428,8 +608,7 @@ class App:
                             )
                         with gr.Row():
                             youtube_output = gr.Textbox(label=_("Output"), scale=5)
-                            youtube_outputs = gr.Files(label=_("Downloadable output file"), scale=3)
-                            youtube_open_btn = gr.Button('Open', scale=1)
+                            youtube_outputs = gr.Files(label=_("Downloadable output file"), scale=4)
 
                         youtube_inputs = [
                             tb_youtubelink,
@@ -442,7 +621,13 @@ class App:
                             outputs=[youtube_output, youtube_outputs],
                         )
                         tb_youtubelink.change(get_ytmetas, inputs=[tb_youtubelink], outputs=[img_thumbnail, tb_title, tb_description])
-                        youtube_open_btn.click(fn=lambda: self.open_folder("outputs"), inputs=None, outputs=None)
+                        youtube_transcription_ui["open_outputs_button"].click(
+                            fn=lambda: self.open_folder(self.args.output_dir),
+                            inputs=None,
+                            outputs=None,
+                            queue=False,
+                            show_progress="hidden",
+                        )
 
                     with gr.TabItem(_("Mic")):
                         with gr.Row():
@@ -466,8 +651,7 @@ class App:
                             )
                         with gr.Row():
                             mic_output = gr.Textbox(label=_("Output"), scale=5)
-                            mic_outputs = gr.Files(label=_("Downloadable output file"), scale=3)
-                            mic_open_btn = gr.Button('Open', scale=1)
+                            mic_outputs = gr.Files(label=_("Downloadable output file"), scale=4)
 
                         mic_inputs = [
                             mic_input,
@@ -479,7 +663,13 @@ class App:
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_output, mic_outputs],
                         )
-                        mic_open_btn.click(fn=lambda: self.open_folder("outputs"), inputs=None, outputs=None)
+                        mic_transcription_ui["open_outputs_button"].click(
+                            fn=lambda: self.open_folder(self.args.output_dir),
+                            inputs=None,
+                            outputs=None,
+                            queue=False,
+                            show_progress="hidden",
+                        )
 
                     with gr.TabItem(_("T2T Translation")):
                         with gr.Row():
@@ -879,11 +1069,25 @@ class App:
 
     @staticmethod
     def open_folder(folder_path: str):
-        if os.path.exists(folder_path):
-            os.system(f"start {folder_path}")
-        else:
-            os.makedirs(folder_path, exist_ok=True)
-            logger.info(f"The directory path {folder_path} has newly created.")
+        absolute_path = os.path.abspath(folder_path)
+        os.makedirs(absolute_path, exist_ok=True)
+
+        if os.name == "nt":
+            os.startfile(absolute_path)
+            return
+
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        if shutil.which(opener) is None:
+            logger.warning(
+                f"Unable to open folder automatically because '{opener}' is not available: {absolute_path}"
+            )
+            return
+
+        subprocess.Popen(
+            [opener, absolute_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 parser = argparse.ArgumentParser()

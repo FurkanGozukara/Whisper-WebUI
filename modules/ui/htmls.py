@@ -121,6 +121,30 @@ CSS = """
     animation-play-state: paused;
 }
 
+:is(button.open-outputs-folder-button, .open-outputs-folder-button button) {
+    color: #edfff6 !important;
+    text-shadow:
+        0 0 8px rgba(220, 255, 242, 0.42),
+        0 1px 0 rgba(6, 72, 52, 0.85);
+    background:
+        radial-gradient(circle at 18% 0%, rgba(214, 255, 241, 0.22), transparent 34%),
+        linear-gradient(180deg, #a7f3d6 0%, #58d8ab 18%, #10946f 58%, #0a5c48 100%) !important;
+    border-color: rgba(8, 100, 82, 0.68) !important;
+    box-shadow:
+        0 0 0 1px rgba(183, 255, 226, 0.1),
+        0 14px 28px rgba(15, 159, 127, 0.24),
+        0 1px 0 rgba(229, 255, 248, 0.34) inset,
+        0 -3px 0 rgba(5, 73, 60, 0.28) inset !important;
+}
+
+:is(button.open-outputs-folder-button, .open-outputs-folder-button button):hover {
+    box-shadow:
+        0 0 0 1px rgba(198, 255, 231, 0.14),
+        0 18px 34px rgba(15, 159, 127, 0.3),
+        0 1px 0 rgba(236, 255, 250, 0.38) inset,
+        0 -3px 0 rgba(5, 73, 60, 0.32) inset !important;
+}
+
 @keyframes premium-button-glow {
     0%, 100% {
         box-shadow:
