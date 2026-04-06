@@ -4,8 +4,7 @@ en:
   Model: Model
   Automatic Detection: Automatic Detection
   File Format: File Format
-  Translate to English?: Translate to English? (Whisper's End-To-End Speech-To-Text
-    translation feature)
+  Translate to English?: Translate to English?
   Add a timestamp to the end of the filename: Add a timestamp to the end of the filename
   Offload sub model when finished: Offload model when finished
   Advanced Parameters: Advanced Parameters

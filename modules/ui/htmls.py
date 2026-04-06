@@ -44,6 +44,102 @@ CSS = """
   text-decoration: underline;
 }
 
+.upload-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+    margin-top: 10px;
+}
+
+.upload-preview-card {
+    padding: 14px;
+    border-radius: 18px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.95));
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
+}
+
+.upload-preview-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.upload-preview-name {
+    font-weight: 700;
+    color: #0f172a;
+    word-break: break-word;
+}
+
+.upload-preview-type {
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+}
+
+.upload-preview-card video,
+.upload-preview-card audio {
+    width: 100%;
+    display: block;
+}
+
+.upload-preview-card video {
+    max-height: 300px;
+    border-radius: 14px;
+    background: #020617;
+}
+
+#top-download-output-button {
+    min-height: 0 !important;
+}
+
+:is(button.download-output-button, .download-output-button button) {
+    color: #fff7d1 !important;
+    text-shadow:
+        0 0 10px rgba(255, 243, 176, 0.45),
+        0 1px 0 rgba(107, 71, 10, 0.92);
+    background:
+        radial-gradient(circle at 18% 0%, rgba(255, 245, 180, 0.26), transparent 34%),
+        linear-gradient(180deg, #ffe78a 0%, #f7c94a 18%, #d89b11 58%, #8f6208 100%) !important;
+    border-color: rgba(141, 98, 8, 0.72) !important;
+    box-shadow:
+        0 0 0 1px rgba(255, 232, 147, 0.14),
+        0 14px 30px rgba(216, 155, 17, 0.28),
+        0 0 26px rgba(247, 201, 74, 0.18),
+        0 1px 0 rgba(255, 250, 219, 0.4) inset,
+        0 -3px 0 rgba(115, 75, 7, 0.3) inset !important;
+    animation: premium-download-glow 2.8s ease-in-out infinite;
+}
+
+:is(button.download-output-button, .download-output-button button):hover {
+    box-shadow:
+        0 0 0 1px rgba(255, 240, 171, 0.18),
+        0 18px 36px rgba(216, 155, 17, 0.34),
+        0 0 34px rgba(247, 201, 74, 0.24),
+        0 1px 0 rgba(255, 252, 230, 0.44) inset,
+        0 -3px 0 rgba(115, 75, 7, 0.34) inset !important;
+}
+
+@keyframes premium-download-glow {
+    0%, 100% {
+        box-shadow:
+            0 14px 30px rgba(216, 155, 17, 0.28),
+            0 0 26px rgba(247, 201, 74, 0.18),
+            0 1px 0 rgba(255, 250, 219, 0.4) inset,
+            0 -3px 0 rgba(115, 75, 7, 0.3) inset;
+    }
+    50% {
+        box-shadow:
+            0 18px 36px rgba(216, 155, 17, 0.34),
+            0 0 34px rgba(247, 201, 74, 0.24),
+            0 1px 0 rgba(255, 252, 230, 0.44) inset,
+            0 -3px 0 rgba(115, 75, 7, 0.34) inset;
+    }
+}
+
 :is(button.action-button, .action-button button) {
     position: relative;
     overflow: hidden;
@@ -173,7 +269,8 @@ CSS = """
 
 @media (prefers-reduced-motion: reduce) {
     :is(button.generate-subtitle-button, .generate-subtitle-button button),
-    :is(button.generate-subtitle-button, .generate-subtitle-button button)::before {
+    :is(button.generate-subtitle-button, .generate-subtitle-button button)::before,
+    :is(button.download-output-button, .download-output-button button) {
         animation: none !important;
     }
 }

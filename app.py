@@ -1,8 +1,13 @@
 import argparse
+import html
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
+from pathlib import Path
+from urllib.parse import quote
 
 import gradio as gr
 import torch
@@ -50,6 +55,11 @@ logger = get_logger()
 enable_torch_2_6_weights_only_compat()
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_TITLE = "Whisper TTS Premium App by SECourses V4.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+TIMESTAMP_INFO = (
+    "Adds the current date and time to the output filename. "
+    "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
+    "Disable it if you want shorter, stable filenames."
+)
 
 
 class App:
@@ -209,24 +219,31 @@ class App:
 
         return None
 
-    @classmethod
-    def update_uploaded_media_preview(cls, files):
+    def get_gradio_api_prefix(self):
+        root_path = (self.args.root_path or "").strip()
+        if not root_path or root_path == "/":
+            return "/gradio_api"
+
+        normalized_root = f"/{root_path.lstrip('/')}"
+        return f"{normalized_root.rstrip('/')}/gradio_api"
+
+    def get_gradio_file_url(self, file_path):
+        normalized_path = Path(os.path.abspath(str(file_path))).as_posix()
+        return f"{self.get_gradio_api_prefix()}/file={quote(normalized_path, safe='/')}"
+
+    def update_uploaded_media_preview(self, files):
         hidden_markdown = gr.update(value="", visible=False)
-        hidden_video = gr.update(value=None, visible=False)
-        hidden_audio = gr.update(value=None, visible=False)
+        hidden_html = gr.update(value="", visible=False)
 
         if not files:
-            return hidden_markdown, hidden_video, hidden_audio
+            return hidden_markdown, hidden_html
 
         file_paths = [str(file) for file in (files if isinstance(files, list) else [files]) if file]
         if not file_paths:
-            return hidden_markdown, hidden_video, hidden_audio
+            return hidden_markdown, hidden_html
 
         summary_lines = ["**Uploaded Media**"]
-        first_video = None
-        first_audio = None
-        video_count = 0
-        audio_count = 0
+        preview_cards = []
 
         for file_path in file_paths:
             absolute_path = os.path.abspath(file_path)
@@ -234,31 +251,45 @@ class App:
                 continue
 
             media_type = "Video" if is_video(absolute_path) else "Audio"
-            duration_text = cls.format_media_duration(cls.get_media_duration_seconds(absolute_path))
+            duration_text = self.format_media_duration(self.get_media_duration_seconds(absolute_path))
             summary_lines.append(
                 f"- `{os.path.basename(absolute_path)}` ({media_type}) | Duration: `{duration_text}`"
             )
 
             if media_type == "Video":
-                video_count += 1
-                if first_video is None:
-                    first_video = absolute_path
+                preview_cards.append(
+                    f"""
+                    <div class="upload-preview-card">
+                      <div class="upload-preview-meta">
+                        <span class="upload-preview-name">{html.escape(os.path.basename(absolute_path))}</span>
+                        <span class="upload-preview-type">Video · {html.escape(duration_text)}</span>
+                      </div>
+                      <video controls preload="metadata" playsinline src="{self.get_gradio_file_url(absolute_path)}"></video>
+                    </div>
+                    """
+                )
             else:
-                audio_count += 1
-                if first_audio is None:
-                    first_audio = absolute_path
+                preview_cards.append(
+                    f"""
+                    <div class="upload-preview-card">
+                      <div class="upload-preview-meta">
+                        <span class="upload-preview-name">{html.escape(os.path.basename(absolute_path))}</span>
+                        <span class="upload-preview-type">Audio · {html.escape(duration_text)}</span>
+                      </div>
+                      <audio controls preload="metadata" src="{self.get_gradio_file_url(absolute_path)}"></audio>
+                    </div>
+                    """
+                )
 
         if len(summary_lines) == 1:
-            return hidden_markdown, hidden_video, hidden_audio
-
-        if video_count > 1 or audio_count > 1:
-            summary_lines.append("")
-            summary_lines.append("Preview shows the first uploaded audio file and the first uploaded video file.")
+            return hidden_markdown, hidden_html
 
         return (
             gr.update(value="\n".join(summary_lines), visible=True),
-            gr.update(value=first_video, visible=bool(first_video)),
-            gr.update(value=first_audio, visible=bool(first_audio)),
+            gr.update(
+                value=f'<div class="upload-preview-grid">{"".join(preview_cards)}</div>',
+                visible=bool(preview_cards),
+            ),
         )
 
     def resolve_file_output_folder(self, output_dir, batch_input, batch_enabled):
@@ -270,6 +301,82 @@ class App:
 
     def open_file_output_folder(self, output_dir, batch_input, batch_enabled):
         self.open_folder(self.resolve_file_output_folder(output_dir, batch_input, batch_enabled))
+
+    @staticmethod
+    def _unique_archive_name(used_names, file_path):
+        base_name = os.path.basename(file_path)
+        if base_name not in used_names:
+            used_names.add(base_name)
+            return base_name
+
+        stem, ext = os.path.splitext(base_name)
+        counter = 2
+        while True:
+            candidate = f"{stem}_{counter}{ext}"
+            if candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            counter += 1
+
+    def prepare_download_output(self, output_paths):
+        if not output_paths:
+            return gr.update(value=None, visible=False)
+
+        valid_paths = []
+        for path in output_paths:
+            if path and os.path.exists(path):
+                normalized = os.path.abspath(str(path))
+                if normalized not in valid_paths:
+                    valid_paths.append(normalized)
+
+        if not valid_paths:
+            return gr.update(value=None, visible=False)
+
+        if len(valid_paths) == 1:
+            return gr.update(value=valid_paths[0], visible=True)
+
+        bundle_dir = os.path.join(self.args.output_dir, "_download_bundles")
+        os.makedirs(bundle_dir, exist_ok=True)
+
+        with tempfile.NamedTemporaryFile(
+            prefix="whisper_outputs_",
+            suffix=".zip",
+            dir=bundle_dir,
+            delete=False,
+        ) as temp_zip:
+            zip_path = temp_zip.name
+
+        used_names = set()
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in valid_paths:
+                archive.write(file_path, arcname=self._unique_archive_name(used_names, file_path))
+
+        return gr.update(value=zip_path, visible=True)
+
+    def transcribe_file_with_download(self,
+                                      files=None,
+                                      batch_mode=False,
+                                      input_folder_path=None,
+                                      include_subdirectory=None,
+                                      overwrite_existing=False,
+                                      output_dir=None,
+                                      file_formats="SRT",
+                                      add_timestamp=True,
+                                      progress=gr.Progress(),
+                                      *pipeline_params):
+        for live_output, result_str, collected_paths in self.whisper_inf.transcribe_file_with_live_output(
+            files,
+            batch_mode,
+            input_folder_path,
+            include_subdirectory,
+            overwrite_existing,
+            output_dir,
+            file_formats,
+            add_timestamp,
+            progress,
+            *pipeline_params,
+        ):
+            yield live_output, result_str, self.prepare_download_output(collected_paths)
 
     def create_whisper_inputs_3col(self, whisper_params):
         inputs = []
@@ -361,23 +468,48 @@ class App:
         uvr_params = transcription_defaults["bgm_separation"]
 
         with gr.Row():
-            dd_model = gr.Dropdown(
-                choices=self.whisper_inf.available_models,
-                value=whisper_params["model_size"],
-                label=_("Model"),
-                allow_custom_value=True,
-            )
-            dd_lang = gr.Dropdown(
-                choices=WhisperParams.get_language_choices(self.whisper_inf.available_langs),
-                value=WhisperParams.normalize_lang_choice(whisper_params["lang"]),
-                label=_("Language"),
-            )
-            cg_file_formats = gr.CheckboxGroup(
-                choices=["SRT", "WebVTT", "txt", "LRC", "JSON", "TSV"],
-                value=transcription_defaults.get("file_formats", ["SRT"]) or ["SRT"],
-                label=_("File Formats"),
-                info=_("Select one or more output formats."),
-            )
+            with gr.Column(scale=2):
+                lang_value = WhisperParams.normalize_lang_choice(whisper_params["lang"])
+                dd_model = gr.Dropdown(
+                    choices=self.whisper_inf.available_models,
+                    value=whisper_params["model_size"],
+                    label=_("Model"),
+                    allow_custom_value=True,
+                )
+                dd_lang = gr.Dropdown(
+                    choices=WhisperParams.get_language_choices(self.whisper_inf.available_langs),
+                    value=lang_value,
+                    label=_("Language"),
+                )
+            with gr.Column(scale=2):
+                cg_file_formats = gr.CheckboxGroup(
+                    choices=["SRT", "WebVTT", "txt", "LRC", "JSON", "TSV"],
+                    value=transcription_defaults.get("file_formats", ["SRT"]) or ["SRT"],
+                    label=_("File Formats"),
+                    info=_("Select one or more output formats."),
+                )
+                cb_translate = gr.Checkbox(
+                    value=whisper_params["is_translate"],
+                    label=_("Translate to English?"),
+                    info=(
+                        "When enabled, Whisper outputs English text directly from the speech. "
+                        "When disabled, subtitles stay in the original spoken language. "
+                        "This uses Whisper's built-in translation, not DeepL or NLLB."
+                    ),
+                    interactive=True,
+                )
+            with gr.Column(scale=1):
+                cb_timestamp = gr.Checkbox(
+                    value=transcription_defaults.get("add_timestamp", False),
+                    label=_("Add a timestamp to the end of the filename"),
+                    info=TIMESTAMP_INFO,
+                    interactive=True,
+                )
+            with gr.Column(scale=1):
+                batch_size_input = WhisperParams.to_batch_size_input(
+                    defaults=whisper_params,
+                    whisper_type=self.args.whisper_type,
+                )
         with gr.Row(equal_height=True):
             run_btn = gr.Button(
                 _("GENERATE SUBTITLE FILE"),
@@ -387,22 +519,6 @@ class App:
             open_outputs_btn = gr.Button(
                 "OPEN OUTPUTS FOLDER",
                 elem_classes=["action-button", "open-outputs-folder-button"],
-            )
-        with gr.Row():
-            cb_translate = gr.Checkbox(
-                value=whisper_params["is_translate"],
-                label=_("Translate to English?"),
-                info="Whisper's End-To-End Speech-To-Text translation feature",
-                interactive=True,
-            )
-            cb_timestamp = gr.Checkbox(
-                value=transcription_defaults.get("add_timestamp", False),
-                label=_("Add a timestamp to the end of the filename"),
-                interactive=True,
-            )
-            batch_size_input = WhisperParams.to_batch_size_input(
-                defaults=whisper_params,
-                whisper_type=self.args.whisper_type,
             )
 
         with gr.Accordion(_("Advanced Parameters"), open=False):
@@ -469,7 +585,7 @@ class App:
         with self.app:
             gr.Radio(
                 choices=list(self.i18n.keys()),
-                label=_("Language"),
+                label="UI Language",
                 interactive=True,
                 visible=False,
             )
@@ -478,20 +594,29 @@ class App:
                     with gr.Column():
                         gr.Markdown(f"### {self.title}", elem_id="md_project")
 
-                with gr.Accordion("Config Presets (Save / Load)", open=True):
-                    with gr.Row():
-                        ui_preset_dropdown = gr.Dropdown(
-                            label="Select Preset",
-                            choices=list_ui_presets(),
-                            value=startup_preset_name,
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        with gr.Accordion("Config Presets (Save / Load)", open=True):
+                            with gr.Row():
+                                ui_preset_dropdown = gr.Dropdown(
+                                    label="Select Preset",
+                                    choices=list_ui_presets(),
+                                    value=startup_preset_name,
+                                )
+                                ui_preset_name = gr.Textbox(label="New Preset Name", placeholder="my_preset")
+                            with gr.Row():
+                                ui_preset_save_btn = gr.Button("Save", variant="primary")
+                                ui_preset_load_btn = gr.Button("Load Selected")
+                                ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
+                                ui_preset_delete_btn = gr.Button("Delete", variant="stop")
+                            ui_preset_status = gr.Markdown(startup_preset_status)
+                    with gr.Column(scale=2):
+                        file_download_btn = gr.DownloadButton(
+                                    "Download Transcription",
+                            visible=False,
+                            elem_id="top-download-output-button",
+                            elem_classes=["action-button", "download-output-button"],
                         )
-                        ui_preset_name = gr.Textbox(label="New Preset Name", placeholder="my_preset")
-                    with gr.Row():
-                        ui_preset_save_btn = gr.Button("Save", variant="primary")
-                        ui_preset_load_btn = gr.Button("Load Selected")
-                        ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
-                        ui_preset_delete_btn = gr.Button("Delete", variant="stop")
-                    ui_preset_status = gr.Markdown(startup_preset_status)
 
                 with gr.Tabs():
                     with gr.TabItem(_("File")):
@@ -503,13 +628,7 @@ class App:
                                     file_types=MEDIA_EXTENSION,
                                 )
                                 upload_media_summary = gr.Markdown(visible=False)
-                                with gr.Row():
-                                    upload_video_preview = gr.Video(label="Video Preview", visible=False)
-                                    upload_audio_preview = gr.Audio(
-                                        label="Audio Preview",
-                                        type="filepath",
-                                        visible=False,
-                                    )
+                                upload_media_preview = gr.HTML(visible=False)
                             with gr.Column():
                                 gr.Markdown(_("Batch Processing"))
                                 with gr.Row():
@@ -552,9 +671,7 @@ class App:
                                 placeholder="Transcribed segments will appear here in real-time...",
                             )
                         with gr.Row():
-                            file_output = gr.Textbox(label=_("Output"), scale=5)
-                            file_outputs = gr.Files(label=_("Downloadable output file"), scale=4, interactive=False)
-
+                            file_output = gr.Textbox(label=_("Output"), interactive=False)
                         file_inputs = [
                             input_file,
                             cb_batch_processing,
@@ -568,14 +685,14 @@ class App:
                         input_file.change(
                             fn=self.update_uploaded_media_preview,
                             inputs=[input_file],
-                            outputs=[upload_media_summary, upload_video_preview, upload_audio_preview],
+                            outputs=[upload_media_summary, upload_media_preview],
                             queue=False,
                             show_progress="hidden",
                         )
                         file_transcription_ui["run_button"].click(
-                            fn=self.whisper_inf.transcribe_file_with_live_output,
+                            fn=self.transcribe_file_with_download,
                             inputs=file_inputs + file_transcription_ui["pipeline"],
-                            outputs=[tb_live_transcription, file_output, file_outputs],
+                            outputs=[tb_live_transcription, file_output, file_download_btn],
                         )
                         file_transcription_ui["open_outputs_button"].click(
                             fn=self.open_file_output_folder,
@@ -699,6 +816,7 @@ class App:
                                 deepl_add_timestamp = gr.Checkbox(
                                     value=deepl_defaults["add_timestamp"],
                                     label=_("Add a timestamp to the end of the filename"),
+                                    info=TIMESTAMP_INFO,
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -746,6 +864,7 @@ class App:
                                 nllb_add_timestamp = gr.Checkbox(
                                     value=nllb_defaults["add_timestamp"],
                                     label=_("Add a timestamp to the end of the filename"),
+                                    info=TIMESTAMP_INFO,
                                     interactive=True,
                                 )
                             with gr.Row():

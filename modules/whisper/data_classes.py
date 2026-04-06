@@ -459,6 +459,12 @@ class WhisperParams(BaseParams):
             label="Batch Size",
             value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
             precision=0,
+            info=(
+                "How many audio chunks are processed together in one batch. "
+                "Higher batch size usually increases speed and throughput, but uses more VRAM. "
+                "Lower batch size is slower, but safer on smaller GPUs and less likely to cause out-of-memory errors. "
+                "Good starting points: 8 for GPUs under 11 GB, 16 for GPUs under 23 GB, 32 for larger GPUs."
+            ),
         )
 
         if whisper_type not in {
@@ -499,6 +505,11 @@ class WhisperParams(BaseParams):
                 gr.Checkbox(
                     label=_("Translate to English?"),
                     value=defaults.get("is_translate", cls.__fields__["is_translate"].default),
+                    info=(
+                        "When enabled, Whisper outputs English text directly from the speech. "
+                        "When disabled, subtitles stay in the original spoken language. "
+                        "This uses Whisper's built-in translation, not DeepL or NLLB."
+                    ),
                 ),
             ]
 
