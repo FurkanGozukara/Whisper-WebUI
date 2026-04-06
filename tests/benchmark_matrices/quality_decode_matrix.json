@@ -1,0 +1,35 @@
+[
+  {
+    "name": "q-baseline"
+  },
+  {
+    "name": "q-beam3",
+    "whisper": {
+      "beam_size": 3
+    }
+  },
+  {
+    "name": "q-beam8",
+    "whisper": {
+      "beam_size": 8
+    }
+  },
+  {
+    "name": "q-beam10",
+    "whisper": {
+      "beam_size": 10
+    }
+  },
+  {
+    "name": "q-beam12",
+    "whisper": {
+      "beam_size": 12
+    }
+  },
+  {
+    "name": "q-condoff",
+    "whisper": {
+      "condition_on_previous_text": false
+    }
+  }
+]

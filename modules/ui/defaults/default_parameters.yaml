@@ -1,13 +1,13 @@
 whisper:
   model_size: large-v3
-  lang: Automatic Detection
+  lang: English
   is_translate: false
-  beam_size: 5
+  beam_size: 8
   log_prob_threshold: -1.0
   no_speech_threshold: 0.6
   compute_type: bfloat16
   best_of: 5
-  patience: 1.0
+  patience: 1.5
   condition_on_previous_text: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
@@ -24,12 +24,12 @@ whisper:
   prepend_punctuations: '"''([{-'
   append_punctuations: '"''.,!?:)]}'
   max_new_tokens: null
-  chunk_length: 15
+  chunk_length: 20
   hallucination_silence_threshold: null
   hotwords: null
   language_detection_threshold: 0.5
   language_detection_segments: 1
-  batch_size: 8
+  batch_size: 32
   enable_offload: false
   add_timestamp: false
   file_format: SRT

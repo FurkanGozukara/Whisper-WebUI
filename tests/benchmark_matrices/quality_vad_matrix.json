@@ -1,0 +1,53 @@
+[
+  {
+    "name": "q-baseline"
+  },
+  {
+    "name": "q-vad-default",
+    "vad": {
+      "vad_filter": true
+    }
+  },
+  {
+    "name": "q-vad-thresh-035",
+    "vad": {
+      "vad_filter": true,
+      "threshold": 0.35
+    }
+  },
+  {
+    "name": "q-vad-thresh-065",
+    "vad": {
+      "vad_filter": true,
+      "threshold": 0.65
+    }
+  },
+  {
+    "name": "q-vad-silence-500",
+    "vad": {
+      "vad_filter": true,
+      "min_silence_duration_ms": 500
+    }
+  },
+  {
+    "name": "q-vad-silence-1000",
+    "vad": {
+      "vad_filter": true,
+      "min_silence_duration_ms": 1000
+    }
+  },
+  {
+    "name": "q-vad-pad-200",
+    "vad": {
+      "vad_filter": true,
+      "speech_pad_ms": 200
+    }
+  },
+  {
+    "name": "q-vad-pad-800",
+    "vad": {
+      "vad_filter": true,
+      "speech_pad_ms": 800
+    }
+  }
+]

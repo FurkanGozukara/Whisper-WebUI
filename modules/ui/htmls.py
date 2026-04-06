@@ -45,11 +45,6 @@ CSS = """
 }
 """
 
-MARKDOWN = """
-### Web TTS V3
-"""
-
-
 NLLB_VRAM_TABLE = """
 <!DOCTYPE html>
 <html lang="en">

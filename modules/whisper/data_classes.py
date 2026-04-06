@@ -288,7 +288,7 @@ class WhisperParams(BaseParams):
     model_size: str = Field(default="large-v2", description="Whisper model size")
     lang: Optional[str] = Field(default=None, description="Source language of the file to transcribe")
     is_translate: bool = Field(default=False, description="Translate speech to English end-to-end")
-    beam_size: int = Field(default=5, ge=1, description="Beam size for decoding")
+    beam_size: int = Field(default=8, ge=1, description="Beam size for decoding")
     log_prob_threshold: float = Field(
         default=-1.0,
         description="Threshold for average log probability of sampled tokens"
@@ -301,7 +301,7 @@ class WhisperParams(BaseParams):
     )
     compute_type: str = Field(default="bfloat16", description="Computation type for transcription")
     best_of: int = Field(default=5, ge=1, description="Number of candidates when sampling")
-    patience: float = Field(default=1.0, gt=0, description="Beam search patience factor")
+    patience: float = Field(default=1.5, gt=0, description="Beam search patience factor")
     condition_on_previous_text: bool = Field(
         default=True,
         description="Use previous output as prompt for next window"
@@ -347,7 +347,7 @@ class WhisperParams(BaseParams):
         description="Punctuations to merge with previous word"
     )
     max_new_tokens: Optional[int] = Field(default=None, description="Maximum number of new tokens per chunk")
-    chunk_length: Optional[int] = Field(default=30, description="Length of audio segments in seconds")
+    chunk_length: Optional[int] = Field(default=20, description="Length of audio segments in seconds")
     hallucination_silence_threshold: Optional[float] = Field(
         default=None,
         description="Threshold for skipping silent periods in hallucination detection"
@@ -362,7 +362,7 @@ class WhisperParams(BaseParams):
         gt=0,
         description="Number of segments for language detection"
     )
-    batch_size: int = Field(default=8, gt=0, description="Batch size for processing")
+    batch_size: int = Field(default=32, gt=0, description="Batch size for processing")
     enable_offload: bool = Field(
         default=True,
         description="Offload Whisper model after transcription"
@@ -599,7 +599,7 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Number(
                 label="Chunk Length (s)",
                 value=defaults.get("chunk_length", cls.__fields__["chunk_length"].default),
-                info="âœ‚ï¸ Length of each audio window in seconds. With faster-whisper batching, `15` plus batch size `4` means four 15-second windows are decoded together (about 1 minute per pass). Shorter windows improve batching consistency; longer windows keep more context."
+                info="âœ‚ï¸ Length of each audio window in seconds. Shorter windows can improve stability, while longer windows can be faster but may hurt accuracy on long files. Current default: 20 seconds."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Hallucination Silence Threshold (sec)",

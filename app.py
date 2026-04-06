@@ -44,13 +44,15 @@ from modules.whisper.whisper_factory import WhisperFactory
 logger = get_logger()
 enable_torch_2_6_weights_only_compat()
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
+APP_TITLE = "Whisper TTS Premium App by SECourses V4.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 
 
 class App:
     def __init__(self, args):
         self.args = args
+        self.title = APP_TITLE
         self.app = gr.Blocks(
-            title="Web TTS V3",
+            title=self.title,
             delete_cache=(3600, 86400),
         )
         self.whisper_inf = WhisperFactory.create_whisper_inference(
@@ -299,7 +301,7 @@ class App:
             with Translate(self.i18n):
                 with gr.Row():
                     with gr.Column():
-                        gr.Markdown(MARKDOWN, elem_id="md_project")
+                        gr.Markdown(f"### {self.title}", elem_id="md_project")
 
                 with gr.Accordion("Config Presets (Save / Load)", open=True):
                     with gr.Row():

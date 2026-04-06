@@ -1,0 +1,30 @@
+[
+  {
+    "name": "q-beam8"
+  },
+  {
+    "name": "q-beam8-p15",
+    "whisper": {
+      "patience": 1.5
+    }
+  },
+  {
+    "name": "q-beam8-p20",
+    "whisper": {
+      "patience": 2.0
+    }
+  },
+  {
+    "name": "q-beam8-condoff",
+    "whisper": {
+      "condition_on_previous_text": false
+    }
+  },
+  {
+    "name": "q-beam8-p15-condoff",
+    "whisper": {
+      "patience": 1.5,
+      "condition_on_previous_text": false
+    }
+  }
+]

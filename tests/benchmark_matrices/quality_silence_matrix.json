@@ -1,0 +1,65 @@
+[
+  {
+    "name": "q-baseline"
+  },
+  {
+    "name": "q-hall1",
+    "whisper": {
+      "hallucination_silence_threshold": 1
+    }
+  },
+  {
+    "name": "q-hall2",
+    "whisper": {
+      "hallucination_silence_threshold": 2
+    }
+  },
+  {
+    "name": "q-hall3",
+    "whisper": {
+      "hallucination_silence_threshold": 3
+    }
+  },
+  {
+    "name": "q-hall5",
+    "whisper": {
+      "hallucination_silence_threshold": 5
+    }
+  },
+  {
+    "name": "q-logprob-05",
+    "whisper": {
+      "log_prob_threshold": -0.5
+    }
+  },
+  {
+    "name": "q-logprob-0",
+    "whisper": {
+      "log_prob_threshold": 0.0
+    }
+  },
+  {
+    "name": "q-nospeech-04",
+    "whisper": {
+      "no_speech_threshold": 0.4
+    }
+  },
+  {
+    "name": "q-nospeech-08",
+    "whisper": {
+      "no_speech_threshold": 0.8
+    }
+  },
+  {
+    "name": "q-compress-20",
+    "whisper": {
+      "compression_ratio_threshold": 2.0
+    }
+  },
+  {
+    "name": "q-compress-28",
+    "whisper": {
+      "compression_ratio_threshold": 2.8
+    }
+  }
+]

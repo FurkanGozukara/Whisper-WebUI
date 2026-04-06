@@ -1,0 +1,11 @@
+[
+  {
+    "name": "q-baseline"
+  },
+  {
+    "name": "q-bgm-separation",
+    "bgm_separation": {
+      "is_separate_bgm": true
+    }
+  }
+]

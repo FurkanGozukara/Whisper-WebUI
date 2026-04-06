@@ -1,0 +1,47 @@
+[
+  {
+    "name": "q-baseline"
+  },
+  {
+    "name": "q-len-08",
+    "whisper": {
+      "length_penalty": 0.8
+    }
+  },
+  {
+    "name": "q-len-12",
+    "whisper": {
+      "length_penalty": 1.2
+    }
+  },
+  {
+    "name": "q-rep-105",
+    "whisper": {
+      "repetition_penalty": 1.05
+    }
+  },
+  {
+    "name": "q-rep-110",
+    "whisper": {
+      "repetition_penalty": 1.1
+    }
+  },
+  {
+    "name": "q-rep-120",
+    "whisper": {
+      "repetition_penalty": 1.2
+    }
+  },
+  {
+    "name": "q-ngram-2",
+    "whisper": {
+      "no_repeat_ngram_size": 2
+    }
+  },
+  {
+    "name": "q-ngram-3",
+    "whisper": {
+      "no_repeat_ngram_size": 3
+    }
+  }
+]
