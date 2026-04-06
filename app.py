@@ -205,8 +205,8 @@ class App:
                 allow_custom_value=True,
             )
             dd_lang = gr.Dropdown(
-                choices=self.whisper_inf.available_langs + [AUTOMATIC_DETECTION],
-                value=AUTOMATIC_DETECTION if whisper_params["lang"] == AUTOMATIC_DETECTION.unwrap() else whisper_params["lang"],
+                choices=WhisperParams.get_language_choices(self.whisper_inf.available_langs),
+                value=WhisperParams.normalize_lang_choice(whisper_params["lang"]),
                 label=_("Language"),
             )
             cg_file_formats = gr.CheckboxGroup(
@@ -214,6 +214,12 @@ class App:
                 value=transcription_defaults.get("file_formats", ["SRT"]) or ["SRT"],
                 label=_("File Formats"),
                 info=_("Select one or more output formats."),
+            )
+        with gr.Row():
+            run_btn = gr.Button(
+                _("GENERATE SUBTITLE FILE"),
+                variant="primary",
+                elem_classes=["action-button", "generate-subtitle-button"],
             )
         with gr.Row():
             cb_translate = gr.Checkbox(
@@ -268,6 +274,7 @@ class App:
             "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + vad_inputs + diarization_inputs + uvr_inputs,
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
+            "run_button": run_btn,
         }
 
     def launch(self, prevent_thread_lock: bool = False, quiet: bool = False):
@@ -360,8 +367,6 @@ class App:
                         file_transcription_ui = self.create_pipeline_inputs(file_defaults)
 
                         with gr.Row():
-                            file_run_btn = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
-                        with gr.Row():
                             tb_live_transcription = gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
@@ -385,7 +390,7 @@ class App:
                             file_transcription_ui["file_formats"],
                             file_transcription_ui["add_timestamp"],
                         ]
-                        file_run_btn.click(
+                        file_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_file_with_live_output,
                             inputs=file_inputs + file_transcription_ui["pipeline"],
                             outputs=[tb_live_transcription, file_output, file_outputs],
@@ -413,8 +418,6 @@ class App:
                         youtube_transcription_ui = self.create_pipeline_inputs(youtube_defaults)
 
                         with gr.Row():
-                            youtube_run_btn = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
-                        with gr.Row():
                             gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
@@ -433,7 +436,7 @@ class App:
                             youtube_transcription_ui["file_formats"],
                             youtube_transcription_ui["add_timestamp"],
                         ]
-                        youtube_run_btn.click(
+                        youtube_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_youtube,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
                             outputs=[youtube_output, youtube_outputs],
@@ -453,8 +456,6 @@ class App:
                         mic_transcription_ui = self.create_pipeline_inputs(mic_defaults)
 
                         with gr.Row():
-                            mic_run_btn = gr.Button(_("GENERATE SUBTITLE FILE"), variant="primary")
-                        with gr.Row():
                             gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
@@ -473,7 +474,7 @@ class App:
                             mic_transcription_ui["file_formats"],
                             mic_transcription_ui["add_timestamp"],
                         ]
-                        mic_run_btn.click(
+                        mic_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_mic,
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_output, mic_outputs],
@@ -712,9 +713,9 @@ class App:
                 )
 
                 dropdown_choice_specs = {
-                    ("file_tab", "whisper", "lang"): self.whisper_inf.available_langs + [AUTOMATIC_DETECTION],
-                    ("youtube_tab", "whisper", "lang"): self.whisper_inf.available_langs + [AUTOMATIC_DETECTION],
-                    ("mic_tab", "whisper", "lang"): self.whisper_inf.available_langs + [AUTOMATIC_DETECTION],
+                    ("file_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
+                    ("youtube_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
+                    ("mic_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
                     ("file_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
                     ("youtube_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
                     ("mic_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
@@ -736,9 +737,16 @@ class App:
                     ("bgm_separation_tab", "uvr_model_size"): self.whisper_inf.music_separator.available_models,
                 }
 
-                def _match_dropdown_value(value, choices, default):
+                def _match_dropdown_value(value, choices, default, path=None):
                     if value is None and default is None:
                         return None
+                    if path in {
+                        ("file_tab", "whisper", "lang"),
+                        ("youtube_tab", "whisper", "lang"),
+                        ("mic_tab", "whisper", "lang"),
+                    }:
+                        value = WhisperParams.normalize_lang_choice(value)
+                        default = WhisperParams.normalize_lang_choice(default)
                     normalized_choices = {_normalize_choice(choice): choice for choice in choices}
                     normalized_value = _normalize_choice(value)
                     if normalized_value in normalized_choices:
@@ -776,7 +784,7 @@ class App:
                         value = get_nested_value(merged, path)
                         if path in dropdown_choice_specs:
                             default_value = get_nested_value(defaults, path)
-                            value = _match_dropdown_value(value, dropdown_choice_specs[path], default_value)
+                            value = _match_dropdown_value(value, dropdown_choice_specs[path], default_value, path=path)
                         values.append(value)
                     return values
 

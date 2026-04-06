@@ -376,6 +376,9 @@ class WhisperParams(BaseParams):
         if v is None:
             return None
 
+        if hasattr(v, "unwrap"):
+            v = v.unwrap()
+
         if not isinstance(v, str):
             return v
 
@@ -388,13 +391,12 @@ class WhisperParams(BaseParams):
 
         lowered = normalized.lower()
         if lowered in whisper.tokenizer.LANGUAGES:
-            return whisper.tokenizer.LANGUAGES[lowered]
-        if lowered in whisper.tokenizer.LANGUAGES.values():
             return lowered
+        if lowered in whisper.tokenizer.LANGUAGES.values():
+            return whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
         if lowered in whisper.tokenizer.TO_LANGUAGE_CODE:
-            code = whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
-            return whisper.tokenizer.LANGUAGES[code]
-        return normalized
+            return whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
+        return lowered
 
     @staticmethod
     def normalize_lang_choice(v):
@@ -402,10 +404,16 @@ class WhisperParams(BaseParams):
 
         normalized = WhisperParams.normalize_lang_value(v)
         if normalized is None:
-            if isinstance(v, str) and v.strip() and v.strip().casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
+            raw_value = v.unwrap() if hasattr(v, "unwrap") else v
+            if isinstance(raw_value, str) and raw_value.strip() and raw_value.strip().casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
                 return AUTOMATIC_DETECTION.unwrap()
             return "english"
-        return normalized
+
+        if isinstance(normalized, str) and normalized in whisper.tokenizer.LANGUAGES:
+            return whisper.tokenizer.LANGUAGES[normalized]
+        if isinstance(normalized, str) and normalized in whisper.tokenizer.LANGUAGES.values():
+            return normalized
+        return "english"
 
     @staticmethod
     def get_language_choices(available_langs: Optional[List]) -> List:

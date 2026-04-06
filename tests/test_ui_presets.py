@@ -79,8 +79,12 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     defaults = build_default_ui_config()
 
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
-    assert WhisperParams(lang="English").lang == "english"
-    assert WhisperParams(lang="en").lang == "english"
+    assert WhisperParams(lang="English").lang == "en"
+    assert WhisperParams(lang="english").lang == "en"
+    assert WhisperParams(lang="en").lang == "en"
+    assert WhisperParams(lang="Automatic Detection").lang is None
+    assert WhisperParams.normalize_lang_choice("English") == "english"
+    assert WhisperParams.normalize_lang_choice("en") == "english"
 
 
 def test_last_used_preset_is_persisted_and_cleared_when_missing(tmp_path, monkeypatch):
