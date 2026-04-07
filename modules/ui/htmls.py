@@ -274,6 +274,42 @@ CSS = """
         animation: none !important;
     }
 }
+
+.live-transcription-box textarea {
+    min-height: 180px !important;
+    height: 180px !important;
+    max-height: 180px !important;
+    overflow-y: auto !important;
+    resize: none !important;
+}
+"""
+
+HEAD = """
+<script>
+(() => {
+  const selector = ".live-transcription-box textarea";
+
+  const scrollToBottom = (textarea) => {
+    if (!textarea) return;
+    textarea.scrollTop = textarea.scrollHeight;
+  };
+
+  const syncAll = () => {
+    document.querySelectorAll(selector).forEach(scrollToBottom);
+  };
+
+  const init = () => {
+    syncAll();
+    window.setInterval(syncAll, 200);
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+})();
+</script>
 """
 
 NLLB_VRAM_TABLE = """

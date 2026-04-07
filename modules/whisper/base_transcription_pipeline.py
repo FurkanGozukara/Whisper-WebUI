@@ -15,6 +15,9 @@ from faster_whisper.vad import VadOptions
 import gc
 from copy import deepcopy
 import time
+from collections import deque
+from queue import Empty, Queue
+from threading import Lock, Thread
 
 from modules.uvr.music_separator import MusicSeparator
 from modules.utils.paths import WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, UVR_MODELS_DIR
@@ -34,6 +37,9 @@ logger = get_logger()
 
 
 class BaseTranscriptionPipeline(ABC):
+    LIVE_TRANSCRIPTION_HISTORY_LINES = 30
+    LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC = 0.1
+
     def __init__(self,
                  model_dir: str = WHISPER_MODELS_DIR,
                  diarization_model_dir: str = DIARIZATION_MODELS_DIR,
@@ -265,45 +271,109 @@ class BaseTranscriptionPipeline(ABC):
             if not files:
                 raise ValueError("No input files provided for transcription.")
 
-            live_output = ""
+            live_output_lines = deque(maxlen=self.LIVE_TRANSCRIPTION_HISTORY_LINES)
+            live_output_lock = Lock()
             collected_paths: List[str] = []
+
+            def append_live_lines(*lines: str) -> str:
+                normalized_lines = []
+                for line in lines:
+                    if line is None:
+                        continue
+                    normalized_lines.extend(str(line).splitlines() or [""])
+
+                with live_output_lock:
+                    live_output_lines.extend(normalized_lines)
+                    return "\n".join(live_output_lines)
 
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
                 target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
                 existing_outputs = self._find_existing_outputs(file_name, target_output_dir, file_formats)
 
-                live_output += f"📂 Processing: {file_name}\n{'='*60}\n\n"
+                live_output = append_live_lines(f"📂 Processing: {file_name}", "=" * 60, "")
                 yield live_output, "", collected_paths
 
                 if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(file_formats):
                     skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
                     collected_paths.extend(skipped_paths)
-                    live_output += f"⏩ Skipped (outputs already exist in {target_output_dir})\n\n"
+                    live_output = append_live_lines(
+                        f"⏩ Skipped (outputs already exist in {target_output_dir})",
+                        "",
+                    )
                     result_str = f"Skipped {file_name}: outputs already present."
                     yield live_output, result_str, collected_paths
                     continue
 
-                # Create a custom progress callback that yields updates
                 segment_count = [0]  # Use list to allow modification in nested function
+                live_update_queue: Queue = Queue()
+                worker_result = {}
+                worker_error = {}
+
                 def live_progress_callback(progress_value, segment=None):
-                    nonlocal live_output
                     if segment:
                         segment_count[0] += 1
                         start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
                         end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
                         text = segment.text if hasattr(segment, 'text') else ""
+                        live_update_queue.put(append_live_lines(f"[{start_time} → {end_time}] {text}"))
 
-                        live_output += f"[{start_time} → {end_time}] {text}\n"
+                def run_with_live_callback():
+                    try:
+                        transcribed_segments, time_for_task = self.run(
+                            file,
+                            progress,
+                            file_formats[0],
+                            add_timestamp,
+                            live_progress_callback,
+                            *pipeline_params,
+                        )
+                        worker_result["segments"] = transcribed_segments
+                        worker_result["time_for_task"] = time_for_task
+                    except Exception as e:
+                        worker_error["exception"] = e
+                    finally:
+                        live_update_queue.put(None)
 
-                transcribed_segments, time_for_task = self.run(
-                    file,
-                    progress,
-                    file_formats[0],
-                    add_timestamp,
-                    live_progress_callback,
-                    *pipeline_params,
-                )
+                worker_thread = Thread(target=run_with_live_callback, daemon=True)
+                worker_thread.start()
+
+                while True:
+                    try:
+                        queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
+                    except Empty:
+                        if worker_thread.is_alive():
+                            continue
+                        break
+
+                    latest_update = queued_update
+                    saw_sentinel = queued_update is None
+
+                    while True:
+                        try:
+                            queued_update = live_update_queue.get_nowait()
+                        except Empty:
+                            break
+
+                        if queued_update is None:
+                            saw_sentinel = True
+                            continue
+
+                        latest_update = queued_update
+
+                    if latest_update is not None:
+                        yield latest_update, "", collected_paths
+
+                    if saw_sentinel and not worker_thread.is_alive():
+                        break
+
+                worker_thread.join()
+
+                if "exception" in worker_error:
+                    raise worker_error["exception"]
+
+                transcribed_segments = worker_result["segments"]
+                time_for_task = worker_result["time_for_task"]
 
                 # Calculate transcription speed
                 if transcribed_segments and len(transcribed_segments) > 0:
@@ -311,7 +381,10 @@ class BaseTranscriptionPipeline(ABC):
                     audio_duration = last_segment.end if hasattr(last_segment, 'end') and last_segment.end else 0
                     if audio_duration > 0 and time_for_task > 0:
                         speed_ratio = audio_duration / time_for_task
-                        live_output += f"\n⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})\n"
+                        append_live_lines(
+                            "",
+                            f"⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})",
+                        )
 
                 # Generate final output(s)
                 generated_paths = []
@@ -331,7 +404,10 @@ class BaseTranscriptionPipeline(ABC):
                     generated_paths.append(file_path)
 
                 collected_paths.extend(generated_paths)
-                live_output += f"✅ Completed in {self.format_time(time_for_task)}\n\n"
+                live_output = append_live_lines(
+                    f"✅ Completed in {self.format_time(time_for_task)}",
+                    "",
+                )
                 result_str = f"Done! {segment_count[0]} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
 
                 yield live_output, result_str, collected_paths

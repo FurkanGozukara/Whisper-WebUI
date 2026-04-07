@@ -779,10 +779,11 @@ class App:
                                 tb_live_transcription = gr.Textbox(
                                     label=_("Live Transcription"),
                                     lines=10,
-                                    max_lines=15,
+                                    max_lines=10,
                                     interactive=False,
                                     buttons=["copy"],
                                     placeholder="Transcribed segments will appear here in real-time...",
+                                    elem_classes=["live-transcription-box"],
                                 )
                         file_transcription_ui = self.create_pipeline_inputs(
                             file_defaults,
@@ -859,10 +860,11 @@ class App:
                             gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
-                                max_lines=15,
+                                max_lines=10,
                                 interactive=False,
                                 buttons=["copy"],
                                 placeholder="Transcribed segments will appear here in real-time...",
+                                elem_classes=["live-transcription-box"],
                             )
                         with gr.Row():
                             youtube_output = gr.Textbox(label=_("Output"), scale=5)
@@ -902,10 +904,11 @@ class App:
                             gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
-                                max_lines=15,
+                                max_lines=10,
                                 interactive=False,
                                 buttons=["copy"],
                                 placeholder="Transcribed segments will appear here in real-time...",
+                                elem_classes=["live-transcription-box"],
                             )
                         with gr.Row():
                             mic_output = gr.Textbox(label=_("Output"), scale=5)
@@ -1323,6 +1326,7 @@ class App:
             server_port=args.server_port,
             theme=args.theme,
             css=CSS,
+            head=HEAD,
             prevent_thread_lock=prevent_thread_lock,
             quiet=quiet,
         )
