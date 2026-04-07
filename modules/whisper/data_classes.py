@@ -468,7 +468,7 @@ class WhisperParams(BaseParams):
             value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
             precision=0,
             info=(
-                "How many audio chunks are processed together in one batch when batched inference is enabled. "
+                "Only used when Use Batched Inference is enabled in Advanced Parameters. "
                 "Higher batch size usually increases speed and throughput, but uses more VRAM and can reduce accuracy. "
                 "Lower batch size is slower, but safer on smaller GPUs and less likely to cause out-of-memory errors. "
                 "Good starting points: 8 for GPUs under 11 GB, 16 for GPUs under 23 GB, 32 for larger GPUs."

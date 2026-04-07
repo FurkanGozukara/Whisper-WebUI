@@ -608,6 +608,10 @@ class App:
                     variant="primary",
                     elem_classes=["action-button", "generate-subtitle-button"],
                 )
+                batch_size_input = WhisperParams.to_batch_size_input(
+                    defaults=whisper_params,
+                    whisper_type=self.args.whisper_type,
+                )
                 if not place_condition_on_previous_text_right:
                     condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
                         defaults=whisper_params,
@@ -644,9 +648,12 @@ class App:
 
         whisper_advanced_fields = WhisperParams.advanced_input_field_names()
         condition_on_previous_text_index = whisper_advanced_fields.index("condition_on_previous_text")
+        batch_size_index = whisper_advanced_fields.index("batch_size")
 
         whisper_inputs[condition_on_previous_text_index].visible = False
         whisper_inputs[condition_on_previous_text_index] = condition_on_previous_text_input
+        whisper_inputs[batch_size_index].visible = False
+        whisper_inputs[batch_size_index] = batch_size_input
 
         with gr.Accordion(_("Background Music Remover Filter"), open=False):
             uvr_inputs = BGMSeparationParams.to_gradio_input(
