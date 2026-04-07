@@ -11,6 +11,7 @@ whisper:
   condition_on_previous_text: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
+  repeat_initial_prompt_every_window: false
   temperature: 0.0
   compression_ratio_threshold: 2.4
   length_penalty: 1.0

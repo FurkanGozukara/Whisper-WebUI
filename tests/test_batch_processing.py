@@ -59,6 +59,56 @@ def test_emit_progress_callback_supports_single_argument_callbacks():
     assert callback_values == [0.5]
 
 
+def test_standard_pipeline_repeats_initial_prompt_every_window():
+    captured = {}
+
+    class DummyTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, text):
+            self.calls.append(text)
+            return [101, 202]
+
+    class DummyModel:
+        def __init__(self):
+            self.tokenizer = DummyTokenizer()
+            self.prompt_inputs = []
+
+        def get_prompt(self, tokenizer, previous_tokens, without_timestamps=False, prefix=None, hotwords=None):
+            prompt_tokens = list(previous_tokens)
+            self.prompt_inputs.append(prompt_tokens)
+            return prompt_tokens
+
+        def transcribe(self, **kwargs):
+            captured.update(kwargs)
+            self.get_prompt(self.tokenizer, [11], False, None, None)
+            self.get_prompt(self.tokenizer, [22], False, None, None)
+            return iter([]), SimpleNamespace(duration=30.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = DummyModel()
+
+    params = WhisperParams(
+        initial_prompt="Welcome to the school.",
+        repeat_initial_prompt_every_window=True,
+    )
+
+    FasterWhisperInference._transcribe_with_standard_pipeline(
+        inferencer,
+        np.zeros(16000, dtype=np.float32),
+        params,
+        DummyProgress(),
+    )
+
+    assert captured["initial_prompt"] is None
+    assert inferencer.model.prompt_inputs == [
+        [101, 202, 11],
+        [101, 202, 22],
+    ]
+    assert inferencer.model.tokenizer.calls == [" Welcome to the school."]
+
+
 def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch):
     captured = {}
     callback_events = []
@@ -125,3 +175,76 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
     assert progress.events[3] == (FasterWhisperInference.CHUNKS_PREPARED_PROGRESS, "Prepared 4 chunks. Starting transcription..")
     assert progress.events[4] == (FasterWhisperInference.TRANSCRIPTION_PROGRESS_START, "Transcribing..")
     assert progress.events[5][0] > FasterWhisperInference.TRANSCRIPTION_PROGRESS_START
+
+
+def test_batched_pipeline_repeats_initial_prompt_every_window(monkeypatch):
+    captured = {}
+    dummy_segments = [make_dummy_segment(1, 0.0, 14.8, "first chunk")]
+
+    class DummyTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, text):
+            self.calls.append(text)
+            return [303, 404]
+
+    class DummyModel:
+        def __init__(self):
+            self.feature_extractor = SimpleNamespace(sampling_rate=16000)
+            self.tokenizer = DummyTokenizer()
+            self.prompt_inputs = []
+
+        def get_prompt(self, tokenizer, previous_tokens, without_timestamps=False, prefix=None, hotwords=None):
+            prompt_tokens = list(previous_tokens)
+            self.prompt_inputs.append(prompt_tokens)
+            return prompt_tokens
+
+    class DummyBatchedInferencePipeline:
+        def __init__(self, model):
+            self.model = model
+
+        def transcribe(self, **kwargs):
+            captured.update(kwargs)
+            self.model.get_prompt(self.model.tokenizer, [1], False, None, None)
+            self.model.get_prompt(self.model.tokenizer, [2], False, None, None)
+            return iter(dummy_segments), SimpleNamespace(duration=15.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = DummyModel()
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+
+    monkeypatch.setattr(
+        "modules.whisper.faster_whisper_inference.faster_whisper.BatchedInferencePipeline",
+        DummyBatchedInferencePipeline,
+    )
+
+    progress = DummyProgress()
+    whisper_params = WhisperParams(
+        model_size="large-v3",
+        compute_type="float16",
+        lang="en",
+        chunk_length=15,
+        batch_size=1,
+        initial_prompt="Welcome to the school.",
+        repeat_initial_prompt_every_window=True,
+    ).to_list()
+
+    segments, elapsed_time = FasterWhisperInference.transcribe(
+        inferencer,
+        np.zeros(15 * 16000, dtype=np.float32),
+        progress,
+        None,
+        *whisper_params,
+    )
+
+    assert len(segments) == 1
+    assert elapsed_time >= 0
+    assert captured["initial_prompt"] is None
+    assert inferencer.model.prompt_inputs == [
+        [303, 404, 1],
+        [303, 404, 2],
+    ]
+    assert inferencer.model.tokenizer.calls == [" Welcome to the school."]

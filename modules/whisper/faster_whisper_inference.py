@@ -1,5 +1,7 @@
 import os
 import time
+from contextlib import contextmanager
+from types import MethodType
 import huggingface_hub
 import numpy as np
 import torch
@@ -103,6 +105,66 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         elapsed_time = time.time() - start_time
         return segments_result, elapsed_time
 
+    @staticmethod
+    def should_repeat_initial_prompt(params: WhisperParams) -> bool:
+        if not params.repeat_initial_prompt_every_window:
+            return False
+
+        prompt = params.initial_prompt
+        if prompt is None:
+            return False
+        if isinstance(prompt, str):
+            return bool(prompt.strip())
+        return True
+
+    @staticmethod
+    def encode_initial_prompt(initial_prompt: Union[str, List[int], Tuple[int, ...]], tokenizer) -> List[int]:
+        if initial_prompt is None:
+            return []
+        if isinstance(initial_prompt, str):
+            normalized = initial_prompt.strip()
+            if not normalized:
+                return []
+            return tokenizer.encode(" " + normalized)
+        return list(initial_prompt)
+
+    @staticmethod
+    @contextmanager
+    def repeat_initial_prompt_context(model, initial_prompt: Optional[Union[str, List[int], Tuple[int, ...]]]):
+        if initial_prompt is None:
+            yield
+            return
+
+        prompt_cache = {}
+        original_get_prompt = model.get_prompt
+
+        def wrapped_get_prompt(
+            model_self,
+            tokenizer,
+            previous_tokens,
+            without_timestamps: bool = False,
+            prefix: Optional[str] = None,
+            hotwords: Optional[str] = None,
+        ):
+            cache_key = id(tokenizer)
+            if cache_key not in prompt_cache:
+                prompt_cache[cache_key] = FasterWhisperInference.encode_initial_prompt(initial_prompt, tokenizer)
+
+            merged_tokens = prompt_cache[cache_key] + list(previous_tokens or [])
+            return original_get_prompt(
+                tokenizer,
+                merged_tokens,
+                without_timestamps=without_timestamps,
+                prefix=prefix,
+                hotwords=hotwords,
+            )
+
+        model.get_prompt = MethodType(wrapped_get_prompt, model)
+        try:
+            yield
+        finally:
+            delattr(model, "get_prompt")
+
     def _transcribe_with_batching(
         self,
         audio: Union[str, BinaryIO, np.ndarray],
@@ -126,40 +188,45 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         batch_pipeline = batch_pipeline_cls(model=self.model)
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
-        return batch_pipeline.transcribe(
-            audio=audio_array,
-            language=params.lang,
-            task="translate" if params.is_translate else "transcribe",
-            beam_size=params.beam_size,
-            log_prob_threshold=params.log_prob_threshold,
-            no_speech_threshold=params.no_speech_threshold,
-            best_of=params.best_of,
-            patience=params.patience,
-            temperature=params.temperature,
-            initial_prompt=params.initial_prompt,
-            compression_ratio_threshold=params.compression_ratio_threshold,
-            length_penalty=params.length_penalty,
-            repetition_penalty=params.repetition_penalty,
-            no_repeat_ngram_size=params.no_repeat_ngram_size,
-            prefix=params.prefix,
-            suppress_blank=params.suppress_blank,
-            suppress_tokens=params.suppress_tokens,
-            without_timestamps=False,
-            max_initial_timestamp=params.max_initial_timestamp,
-            word_timestamps=params.word_timestamps,
-            prepend_punctuations=params.prepend_punctuations,
-            append_punctuations=params.append_punctuations,
-            max_new_tokens=params.max_new_tokens,
-            chunk_length=params.chunk_length,
-            clip_timestamps=clip_timestamps,
-            hallucination_silence_threshold=params.hallucination_silence_threshold,
-            batch_size=max(1, int(params.batch_size)),
-            hotwords=params.hotwords,
-            language_detection_threshold=params.language_detection_threshold,
-            language_detection_segments=params.language_detection_segments,
-            condition_on_previous_text=params.condition_on_previous_text,
-            prompt_reset_on_temperature=params.prompt_reset_on_temperature,
-        )
+        repeat_initial_prompt = self.should_repeat_initial_prompt(params)
+        with self.repeat_initial_prompt_context(
+            self.model,
+            params.initial_prompt if repeat_initial_prompt else None,
+        ):
+            return batch_pipeline.transcribe(
+                audio=audio_array,
+                language=params.lang,
+                task="translate" if params.is_translate else "transcribe",
+                beam_size=params.beam_size,
+                log_prob_threshold=params.log_prob_threshold,
+                no_speech_threshold=params.no_speech_threshold,
+                best_of=params.best_of,
+                patience=params.patience,
+                temperature=params.temperature,
+                initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
+                compression_ratio_threshold=params.compression_ratio_threshold,
+                length_penalty=params.length_penalty,
+                repetition_penalty=params.repetition_penalty,
+                no_repeat_ngram_size=params.no_repeat_ngram_size,
+                prefix=params.prefix,
+                suppress_blank=params.suppress_blank,
+                suppress_tokens=params.suppress_tokens,
+                without_timestamps=False,
+                max_initial_timestamp=params.max_initial_timestamp,
+                word_timestamps=params.word_timestamps,
+                prepend_punctuations=params.prepend_punctuations,
+                append_punctuations=params.append_punctuations,
+                max_new_tokens=params.max_new_tokens,
+                chunk_length=params.chunk_length,
+                clip_timestamps=clip_timestamps,
+                hallucination_silence_threshold=params.hallucination_silence_threshold,
+                batch_size=max(1, int(params.batch_size)),
+                hotwords=params.hotwords,
+                language_detection_threshold=params.language_detection_threshold,
+                language_detection_segments=params.language_detection_segments,
+                condition_on_previous_text=params.condition_on_previous_text,
+                prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+            )
 
     def _transcribe_with_standard_pipeline(
         self,
@@ -168,37 +235,42 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         progress: gr.Progress = gr.Progress(),
     ):
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
-        return self.model.transcribe(
-            audio=audio,
-            language=params.lang,
-            task="translate" if params.is_translate else "transcribe",
-            beam_size=params.beam_size,
-            log_prob_threshold=params.log_prob_threshold,
-            no_speech_threshold=params.no_speech_threshold,
-            best_of=params.best_of,
-            patience=params.patience,
-            temperature=params.temperature,
-            initial_prompt=params.initial_prompt,
-            compression_ratio_threshold=params.compression_ratio_threshold,
-            length_penalty=params.length_penalty,
-            repetition_penalty=params.repetition_penalty,
-            no_repeat_ngram_size=params.no_repeat_ngram_size,
-            prefix=params.prefix,
-            suppress_blank=params.suppress_blank,
-            suppress_tokens=params.suppress_tokens,
-            max_initial_timestamp=params.max_initial_timestamp,
-            word_timestamps=params.word_timestamps,
-            prepend_punctuations=params.prepend_punctuations,
-            append_punctuations=params.append_punctuations,
-            max_new_tokens=params.max_new_tokens,
-            chunk_length=params.chunk_length,
-            hallucination_silence_threshold=params.hallucination_silence_threshold,
-            hotwords=params.hotwords,
-            language_detection_threshold=params.language_detection_threshold,
-            language_detection_segments=params.language_detection_segments,
-            condition_on_previous_text=params.condition_on_previous_text,
-            prompt_reset_on_temperature=params.prompt_reset_on_temperature,
-        )
+        repeat_initial_prompt = self.should_repeat_initial_prompt(params)
+        with self.repeat_initial_prompt_context(
+            self.model,
+            params.initial_prompt if repeat_initial_prompt else None,
+        ):
+            return self.model.transcribe(
+                audio=audio,
+                language=params.lang,
+                task="translate" if params.is_translate else "transcribe",
+                beam_size=params.beam_size,
+                log_prob_threshold=params.log_prob_threshold,
+                no_speech_threshold=params.no_speech_threshold,
+                best_of=params.best_of,
+                patience=params.patience,
+                temperature=params.temperature,
+                initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
+                compression_ratio_threshold=params.compression_ratio_threshold,
+                length_penalty=params.length_penalty,
+                repetition_penalty=params.repetition_penalty,
+                no_repeat_ngram_size=params.no_repeat_ngram_size,
+                prefix=params.prefix,
+                suppress_blank=params.suppress_blank,
+                suppress_tokens=params.suppress_tokens,
+                max_initial_timestamp=params.max_initial_timestamp,
+                word_timestamps=params.word_timestamps,
+                prepend_punctuations=params.prepend_punctuations,
+                append_punctuations=params.append_punctuations,
+                max_new_tokens=params.max_new_tokens,
+                chunk_length=params.chunk_length,
+                hallucination_silence_threshold=params.hallucination_silence_threshold,
+                hotwords=params.hotwords,
+                language_detection_threshold=params.language_detection_threshold,
+                language_detection_segments=params.language_detection_segments,
+                condition_on_previous_text=params.condition_on_previous_text,
+                prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+            )
 
     @classmethod
     def map_transcription_progress(cls, raw_progress: float) -> float:

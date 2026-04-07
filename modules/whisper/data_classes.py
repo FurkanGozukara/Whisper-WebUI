@@ -314,6 +314,10 @@ class WhisperParams(BaseParams):
         description="Temperature threshold for resetting prompt"
     )
     initial_prompt: Optional[str] = Field(default=None, description="Initial prompt for first window")
+    repeat_initial_prompt_every_window: bool = Field(
+        default=False,
+        description="Reinject the initial prompt before every faster-whisper window"
+    )
     temperature: float = Field(
         default=0.0,
         ge=0.0,
@@ -573,7 +577,20 @@ class WhisperParams(BaseParams):
                 value=defaults.get("initial_prompt", GRADIO_NONE_STR),
                 info="ðŸ’¬ Text to guide transcription style/vocabulary. Examples: 'Medical terminology:', 'Interview with Dr. Smith about AI', 'Technical lecture on Python'. Helps with domain-specific terms. Leave empty for general transcription."
             ))
-        
+            inputs.append(gr.Checkbox(
+                label="Repeat Initial Prompt Every Window",
+                value=defaults.get(
+                    "repeat_initial_prompt_every_window",
+                    cls.__fields__["repeat_initial_prompt_every_window"].default
+                ),
+                visible=whisper_type == WhisperImpl.FASTER_WHISPER.value,
+                info=(
+                    "Reinject the Initial Prompt before every faster-whisper window. "
+                    "Useful for forcing names, terminology, or style across long audio, "
+                    "but it can over-bias the output if the prompt is too specific."
+                )
+            ))
+
         # Row 4: Temperature, Compression Ratio Threshold, Length Penalty
         with gr.Row():
             inputs.append(gr.Slider(
