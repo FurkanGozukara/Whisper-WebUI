@@ -551,7 +551,10 @@ class App:
 
         return inputs
 
-    def create_pipeline_inputs(self, defaults=None):
+    def create_pipeline_inputs(self,
+                               defaults=None,
+                               open_outputs_button=None,
+                               place_condition_on_previous_text_right: bool = False):
         transcription_defaults = defaults or self.ui_default_config["file_tab"]
         whisper_params = transcription_defaults["whisper"]
         vad_params = transcription_defaults["vad"]
@@ -596,21 +599,39 @@ class App:
                     info=TIMESTAMP_INFO,
                     interactive=True,
                 )
-            with gr.Column(scale=1):
-                batch_size_input = WhisperParams.to_batch_size_input(
-                    defaults=whisper_params,
-                    whisper_type=self.args.whisper_type,
-                )
+        open_outputs_btn = open_outputs_button
+
         with gr.Row(equal_height=True):
-            run_btn = gr.Button(
-                _("GENERATE SUBTITLE FILE"),
-                variant="primary",
-                elem_classes=["action-button", "generate-subtitle-button"],
-            )
-            open_outputs_btn = gr.Button(
-                "OPEN OUTPUTS FOLDER",
-                elem_classes=["action-button", "open-outputs-folder-button"],
-            )
+            with gr.Column(scale=1):
+                run_btn = gr.Button(
+                    _("GENERATE SUBTITLE FILE"),
+                    variant="primary",
+                    elem_classes=["action-button", "generate-subtitle-button"],
+                )
+                if not place_condition_on_previous_text_right:
+                    condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
+                        defaults=whisper_params,
+                    )
+                    gr.Markdown(
+                        "Important: If output shows repetition, all caps, or subtitle drift, "
+                        "try disabling **Condition On Previous Text**. In rare cases this can "
+                        "significantly improve output quality."
+                    )
+            with gr.Column(scale=1):
+                if place_condition_on_previous_text_right:
+                    condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
+                        defaults=whisper_params,
+                    )
+                    gr.Markdown(
+                        "Important: If output shows repetition, all caps, or subtitle drift, "
+                        "try disabling **Condition On Previous Text**. In rare cases this can "
+                        "significantly improve output quality."
+                    )
+                elif open_outputs_btn is None:
+                    open_outputs_btn = gr.Button(
+                        "OPEN OUTPUTS FOLDER",
+                        elem_classes=["action-button", "open-outputs-folder-button"],
+                    )
 
         with gr.Accordion(_("Advanced Parameters"), open=False):
             whisper_inputs = WhisperParams.to_gradio_inputs(
@@ -619,12 +640,13 @@ class App:
                 whisper_type=self.args.whisper_type,
                 available_compute_types=self.whisper_inf.available_compute_types,
                 compute_type=self.whisper_inf.current_compute_type,
-                include_batch_size=False,
             )
 
         whisper_advanced_fields = WhisperParams.advanced_input_field_names()
-        batch_size_index = whisper_advanced_fields.index("batch_size")
-        whisper_inputs.insert(batch_size_index, batch_size_input)
+        condition_on_previous_text_index = whisper_advanced_fields.index("condition_on_previous_text")
+
+        whisper_inputs[condition_on_previous_text_index].visible = False
+        whisper_inputs[condition_on_previous_text_index] = condition_on_previous_text_input
 
         with gr.Accordion(_("Background Music Remover Filter"), open=False):
             uvr_inputs = BGMSeparationParams.to_gradio_input(
@@ -708,6 +730,10 @@ class App:
                             elem_id="top-download-output-button",
                             elem_classes=["action-button", "download-output-button"],
                         )
+                        file_open_outputs_btn = gr.Button(
+                            "OPEN OUTPUTS FOLDER",
+                            elem_classes=["action-button", "open-outputs-folder-button"],
+                        )
 
                 with gr.Tabs():
                     with gr.TabItem(_("File")):
@@ -750,17 +776,19 @@ class App:
                                         info="When provided, outputs are saved here instead of the input folder.",
                                         value=file_defaults["output_folder"],
                                     )
-                        file_transcription_ui = self.create_pipeline_inputs(file_defaults)
-
-                        with gr.Row():
-                            tb_live_transcription = gr.Textbox(
-                                label=_("Live Transcription"),
-                                lines=10,
-                                max_lines=15,
-                                interactive=False,
-                                buttons=["copy"],
-                                placeholder="Transcribed segments will appear here in real-time...",
-                            )
+                                tb_live_transcription = gr.Textbox(
+                                    label=_("Live Transcription"),
+                                    lines=10,
+                                    max_lines=15,
+                                    interactive=False,
+                                    buttons=["copy"],
+                                    placeholder="Transcribed segments will appear here in real-time...",
+                                )
+                        file_transcription_ui = self.create_pipeline_inputs(
+                            file_defaults,
+                            open_outputs_button=file_open_outputs_btn,
+                            place_condition_on_previous_text_right=True,
+                        )
                         with gr.Row():
                             file_output = gr.Textbox(label=_("Output"), interactive=False)
                         with gr.Row():

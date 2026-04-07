@@ -21,7 +21,7 @@ whisper:
   suppress_blank: true
   suppress_tokens: '[-1]'
   max_initial_timestamp: 1.0
-  word_timestamps: false
+  word_timestamps: true
   prepend_punctuations: '"''([{-'
   append_punctuations: '"''.,!?:)]}'
   max_new_tokens: null
@@ -30,6 +30,7 @@ whisper:
   hotwords: null
   language_detection_threshold: 0.5
   language_detection_segments: 1
+  use_batched_inference: false
   batch_size: 32
   enable_offload: false
   add_timestamp: false

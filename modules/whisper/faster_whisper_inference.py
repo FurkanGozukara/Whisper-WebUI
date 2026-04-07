@@ -1,5 +1,6 @@
 import os
 import time
+import math
 from contextlib import contextmanager
 from types import MethodType
 import huggingface_hub
@@ -29,6 +30,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     CHUNKS_PREPARED_PROGRESS = 0.24
     TRANSCRIPTION_PROGRESS_START = 0.3
     TRANSCRIPTION_PROGRESS_END = 0.98
+    LONG_FORM_CONDITIONING_WINDOW_THRESHOLD = 60
 
     def __init__(self,
                  model_dir: str = FASTER_WHISPER_MODELS_DIR,
@@ -83,9 +85,18 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
             self.update_model(params.model_size, params.compute_type, progress)
 
-        progress(0, desc="Loading audio..")
-        progress(self.MODEL_READY_PROGRESS, desc="Loading audio..")
-        segments, info = self._transcribe_with_batching(audio=audio, params=params, progress=progress)
+        if self.should_use_batched_inference(params):
+            progress(0, desc="Loading audio..")
+            progress(self.MODEL_READY_PROGRESS, desc="Loading audio..")
+            segments, info = self._transcribe_with_batching(audio=audio, params=params, progress=progress)
+        else:
+            logger.info("Using standard faster-whisper inference for maximum subtitle quality.")
+            standard_audio, standard_params = self.resolve_standard_audio_and_params(audio=audio, params=params)
+            segments, info = self._transcribe_with_standard_pipeline(
+                audio=standard_audio,
+                params=standard_params,
+                progress=progress,
+            )
 
         segments_result = []
         for idx, segment in enumerate(segments):
@@ -104,6 +115,41 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         elapsed_time = time.time() - start_time
         return segments_result, elapsed_time
+
+    @staticmethod
+    def should_use_batched_inference(params: WhisperParams) -> bool:
+        return bool(getattr(params, "use_batched_inference", False))
+
+    def resolve_standard_audio_and_params(
+        self,
+        audio: Union[str, BinaryIO, np.ndarray],
+        params: WhisperParams,
+    ) -> Tuple[Union[str, BinaryIO, np.ndarray], WhisperParams]:
+        if not params.condition_on_previous_text:
+            return audio, params
+
+        sampling_rate = self.model.feature_extractor.sampling_rate
+        audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        estimated_windows = self.estimate_chunk_windows(
+            audio=audio_array,
+            chunk_length=params.chunk_length,
+            sampling_rate=sampling_rate,
+        )
+
+        if estimated_windows < self.LONG_FORM_CONDITIONING_WINDOW_THRESHOLD:
+            return audio_array, params
+
+        duration_seconds = 0.0
+        if sampling_rate > 0:
+            duration_seconds = float(audio_array.shape[-1]) / float(sampling_rate)
+
+        logger.info(
+            "Auto-disabling condition_on_previous_text for long-form audio "
+            "(%.1f minutes across ~%d windows) to prevent repetition drift.",
+            duration_seconds / 60.0 if duration_seconds else 0.0,
+            estimated_windows,
+        )
+        return audio_array, params.model_copy(update={"condition_on_previous_text": False})
 
     @staticmethod
     def should_repeat_initial_prompt(params: WhisperParams) -> bool:
@@ -312,6 +358,22 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             }
             for start in range(0, total_samples, chunk_samples)
         ]
+
+    @staticmethod
+    def estimate_chunk_windows(
+        audio: np.ndarray,
+        chunk_length: Optional[int],
+        sampling_rate: int,
+    ) -> int:
+        total_samples = int(audio.shape[-1]) if audio.size else 0
+        if total_samples <= 0:
+            return 1
+
+        if chunk_length is None or chunk_length <= 0:
+            return 1
+
+        chunk_samples = max(1, int(chunk_length * sampling_rate))
+        return max(1, math.ceil(total_samples / chunk_samples))
 
     @staticmethod
     def emit_progress_callback(

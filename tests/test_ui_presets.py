@@ -79,6 +79,8 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     defaults = build_default_ui_config()
 
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
+    assert defaults["file_tab"]["whisper"]["word_timestamps"] is True
+    assert defaults["file_tab"]["whisper"]["use_batched_inference"] is False
     assert WhisperParams(lang="English").lang == "en"
     assert WhisperParams(lang="english").lang == "en"
     assert WhisperParams(lang="en").lang == "en"

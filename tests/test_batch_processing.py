@@ -142,6 +142,7 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
         compute_type="float16",
         lang="en",
         chunk_length=15,
+        use_batched_inference=True,
         batch_size=4,
         word_timestamps=True,
     ).to_list()
@@ -227,6 +228,7 @@ def test_batched_pipeline_repeats_initial_prompt_every_window(monkeypatch):
         compute_type="float16",
         lang="en",
         chunk_length=15,
+        use_batched_inference=True,
         batch_size=1,
         initial_prompt="Welcome to the school.",
         repeat_initial_prompt_every_window=True,
@@ -248,3 +250,134 @@ def test_batched_pipeline_repeats_initial_prompt_every_window(monkeypatch):
         [303, 404, 2],
     ]
     assert inferencer.model.tokenizer.calls == [" Welcome to the school."]
+
+
+def test_transcribe_uses_standard_pipeline_by_default(monkeypatch):
+    captured = {"standard_called": False}
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=16000))
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+
+    def fake_standard_pipeline(audio, params, progress):
+        captured["standard_called"] = True
+        captured["params"] = params
+        return iter([make_dummy_segment(1, 0.0, 1.0, "standard path")]), SimpleNamespace(duration=1.0)
+
+    inferencer._transcribe_with_standard_pipeline = fake_standard_pipeline
+
+    def fail_batched_pipeline(*args, **kwargs):
+        raise AssertionError("Batched pipeline should not run when use_batched_inference is disabled.")
+
+    inferencer._transcribe_with_batching = fail_batched_pipeline
+
+    progress = DummyProgress()
+    whisper_params = WhisperParams(
+        model_size="large-v3",
+        compute_type="float16",
+        lang="en",
+        chunk_length=15,
+        batch_size=4,
+        word_timestamps=True,
+    ).to_list()
+
+    segments, elapsed_time = FasterWhisperInference.transcribe(
+        inferencer,
+        np.zeros(60 * 16000, dtype=np.float32),
+        progress,
+        None,
+        *whisper_params,
+    )
+
+    assert captured["standard_called"] is True
+    assert captured["params"].use_batched_inference is False
+    assert len(segments) == 1
+    assert elapsed_time >= 0
+
+
+def test_transcribe_keeps_conditioning_for_short_standard_audio():
+    captured = {}
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=16000))
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+
+    def fake_standard_pipeline(audio, params, progress):
+        captured["audio"] = audio
+        captured["params"] = params
+        return iter([make_dummy_segment(1, 0.0, 1.0, "short path")]), SimpleNamespace(duration=1.0)
+
+    inferencer._transcribe_with_standard_pipeline = fake_standard_pipeline
+    inferencer._transcribe_with_batching = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("Batched pipeline should not run when use_batched_inference is disabled.")
+    )
+
+    progress = DummyProgress()
+    whisper_params = WhisperParams(
+        model_size="large-v3",
+        compute_type="float16",
+        lang="en",
+        chunk_length=1,
+        condition_on_previous_text=True,
+        word_timestamps=True,
+    ).to_list()
+
+    segments, elapsed_time = FasterWhisperInference.transcribe(
+        inferencer,
+        np.zeros(30 * 16000, dtype=np.float32),
+        progress,
+        None,
+        *whisper_params,
+    )
+
+    assert captured["params"].condition_on_previous_text is True
+    assert isinstance(captured["audio"], np.ndarray)
+    assert len(segments) == 1
+    assert elapsed_time >= 0
+
+
+def test_transcribe_auto_disables_conditioning_for_long_standard_audio():
+    captured = {}
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=16000))
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+
+    def fake_standard_pipeline(audio, params, progress):
+        captured["audio"] = audio
+        captured["params"] = params
+        return iter([make_dummy_segment(1, 0.0, 1.0, "long path")]), SimpleNamespace(duration=1.0)
+
+    inferencer._transcribe_with_standard_pipeline = fake_standard_pipeline
+    inferencer._transcribe_with_batching = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("Batched pipeline should not run when use_batched_inference is disabled.")
+    )
+
+    progress = DummyProgress()
+    whisper_params = WhisperParams(
+        model_size="large-v3",
+        compute_type="float16",
+        lang="en",
+        chunk_length=1,
+        condition_on_previous_text=True,
+        word_timestamps=True,
+    ).to_list()
+
+    segments, elapsed_time = FasterWhisperInference.transcribe(
+        inferencer,
+        np.zeros(61 * 16000, dtype=np.float32),
+        progress,
+        None,
+        *whisper_params,
+    )
+
+    assert captured["params"].condition_on_previous_text is False
+    assert isinstance(captured["audio"], np.ndarray)
+    assert len(segments) == 1
+    assert elapsed_time >= 0

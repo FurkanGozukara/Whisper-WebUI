@@ -305,7 +305,7 @@ class WhisperParams(BaseParams):
     patience: float = Field(default=1.5, gt=0, description="Beam search patience factor")
     condition_on_previous_text: bool = Field(
         default=True,
-        description="Use previous output as prompt for next window"
+        description="Use previous output as prompt for next window. Automatically disabled for very long standard-decoder runs to prevent repetition drift."
     )
     prompt_reset_on_temperature: float = Field(
         default=0.5,
@@ -342,7 +342,7 @@ class WhisperParams(BaseParams):
         ge=0.0,
         description="Maximum initial timestamp"
     )
-    word_timestamps: bool = Field(default=False, description="Extract word-level timestamps")
+    word_timestamps: bool = Field(default=True, description="Extract word-level timestamps")
     prepend_punctuations: Optional[str] = Field(
         default="\"'â€œÂ¿([{-",
         description="Punctuations to merge with next word"
@@ -366,6 +366,10 @@ class WhisperParams(BaseParams):
         default=1,
         gt=0,
         description="Number of segments for language detection"
+    )
+    use_batched_inference: bool = Field(
+        default=False,
+        description="Use the faster-whisper batched inference pipeline for higher throughput at the cost of accuracy"
     )
     batch_size: int = Field(default=32, gt=0, description="Batch size for processing")
     enable_offload: bool = Field(
@@ -464,8 +468,8 @@ class WhisperParams(BaseParams):
             value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
             precision=0,
             info=(
-                "How many audio chunks are processed together in one batch. "
-                "Higher batch size usually increases speed and throughput, but uses more VRAM. "
+                "How many audio chunks are processed together in one batch when batched inference is enabled. "
+                "Higher batch size usually increases speed and throughput, but uses more VRAM and can reduce accuracy. "
                 "Lower batch size is slower, but safer on smaller GPUs and less likely to cause out-of-memory errors. "
                 "Good starting points: 8 for GPUs under 11 GB, 16 for GPUs under 23 GB, 32 for larger GPUs."
             ),
@@ -480,6 +484,45 @@ class WhisperParams(BaseParams):
         return batch_size_input
 
     @classmethod
+    def to_batched_inference_input(cls,
+                                   defaults: Optional[Dict] = None,
+                                   whisper_type: Optional[str] = None):
+        whisper_type = WhisperImpl.FASTER_WHISPER.value if whisper_type is None else whisper_type.strip().lower()
+        defaults = defaults or {}
+
+        batched_inference_input = gr.Checkbox(
+            label="Use Batched Inference",
+            value=defaults.get("use_batched_inference", cls.__fields__["use_batched_inference"].default),
+            info=(
+                "Speed-first faster-whisper path. It can process more chunks in parallel, but on long-form speech "
+                "it is noticeably less accurate and more prone to all-caps output, repetition, and subtitle drift. "
+                "Leave disabled for best subtitle quality."
+            ),
+        )
+
+        if whisper_type != WhisperImpl.FASTER_WHISPER.value:
+            batched_inference_input.visible = False
+
+        return batched_inference_input
+
+    @classmethod
+    def to_condition_on_previous_text_input(cls, defaults: Optional[Dict] = None):
+        defaults = defaults or {}
+
+        return gr.Checkbox(
+            label="Condition On Previous Text",
+            value=defaults.get(
+                "condition_on_previous_text",
+                cls.__fields__["condition_on_previous_text"].default,
+            ),
+            info=(
+                "Use previous transcription as context for the next segment. "
+                "Usually helps coherence across chunks. Important: if you see repetition, all-caps output, "
+                "or subtitle drift, try disabling this. In rare cases that can significantly improve quality."
+            ),
+        )
+
+    @classmethod
     def to_gradio_inputs(cls,
                          defaults: Optional[Dict] = None,
                          only_advanced: Optional[bool] = True,
@@ -489,7 +532,8 @@ class WhisperParams(BaseParams):
                          available_compute_types: Optional[List] = None,
                          compute_type: Optional[str] = None,
                          use_3col_layout: bool = False,
-                         include_batch_size: bool = True):
+                         include_batch_size: bool = True,
+                         include_condition_on_previous_text: bool = True):
         whisper_type = WhisperImpl.FASTER_WHISPER.value if whisper_type is None else whisper_type.strip().lower()
 
         inputs = []
@@ -713,16 +757,18 @@ class WhisperParams(BaseParams):
             ))
         
 
-        if include_batch_size:
-            # Row 10 (for faster-whisper and insanely-fast-whisper): Batch Size
-            with gr.Row():
-                inputs.append(cls.to_batch_size_input(defaults=defaults, whisper_type=whisper_type))
-
         if whisper_type != WhisperImpl.FASTER_WHISPER.value:
             for input_component in faster_whisper_inputs:
                 input_component.visible = False
 
         inputs += faster_whisper_inputs
+
+        if include_batch_size:
+            # Keep these after the faster-whisper-only fields so the UI value order
+            # matches WhisperParams field order during Gradio list -> model conversion.
+            with gr.Row():
+                inputs.append(cls.to_batched_inference_input(defaults=defaults, whisper_type=whisper_type))
+                inputs.append(cls.to_batch_size_input(defaults=defaults, whisper_type=whisper_type))
 
         # Final row: Offload model
         with gr.Row():

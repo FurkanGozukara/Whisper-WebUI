@@ -17,3 +17,4 @@ backend/cache/36932bb5-1fc3-42a5-8263-21c2baec6eed_bgm_separation.zip
 gradio/
 test2.srt
 test2_correct.srt
+*.srt

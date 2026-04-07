@@ -162,6 +162,7 @@ def derive_run_name(spec: Dict[str, Any]) -> str:
         f"beam-{whisper_cfg['beam_size']}",
         f"cond-{int(bool(whisper_cfg['condition_on_previous_text']))}",
         f"wt-{int(bool(whisper_cfg['word_timestamps']))}",
+        f"batchmode-{int(bool(whisper_cfg.get('use_batched_inference', False)))}",
         f"vad-{int(bool(vad_cfg['vad_filter']))}",
     ]
     return sanitize_name("__".join(parts))
@@ -214,6 +215,7 @@ def build_base_spec(args: argparse.Namespace) -> Dict[str, Any]:
             "hotwords": args.hotwords,
             "language_detection_threshold": coerce_optional_float(args.language_detection_threshold),
             "language_detection_segments": args.language_detection_segments,
+            "use_batched_inference": args.use_batched_inference,
             "batch_size": args.batch_size,
             "enable_offload": False,
         },
@@ -501,7 +503,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--suppress-blank", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--suppress-tokens", default=[-1])
     parser.add_argument("--max-initial-timestamp", type=float, default=1.0)
-    parser.add_argument("--word-timestamps", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--word-timestamps", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--prepend-punctuations", default="\"'([{-")
     parser.add_argument("--append-punctuations", default="\"'.,!?:)]}")
     parser.add_argument("--max-new-tokens", default=None)
@@ -509,6 +511,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hotwords", default=None)
     parser.add_argument("--language-detection-threshold", default=0.5)
     parser.add_argument("--language-detection-segments", type=int, default=1)
+    parser.add_argument("--use-batched-inference", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--vad-filter", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--vad-threshold", type=float, default=0.5)

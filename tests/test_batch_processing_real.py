@@ -82,6 +82,7 @@ def run_excerpt_transcription(inferencer, audio_excerpt, model_size: str, batch_
             model_size=model_size,
             compute_type=inferencer.current_compute_type,
             chunk_length=15,
+            use_batched_inference=True,
             batch_size=batch_size,
             enable_offload=False,
         ),
