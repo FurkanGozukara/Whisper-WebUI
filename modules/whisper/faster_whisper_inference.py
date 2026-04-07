@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import math
@@ -8,13 +9,16 @@ import numpy as np
 import torch
 from typing import BinaryIO, Union, Tuple, List, Callable, Optional
 import faster_whisper
-from faster_whisper.audio import decode_audio
+from faster_whisper.audio import decode_audio, pad_or_trim
+from faster_whisper.transcribe import Segment as FasterWhisperSegment, Word as FasterWhisperWord
+from faster_whisper.utils import format_timestamp, get_end
 from faster_whisper.vad import VadOptions
 import ast
 import ctranslate2
 import whisper
 import gradio as gr
 from argparse import Namespace
+from tqdm import tqdm
 
 from modules.utils.paths import (FASTER_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR)
 from modules.whisper.data_classes import *
@@ -22,6 +26,77 @@ from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipelin
 from modules.utils.logger import get_logger
 
 logger = get_logger()
+
+
+class StandardEncoderPrefetchCache:
+    def __init__(self, model, features: np.ndarray, batch_size: int):
+        self.model = model
+        self.features = features
+        self.batch_size = max(1, int(batch_size))
+        self.content_frames = features.shape[-1] - 1
+        self.window_frames = int(model.feature_extractor.nb_max_frames)
+        self.cache = {}
+        self.cache_clip_end = None
+
+    def get(self, seek: int, seek_clip_end: int) -> ctranslate2.StorageView:
+        if self.batch_size <= 1:
+            return self._encode_window(seek=seek, seek_clip_end=seek_clip_end)
+
+        if seek not in self.cache or self.cache_clip_end != seek_clip_end:
+            self.cache.clear()
+            self.cache_clip_end = seek_clip_end
+            self._prefetch_from_seek(seek=seek, seek_clip_end=seek_clip_end)
+
+        return self.cache.pop(seek)
+
+    def _encode_window(self, seek: int, seek_clip_end: int) -> ctranslate2.StorageView:
+        segment = self._build_segment(seek=seek, seek_clip_end=seek_clip_end)
+        return self.model.encode(segment)
+
+    def _prefetch_from_seek(self, seek: int, seek_clip_end: int) -> None:
+        windows = []
+        seeks = []
+        for step in range(self.batch_size):
+            window_seek = seek + (step * self.window_frames)
+            if window_seek >= self.content_frames or window_seek >= seek_clip_end:
+                break
+
+            windows.append(self._build_segment(seek=window_seek, seek_clip_end=seek_clip_end))
+            seeks.append(window_seek)
+
+        if not windows:
+            raise ValueError(f"No encoder windows available for seek {seek}")
+
+        encoded_batch = self.model.encode(np.stack(windows, axis=0))
+        for window_seek, storage_view in zip(seeks, self._split_storage_view_batch(encoded_batch)):
+            self.cache[window_seek] = storage_view
+
+    def _build_segment(self, seek: int, seek_clip_end: int) -> np.ndarray:
+        segment_size = min(
+            self.window_frames,
+            self.content_frames - seek,
+            seek_clip_end - seek,
+        )
+        segment = self.features[:, seek : seek + segment_size]
+        return pad_or_trim(segment)
+
+    @staticmethod
+    def _split_storage_view_batch(
+        encoded_batch: ctranslate2.StorageView,
+    ) -> List[ctranslate2.StorageView]:
+        batch_length = int(encoded_batch.shape[0])
+        batch_view = encoded_batch
+        if getattr(encoded_batch, "device", "cpu") == "cuda":
+            batch_view = encoded_batch.to_device(ctranslate2.Device.cpu)
+
+        try:
+            batch_array = np.asarray(batch_view)
+        except RuntimeError:
+            batch_array = np.asarray(batch_view.to(ctranslate2.DataType.float32))
+        return [
+            ctranslate2.StorageView.from_array(np.ascontiguousarray(batch_array[idx : idx + 1]))
+            for idx in range(batch_length)
+        ]
 
 
 class FasterWhisperInference(BaseTranscriptionPipeline):
@@ -211,6 +286,338 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         finally:
             delattr(model, "get_prompt")
 
+    @staticmethod
+    @contextmanager
+    def standard_encoder_batching_context(model, batch_size: int):
+        batch_size = max(1, int(batch_size))
+        if batch_size <= 1:
+            yield
+            return
+
+        original_generate_segments = getattr(model, "generate_segments", None)
+        if original_generate_segments is None:
+            yield
+            return
+
+        def wrapped_generate_segments(
+            model_self,
+            features: np.ndarray,
+            tokenizer,
+            options,
+            log_progress,
+            encoder_output: Optional[ctranslate2.StorageView] = None,
+        ):
+            return FasterWhisperInference.generate_segments_with_encoder_prefetch(
+                model=model_self,
+                features=features,
+                tokenizer=tokenizer,
+                options=options,
+                log_progress=log_progress,
+                batch_size=batch_size,
+                encoder_output=encoder_output,
+            )
+
+        model.generate_segments = MethodType(wrapped_generate_segments, model)
+        try:
+            yield
+        finally:
+            model.generate_segments = original_generate_segments
+
+    @staticmethod
+    def generate_segments_with_encoder_prefetch(
+        model,
+        features: np.ndarray,
+        tokenizer,
+        options,
+        log_progress: bool,
+        batch_size: int,
+        encoder_output: Optional[ctranslate2.StorageView] = None,
+    ):
+        content_frames = features.shape[-1] - 1
+        content_duration = float(content_frames * model.feature_extractor.time_per_frame)
+
+        if isinstance(options.clip_timestamps, str):
+            options.clip_timestamps = [
+                float(ts)
+                for ts in (
+                    options.clip_timestamps.split(",")
+                    if options.clip_timestamps
+                    else []
+                )
+            ]
+
+        seek_points = [
+            round(ts * model.frames_per_second) for ts in options.clip_timestamps
+        ]
+        if len(seek_points) == 0:
+            seek_points.append(0)
+        if len(seek_points) % 2 == 1:
+            seek_points.append(content_frames)
+        seek_clips = list(zip(seek_points[::2], seek_points[1::2]))
+
+        punctuation = "\"'“¿([{-\"'.。,，!！?？:：”)]}、"
+
+        idx = 0
+        clip_idx = 0
+        seek = seek_clips[clip_idx][0]
+        all_tokens = []
+        prompt_reset_since = 0
+
+        if options.initial_prompt is not None:
+            if isinstance(options.initial_prompt, str):
+                initial_prompt = " " + options.initial_prompt.strip()
+                initial_prompt_tokens = tokenizer.encode(initial_prompt)
+                all_tokens.extend(initial_prompt_tokens)
+            else:
+                all_tokens.extend(options.initial_prompt)
+
+        pbar = tqdm(total=content_duration, unit="seconds", disable=not log_progress)
+        last_speech_timestamp = 0.0
+        encoder_cache = StandardEncoderPrefetchCache(
+            model=model,
+            features=features,
+            batch_size=batch_size,
+        )
+
+        try:
+            while clip_idx < len(seek_clips):
+                seek_clip_start, seek_clip_end = seek_clips[clip_idx]
+                if seek_clip_end > content_frames:
+                    seek_clip_end = content_frames
+                if seek < seek_clip_start:
+                    seek = seek_clip_start
+                if seek >= seek_clip_end:
+                    clip_idx += 1
+                    if clip_idx < len(seek_clips):
+                        seek = seek_clips[clip_idx][0]
+                    continue
+
+                time_offset = seek * model.feature_extractor.time_per_frame
+                window_end_time = float(
+                    (seek + model.feature_extractor.nb_max_frames)
+                    * model.feature_extractor.time_per_frame
+                )
+                segment_size = min(
+                    model.feature_extractor.nb_max_frames,
+                    content_frames - seek,
+                    seek_clip_end - seek,
+                )
+                segment_duration = segment_size * model.feature_extractor.time_per_frame
+
+                if model.logger.isEnabledFor(logging.DEBUG):
+                    model.logger.debug(
+                        "Processing segment at %s", format_timestamp(time_offset)
+                    )
+
+                previous_tokens = all_tokens[prompt_reset_since:]
+
+                if seek == 0 and encoder_output is not None:
+                    current_encoder_output = encoder_output
+                else:
+                    current_encoder_output = encoder_cache.get(
+                        seek=seek,
+                        seek_clip_end=seek_clip_end,
+                    )
+
+                if options.multilingual:
+                    results = model.model.detect_language(current_encoder_output)
+                    language_token, _language_probability = results[0][0]
+                    language = language_token[2:-2]
+
+                    tokenizer.language = tokenizer.tokenizer.token_to_id(language_token)
+                    tokenizer.language_code = language
+
+                prompt = model.get_prompt(
+                    tokenizer,
+                    previous_tokens,
+                    without_timestamps=options.without_timestamps,
+                    prefix=options.prefix if seek == 0 else None,
+                    hotwords=options.hotwords,
+                )
+
+                (
+                    result,
+                    avg_logprob,
+                    temperature,
+                    compression_ratio,
+                ) = model.generate_with_fallback(
+                    current_encoder_output,
+                    prompt,
+                    tokenizer,
+                    options,
+                )
+
+                if options.no_speech_threshold is not None:
+                    should_skip = result.no_speech_prob > options.no_speech_threshold
+
+                    if (
+                        options.log_prob_threshold is not None
+                        and avg_logprob > options.log_prob_threshold
+                    ):
+                        should_skip = False
+
+                    if should_skip:
+                        model.logger.debug(
+                            "No speech threshold is met (%f > %f)",
+                            result.no_speech_prob,
+                            options.no_speech_threshold,
+                        )
+                        seek += segment_size
+                        continue
+
+                tokens = result.sequences_ids[0]
+                previous_seek = seek
+
+                def word_anomaly_score(word: dict) -> float:
+                    probability = word.get("probability", 0.0)
+                    duration = word["end"] - word["start"]
+                    score = 0.0
+                    if probability < 0.15:
+                        score += 1.0
+                    if duration < 0.133:
+                        score += (0.133 - duration) * 15
+                    if duration > 2.0:
+                        score += duration - 2.0
+                    return score
+
+                def is_segment_anomaly(current_segment: Optional[dict]) -> bool:
+                    if current_segment is None or not current_segment["words"]:
+                        return False
+                    words = [
+                        word for word in current_segment["words"]
+                        if word["word"] not in punctuation
+                    ]
+                    words = words[:8]
+                    score = sum(word_anomaly_score(word) for word in words)
+                    return score >= 3 or score + 0.01 >= len(words)
+
+                def next_words_segment(segments: List[dict]) -> Optional[dict]:
+                    return next((segment for segment in segments if segment["words"]), None)
+
+                (
+                    current_segments,
+                    seek,
+                    single_timestamp_ending,
+                ) = model._split_segments_by_timestamps(
+                    tokenizer=tokenizer,
+                    tokens=tokens,
+                    time_offset=time_offset,
+                    segment_size=segment_size,
+                    segment_duration=segment_duration,
+                    seek=seek,
+                )
+
+                if options.word_timestamps:
+                    model.add_word_timestamps(
+                        [current_segments],
+                        tokenizer,
+                        current_encoder_output,
+                        segment_size,
+                        options.prepend_punctuations,
+                        options.append_punctuations,
+                        last_speech_timestamp=last_speech_timestamp,
+                    )
+                    if not single_timestamp_ending:
+                        last_word_end = get_end(current_segments)
+                        if last_word_end is not None and last_word_end > time_offset:
+                            seek = round(last_word_end * model.frames_per_second)
+
+                    if options.hallucination_silence_threshold is not None:
+                        threshold = options.hallucination_silence_threshold
+
+                        first_segment = next_words_segment(current_segments)
+                        if first_segment is not None and is_segment_anomaly(first_segment):
+                            gap = first_segment["start"] - time_offset
+                            if gap > threshold:
+                                seek = previous_seek + round(gap * model.frames_per_second)
+                                continue
+
+                        hal_last_end = last_speech_timestamp
+                        for segment_index in range(len(current_segments)):
+                            current_segment = current_segments[segment_index]
+                            if not current_segment["words"]:
+                                continue
+                            if is_segment_anomaly(current_segment):
+                                next_segment = next_words_segment(
+                                    current_segments[segment_index + 1 :]
+                                )
+                                if next_segment is not None:
+                                    hal_next_start = next_segment["words"][0]["start"]
+                                else:
+                                    hal_next_start = time_offset + segment_duration
+                                silence_before = (
+                                    current_segment["start"] - hal_last_end > threshold
+                                    or current_segment["start"] < threshold
+                                    or current_segment["start"] - time_offset < 2.0
+                                )
+                                silence_after = (
+                                    hal_next_start - current_segment["end"] > threshold
+                                    or is_segment_anomaly(next_segment)
+                                    or window_end_time - current_segment["end"] < 2.0
+                                )
+                                if silence_before and silence_after:
+                                    seek = round(
+                                        max(time_offset + 1, current_segment["start"])
+                                        * model.frames_per_second
+                                    )
+                                    if content_duration - current_segment["end"] < threshold:
+                                        seek = content_frames
+                                    current_segments[segment_index:] = []
+                                    break
+                            hal_last_end = current_segment["end"]
+
+                    last_word_end = get_end(current_segments)
+                    if last_word_end is not None:
+                        last_speech_timestamp = last_word_end
+
+                for current_segment in current_segments:
+                    segment_tokens = current_segment["tokens"]
+                    text = tokenizer.decode(segment_tokens)
+
+                    if current_segment["start"] == current_segment["end"] or not text.strip():
+                        continue
+
+                    all_tokens.extend(segment_tokens)
+                    idx += 1
+
+                    yield FasterWhisperSegment(
+                        id=idx,
+                        seek=previous_seek,
+                        start=current_segment["start"],
+                        end=current_segment["end"],
+                        text=text,
+                        tokens=segment_tokens,
+                        temperature=temperature,
+                        avg_logprob=avg_logprob,
+                        compression_ratio=compression_ratio,
+                        no_speech_prob=result.no_speech_prob,
+                        words=(
+                            [FasterWhisperWord(**word) for word in current_segment["words"]]
+                            if options.word_timestamps
+                            else None
+                        ),
+                    )
+
+                if (
+                    not options.condition_on_previous_text
+                    or temperature > options.prompt_reset_on_temperature
+                ):
+                    if options.condition_on_previous_text:
+                        model.logger.debug(
+                            "Reset prompt. prompt_reset_on_temperature threshold is met %f > %f",
+                            temperature,
+                            options.prompt_reset_on_temperature,
+                        )
+
+                    prompt_reset_since = len(all_tokens)
+
+                pbar.update(
+                    (min(content_frames, seek) - previous_seek)
+                    * model.feature_extractor.time_per_frame,
+                )
+        finally:
+            pbar.close()
+
     def _transcribe_with_batching(
         self,
         audio: Union[str, BinaryIO, np.ndarray],
@@ -282,41 +689,53 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     ):
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
         repeat_initial_prompt = self.should_repeat_initial_prompt(params)
+        encoder_batch_size = max(1, int(params.batch_size))
+        use_encoder_batching = encoder_batch_size > 1 and bool(params.condition_on_previous_text)
+        if use_encoder_batching:
+            logger.info(
+                "Using standard faster-whisper inference with encoder prefetch batching "
+                "(batch_size=%d) for quality-preserving acceleration.",
+                encoder_batch_size,
+            )
         with self.repeat_initial_prompt_context(
             self.model,
             params.initial_prompt if repeat_initial_prompt else None,
         ):
-            return self.model.transcribe(
-                audio=audio,
-                language=params.lang,
-                task="translate" if params.is_translate else "transcribe",
-                beam_size=params.beam_size,
-                log_prob_threshold=params.log_prob_threshold,
-                no_speech_threshold=params.no_speech_threshold,
-                best_of=params.best_of,
-                patience=params.patience,
-                temperature=params.temperature,
-                initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
-                compression_ratio_threshold=params.compression_ratio_threshold,
-                length_penalty=params.length_penalty,
-                repetition_penalty=params.repetition_penalty,
-                no_repeat_ngram_size=params.no_repeat_ngram_size,
-                prefix=params.prefix,
-                suppress_blank=params.suppress_blank,
-                suppress_tokens=params.suppress_tokens,
-                max_initial_timestamp=params.max_initial_timestamp,
-                word_timestamps=params.word_timestamps,
-                prepend_punctuations=params.prepend_punctuations,
-                append_punctuations=params.append_punctuations,
-                max_new_tokens=params.max_new_tokens,
-                chunk_length=params.chunk_length,
-                hallucination_silence_threshold=params.hallucination_silence_threshold,
-                hotwords=params.hotwords,
-                language_detection_threshold=params.language_detection_threshold,
-                language_detection_segments=params.language_detection_segments,
-                condition_on_previous_text=params.condition_on_previous_text,
-                prompt_reset_on_temperature=params.prompt_reset_on_temperature,
-            )
+            with self.standard_encoder_batching_context(
+                self.model,
+                encoder_batch_size if use_encoder_batching else 1,
+            ):
+                return self.model.transcribe(
+                    audio=audio,
+                    language=params.lang,
+                    task="translate" if params.is_translate else "transcribe",
+                    beam_size=params.beam_size,
+                    log_prob_threshold=params.log_prob_threshold,
+                    no_speech_threshold=params.no_speech_threshold,
+                    best_of=params.best_of,
+                    patience=params.patience,
+                    temperature=params.temperature,
+                    initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
+                    compression_ratio_threshold=params.compression_ratio_threshold,
+                    length_penalty=params.length_penalty,
+                    repetition_penalty=params.repetition_penalty,
+                    no_repeat_ngram_size=params.no_repeat_ngram_size,
+                    prefix=params.prefix,
+                    suppress_blank=params.suppress_blank,
+                    suppress_tokens=params.suppress_tokens,
+                    max_initial_timestamp=params.max_initial_timestamp,
+                    word_timestamps=params.word_timestamps,
+                    prepend_punctuations=params.prepend_punctuations,
+                    append_punctuations=params.append_punctuations,
+                    max_new_tokens=params.max_new_tokens,
+                    chunk_length=params.chunk_length,
+                    hallucination_silence_threshold=params.hallucination_silence_threshold,
+                    hotwords=params.hotwords,
+                    language_detection_threshold=params.language_detection_threshold,
+                    language_detection_segments=params.language_detection_segments,
+                    condition_on_previous_text=params.condition_on_previous_text,
+                    prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+                )
 
     @classmethod
     def map_transcription_progress(cls, raw_progress: float) -> float:

@@ -1,9 +1,13 @@
 from types import SimpleNamespace
 
+import ctranslate2
 import numpy as np
 
 from modules.whisper.data_classes import WhisperParams
-from modules.whisper.faster_whisper_inference import FasterWhisperInference
+from modules.whisper.faster_whisper_inference import (
+    FasterWhisperInference,
+    StandardEncoderPrefetchCache,
+)
 
 
 class DummyProgress:
@@ -107,6 +111,95 @@ def test_standard_pipeline_repeats_initial_prompt_every_window():
         [101, 202, 22],
     ]
     assert inferencer.model.tokenizer.calls == [" Welcome to the school."]
+
+
+def test_standard_encoder_prefetch_cache_batches_aligned_windows():
+    encode_batch_sizes = []
+
+    class DummyModel:
+        feature_extractor = SimpleNamespace(nb_max_frames=4)
+
+        def encode(self, features):
+            features = np.asarray(features, dtype=np.float32)
+            if features.ndim == 2:
+                features = np.expand_dims(features, 0)
+            encode_batch_sizes.append(int(features.shape[0]))
+            return ctranslate2.StorageView.from_array(np.ascontiguousarray(features))
+
+    cache = StandardEncoderPrefetchCache(
+        model=DummyModel(),
+        features=np.zeros((80, 20), dtype=np.float32),
+        batch_size=3,
+    )
+
+    first = cache.get(seek=0, seek_clip_end=20)
+    second = cache.get(seek=4, seek_clip_end=20)
+    third = cache.get(seek=8, seek_clip_end=20)
+
+    assert encode_batch_sizes == [3]
+    assert first.shape[0] == 1
+    assert second.shape[0] == 1
+    assert third.shape[0] == 1
+
+
+def test_standard_encoder_prefetch_cache_rebases_when_seek_changes():
+    encode_batch_sizes = []
+
+    class DummyModel:
+        feature_extractor = SimpleNamespace(nb_max_frames=4)
+
+        def encode(self, features):
+            features = np.asarray(features, dtype=np.float32)
+            if features.ndim == 2:
+                features = np.expand_dims(features, 0)
+            encode_batch_sizes.append(int(features.shape[0]))
+            return ctranslate2.StorageView.from_array(np.ascontiguousarray(features))
+
+    cache = StandardEncoderPrefetchCache(
+        model=DummyModel(),
+        features=np.zeros((80, 20), dtype=np.float32),
+        batch_size=2,
+    )
+
+    cache.get(seek=0, seek_clip_end=20)
+    cache.get(seek=3, seek_clip_end=20)
+
+    assert encode_batch_sizes == [2, 2]
+
+
+def test_standard_pipeline_enables_encoder_batching_when_batch_size_gt_one():
+    captured = {}
+
+    class DummyModel:
+        def __init__(self):
+            self.feature_extractor = SimpleNamespace(sampling_rate=16000)
+            self.generate_segments = self._original_generate_segments
+
+        def _original_generate_segments(self, *args, **kwargs):
+            return iter(())
+
+        def transcribe(self, **kwargs):
+            current_func = getattr(self.generate_segments, "__func__", self.generate_segments)
+            original_func = getattr(self._original_generate_segments, "__func__", self._original_generate_segments)
+            captured["generate_segments_patched"] = (
+                current_func is not original_func
+            )
+            return iter([]), SimpleNamespace(duration=1.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = DummyModel()
+
+    FasterWhisperInference._transcribe_with_standard_pipeline(
+        inferencer,
+        np.zeros(16000, dtype=np.float32),
+        WhisperParams(batch_size=4),
+        DummyProgress(),
+    )
+
+    assert captured["generate_segments_patched"] is True
+    restored_func = getattr(inferencer.model.generate_segments, "__func__", inferencer.model.generate_segments)
+    original_func = getattr(inferencer.model._original_generate_segments, "__func__", inferencer.model._original_generate_segments)
+    assert restored_func is original_func
 
 
 def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch):

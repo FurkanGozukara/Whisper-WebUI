@@ -371,7 +371,7 @@ class WhisperParams(BaseParams):
         default=False,
         description="Use the faster-whisper batched inference pipeline for higher throughput at the cost of accuracy"
     )
-    batch_size: int = Field(default=32, gt=0, description="Batch size for processing")
+    batch_size: int = Field(default=8, gt=0, description="Batch size for processing")
     enable_offload: bool = Field(
         default=True,
         description="Offload Whisper model after transcription"
@@ -468,10 +468,12 @@ class WhisperParams(BaseParams):
             value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
             precision=0,
             info=(
-                "Only used when Use Batched Inference is enabled in Advanced Parameters. "
-                "Higher batch size usually increases speed and throughput, but uses more VRAM and can reduce accuracy. "
-                "Lower batch size is slower, but safer on smaller GPUs and less likely to cause out-of-memory errors. "
-                "Good starting points: 8 for GPUs under 11 GB, 16 for GPUs under 23 GB, 32 for larger GPUs."
+                "In standard mode, this pre-encodes upcoming windows to speed up high-quality transcription "
+                "when Condition On Previous Text stays enabled, without changing the normal decode logic. "
+                "If Use Batched Inference is enabled in Advanced Parameters, it also controls the full batched "
+                "decoder path. Higher batch size usually improves throughput but uses more VRAM. In standard "
+                "high-quality mode, 4 to 8 is usually the sweet spot. Good starting points: 4 for GPUs under "
+                "11 GB, 8 for larger GPUs."
             ),
         )
 

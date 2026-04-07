@@ -166,9 +166,9 @@ class App:
 
         recommended_batch_size = None
         if gpu_memory_gb < 11:
+            recommended_batch_size = 4
+        else:
             recommended_batch_size = 8
-        elif gpu_memory_gb < 23:
-            recommended_batch_size = 16
 
         if recommended_batch_size is not None:
             whisper_defaults["batch_size"] = recommended_batch_size
