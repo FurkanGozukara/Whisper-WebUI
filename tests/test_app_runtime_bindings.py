@@ -17,6 +17,25 @@ def load_app_module(monkeypatch):
     return importlib.import_module("app")
 
 
+def test_importing_app_does_not_import_torch(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["app.py"])
+    sys.modules.pop("app", None)
+    for module_name in list(sys.modules):
+        if module_name == "torch" or module_name.startswith("torch."):
+            sys.modules.pop(module_name, None)
+
+    importlib.import_module("app")
+
+    assert "torch" not in sys.modules
+
+
+def test_whisper_defaults_enable_subprocess_and_disable_conditioning(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+
+    assert app_module.WhisperParams().start_as_subprocess is True
+    assert app_module.WhisperParams().condition_on_previous_text is False
+
+
 def test_file_transcription_wrapper_preserves_pipeline_order(monkeypatch):
     app_module = load_app_module(monkeypatch)
     app_instance = app_module.App.__new__(app_module.App)

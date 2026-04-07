@@ -3,6 +3,8 @@ import os
 import time
 import math
 from contextlib import contextmanager
+from queue import Queue
+from threading import Thread
 from types import MethodType
 import huggingface_hub
 import numpy as np
@@ -157,13 +159,25 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         params = WhisperParams.from_list(list(whisper_params))
 
-        if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
+        if (
+            not self.should_use_parallel_slice_batching(params)
+            and (params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type)
+        ):
             self.update_model(params.model_size, params.compute_type, progress)
 
         if self.should_use_batched_inference(params):
             progress(0, desc="Loading audio..")
             progress(self.MODEL_READY_PROGRESS, desc="Loading audio..")
             segments, info = self._transcribe_with_batching(audio=audio, params=params, progress=progress)
+        elif self.should_use_parallel_slice_batching(params):
+            progress(0, desc="Loading audio..")
+            progress(self.MODEL_READY_PROGRESS, desc="Loading audio..")
+            segments, info = self._transcribe_with_parallel_slices(
+                audio=audio,
+                params=params,
+                progress=progress,
+                progress_callback=progress_callback,
+            )
         else:
             logger.info("Using standard faster-whisper inference for maximum subtitle quality.")
             standard_audio, standard_params = self.resolve_standard_audio_and_params(audio=audio, params=params)
@@ -177,7 +191,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         for idx, segment in enumerate(segments):
             progress_n = 0.0 if not info.duration else min(segment.end / info.duration, 0.99)
             ui_progress_n = self.map_transcription_progress(progress_n)
-            seg_obj = Segment.from_faster_whisper(segment)
+            seg_obj = segment if isinstance(segment, Segment) else Segment.from_faster_whisper(segment)
             segments_result.append(seg_obj)
 
             # Live transcription display in terminal
@@ -195,15 +209,21 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     def should_use_batched_inference(params: WhisperParams) -> bool:
         return bool(getattr(params, "use_batched_inference", False))
 
+    @staticmethod
+    def should_use_parallel_slice_batching(params: WhisperParams) -> bool:
+        return (not FasterWhisperInference.should_use_batched_inference(params)) and max(1, int(params.batch_size)) > 1
+
     def resolve_standard_audio_and_params(
         self,
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
+        sampling_rate: Optional[int] = None,
     ) -> Tuple[Union[str, BinaryIO, np.ndarray], WhisperParams]:
         if not params.condition_on_previous_text:
             return audio, params
 
-        sampling_rate = self.model.feature_extractor.sampling_rate
+        if sampling_rate is None:
+            sampling_rate = self.model.feature_extractor.sampling_rate
         audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
         estimated_windows = self.estimate_chunk_windows(
             audio=audio_array,
@@ -686,9 +706,11 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
         progress: gr.Progress = gr.Progress(),
+        model=None,
     ):
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
         repeat_initial_prompt = self.should_repeat_initial_prompt(params)
+        target_model = self.model if model is None else model
         encoder_batch_size = max(1, int(params.batch_size))
         use_encoder_batching = encoder_batch_size > 1 and bool(params.condition_on_previous_text)
         if use_encoder_batching:
@@ -698,14 +720,14 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 encoder_batch_size,
             )
         with self.repeat_initial_prompt_context(
-            self.model,
+            target_model,
             params.initial_prompt if repeat_initial_prompt else None,
         ):
             with self.standard_encoder_batching_context(
-                self.model,
+                target_model,
                 encoder_batch_size if use_encoder_batching else 1,
             ):
-                return self.model.transcribe(
+                return target_model.transcribe(
                     audio=audio,
                     language=params.lang,
                     task="translate" if params.is_translate else "transcribe",
@@ -736,6 +758,200 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                     condition_on_previous_text=params.condition_on_previous_text,
                     prompt_reset_on_temperature=params.prompt_reset_on_temperature,
                 )
+
+    def _transcribe_with_parallel_slices(
+        self,
+        audio: Union[str, BinaryIO, np.ndarray],
+        params: WhisperParams,
+        progress: gr.Progress = gr.Progress(),
+        progress_callback: Optional[Callable] = None,
+    ):
+        sampling_rate = 16000
+        audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        total_samples = int(audio_array.shape[-1]) if audio_array.size else 0
+        total_duration = float(total_samples) / float(sampling_rate) if total_samples else 0.0
+
+        slice_specs = self.build_equal_audio_slices(
+            total_samples=total_samples,
+            batch_size=max(1, int(params.batch_size)),
+            sampling_rate=sampling_rate,
+        )
+        progress(self.AUDIO_PREPARED_PROGRESS, desc="Audio loaded. Preparing slice jobs..")
+        progress(
+            self.CHUNKS_PREPARED_PROGRESS,
+            desc=f"Prepared {len(slice_specs) or 1} slice jobs. Starting transcription..",
+        )
+
+        if not slice_specs:
+            return [], Namespace(duration=total_duration)
+
+        model_size_or_path, local_files_only = self.resolve_model_target(params.model_size)
+        self.current_model_size = model_size_or_path
+        self.current_compute_type = params.compute_type
+        if self.model is not None:
+            self.offload()
+
+        slice_params = params.model_copy(update={"batch_size": 1})
+        slice_queues: List[Queue] = []
+        slice_threads: List[Thread] = []
+
+        for slice_index, start_sample, end_sample, offset_seconds in slice_specs:
+            queue: Queue = Queue()
+            slice_audio = np.ascontiguousarray(audio_array[start_sample:end_sample], dtype=np.float32)
+            worker = Thread(
+                target=self._run_parallel_slice_worker,
+                args=(
+                    queue,
+                    slice_index,
+                    slice_audio,
+                    offset_seconds,
+                    slice_params,
+                    model_size_or_path,
+                    local_files_only,
+                ),
+                daemon=True,
+            )
+            worker.start()
+            slice_queues.append(queue)
+            slice_threads.append(worker)
+
+        segments_result: List[Segment] = []
+        segment_id = 0
+
+        try:
+            for queue in slice_queues:
+                while True:
+                    message = queue.get()
+                    message_type = message["type"]
+
+                    if message_type == "segment":
+                        segment = message["segment"]
+                        segment_id += 1
+                        segment.id = segment_id
+                        segments_result.append(segment)
+
+                        progress_n = 0.0 if not total_duration else min((segment.end or 0.0) / total_duration, 0.99)
+                        ui_progress_n = self.map_transcription_progress(progress_n)
+                        progress(ui_progress_n, desc=f"Transcribing.. [{segment_id} segments] {(segment.text or '')[:50]}...")
+                        self.emit_progress_callback(progress_callback, progress_n, segment)
+                    elif message_type == "error":
+                        raise RuntimeError(message["error"])
+                    elif message_type == "done":
+                        break
+        finally:
+            for worker in slice_threads:
+                worker.join()
+
+        return segments_result, Namespace(duration=total_duration)
+
+    def _run_parallel_slice_worker(
+        self,
+        queue: Queue,
+        slice_index: int,
+        slice_audio: np.ndarray,
+        offset_seconds: float,
+        params: WhisperParams,
+        model_size_or_path: str,
+        local_files_only: bool,
+    ) -> None:
+        model = None
+        try:
+            model = faster_whisper.WhisperModel(
+                device=self.device,
+                model_size_or_path=model_size_or_path,
+                download_root=self.model_dir,
+                compute_type=params.compute_type,
+                local_files_only=local_files_only,
+            )
+            standard_audio, standard_params = self.resolve_standard_audio_and_params(
+                audio=slice_audio,
+                params=params,
+                sampling_rate=16000,
+            )
+            segments, _info = self._transcribe_with_standard_pipeline(
+                audio=standard_audio,
+                params=standard_params,
+                progress=gr.Progress(),
+                model=model,
+            )
+
+            for segment in segments:
+                queue.put({
+                    "type": "segment",
+                    "segment": self.offset_segment(Segment.from_faster_whisper(segment), offset_seconds),
+                })
+            queue.put({"type": "done", "slice_index": slice_index})
+        except Exception as exc:
+            queue.put({"type": "error", "error": f"Slice {slice_index + 1} failed: {type(exc).__name__}: {exc}"})
+        finally:
+            self.release_temp_model(model)
+
+    @staticmethod
+    def build_equal_audio_slices(
+        total_samples: int,
+        batch_size: int,
+        sampling_rate: int,
+    ) -> List[Tuple[int, int, int, float]]:
+        if total_samples <= 0:
+            return []
+
+        slices = []
+        for slice_index in range(max(1, batch_size)):
+            start_sample = (total_samples * slice_index) // batch_size
+            end_sample = (total_samples * (slice_index + 1)) // batch_size if slice_index < batch_size - 1 else total_samples
+            if end_sample <= start_sample:
+                continue
+            slices.append((slice_index, start_sample, end_sample, float(start_sample) / float(sampling_rate)))
+        return slices
+
+    @staticmethod
+    def offset_segment(segment: Segment, offset_seconds: float) -> Segment:
+        offset_segment = segment.model_copy(deep=True)
+        if offset_segment.start is not None:
+            offset_segment.start += offset_seconds
+        if offset_segment.end is not None:
+            offset_segment.end += offset_seconds
+        if offset_segment.words:
+            for word in offset_segment.words:
+                if word.start is not None:
+                    word.start += offset_seconds
+                if word.end is not None:
+                    word.end += offset_seconds
+        return offset_segment
+
+    def resolve_model_target(self, model_size: str) -> Tuple[str, bool]:
+        model_size_dirname = model_size.replace("/", "--") if "/" in model_size else model_size
+        if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
+            logger.info(
+                "Model is not detected. Trying to download '%s' from huggingface to '%s' ...",
+                model_size,
+                os.path.join(self.model_dir, model_size_dirname),
+            )
+            huggingface_hub.snapshot_download(
+                model_size,
+                local_dir=os.path.join(self.model_dir, model_size_dirname),
+            )
+            self.model_paths = self.get_model_paths()
+
+        resolved_model = self.model_paths[model_size_dirname]
+        hf_prefix = "models--Systran--faster-whisper-"
+        official_model_path = os.path.join(self.model_dir, hf_prefix + model_size)
+        local_files_only = (
+            (os.path.isdir(resolved_model) and os.path.exists(resolved_model))
+            or (model_size in faster_whisper.available_models() and os.path.exists(official_model_path))
+        )
+        return resolved_model, local_files_only
+
+    def release_temp_model(self, model) -> None:
+        if model is not None:
+            del model
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated()
+        if self.device == "xpu":
+            torch.xpu.empty_cache()
+            torch.xpu.reset_accumulated_memory_stats()
+            torch.xpu.reset_peak_memory_stats()
 
     @classmethod
     def map_transcription_progress(cls, raw_progress: float) -> float:
@@ -840,29 +1056,15 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         progress(0.02, desc="Initializing Model..")
 
         model_size_dirname = model_size.replace("/", "--") if "/" in model_size else model_size
+        model_size_or_path, local_files_only = self.resolve_model_target(model_size)
         if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
-            print(f"Model is not detected. Trying to download \"{model_size}\" from huggingface to "
-                  f"\"{os.path.join(self.model_dir, model_size_dirname)} ...")
-            huggingface_hub.snapshot_download(
-                model_size,
-                local_dir=os.path.join(self.model_dir, model_size_dirname),
-            )
-            self.model_paths = self.get_model_paths()
             gr.Info(f"Model is downloaded with the name \"{model_size_dirname}\"")
 
-        self.current_model_size = self.model_paths[model_size_dirname]
-
-        local_files_only = False
-        hf_prefix = "models--Systran--faster-whisper-"
-        official_model_path = os.path.join(self.model_dir, hf_prefix+model_size)
-        if ((os.path.isdir(self.current_model_size) and os.path.exists(self.current_model_size)) or
-            (model_size in faster_whisper.available_models() and os.path.exists(official_model_path))):
-            local_files_only = True
-
         self.current_compute_type = compute_type
+        self.current_model_size = model_size_or_path
         self.model = faster_whisper.WhisperModel(
             device=self.device,
-            model_size_or_path=self.current_model_size,
+            model_size_or_path=model_size_or_path,
             download_root=self.model_dir,
             compute_type=self.current_compute_type,
             local_files_only=local_files_only

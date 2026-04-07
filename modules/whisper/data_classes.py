@@ -1,8 +1,5 @@
-import faster_whisper.transcribe
 import gradio as gr
-import torch
-import whisper
-from typing import Optional, Dict, List, Union, NamedTuple
+from typing import Any, Optional, Dict, List, Union, NamedTuple
 from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
@@ -11,6 +8,11 @@ import yaml
 
 from modules.utils.constants import *
 from modules.utils.i18n import _
+from modules.utils.text import repair_component_text
+from modules.utils.whisper_languages import (
+    normalize_lang_choice as normalize_whisper_lang_choice,
+    normalize_lang_value as normalize_whisper_lang_value,
+)
 
 
 class WhisperImpl(Enum):
@@ -34,7 +36,7 @@ class Segment(BaseModel):
 
     @classmethod
     def from_faster_whisper(cls,
-                            seg: faster_whisper.transcribe.Segment):
+                            seg: Any):
         if seg.words is not None:
             words = [
                 Word(
@@ -157,7 +159,7 @@ class VadParams(BaseParams):
                 info="ðŸ“ Add padding before/after detected speech. Examples: 2000ms/2s (current - includes 2s before/after), 1000ms (tighter boundaries), 3000ms (more context). Prevents cutting off start/end of words."
             ))
         
-        return inputs
+        return [repair_component_text(component) for component in inputs]
 
 
 class DiarizationParams(BaseParams):
@@ -207,7 +209,7 @@ class DiarizationParams(BaseParams):
                 info="ðŸ’¾ Unload diarization model from VRAM after use. âŒ DISABLED (current) for unlimited compute. âœ… Enable if VRAM limited. Diarization model uses ~2-3GB VRAM."
             ))
         
-        return inputs
+        return [repair_component_text(component) for component in inputs]
 
 
 class BGMSeparationParams(BaseParams):
@@ -281,7 +283,7 @@ class BGMSeparationParams(BaseParams):
                 info="ðŸ’¾ Unload UVR model from VRAM after separation. âŒ DISABLED (current) for unlimited compute. âœ… Enable if VRAM limited. UVR model uses ~2-3GB VRAM depending on model."
             ))
         
-        return inputs
+        return [repair_component_text(component) for component in inputs]
 
 
 class WhisperParams(BaseParams):
@@ -304,8 +306,12 @@ class WhisperParams(BaseParams):
     best_of: int = Field(default=5, ge=1, description="Number of candidates when sampling")
     patience: float = Field(default=1.5, gt=0, description="Beam search patience factor")
     condition_on_previous_text: bool = Field(
+        default=False,
+        description="Use previous output as prompt for the next window."
+    )
+    start_as_subprocess: bool = Field(
         default=True,
-        description="Use previous output as prompt for next window. Automatically disabled for very long standard-decoder runs to prevent repetition drift."
+        description="Run transcription in a dedicated subprocess so model memory is fully released when the job ends."
     )
     prompt_reset_on_temperature: float = Field(
         default=0.5,
@@ -344,11 +350,11 @@ class WhisperParams(BaseParams):
     )
     word_timestamps: bool = Field(default=True, description="Extract word-level timestamps")
     prepend_punctuations: Optional[str] = Field(
-        default="\"'â€œÂ¿([{-",
+        default="\"'([{-",
         description="Punctuations to merge with next word"
     )
     append_punctuations: Optional[str] = Field(
-        default="\"'.ã€‚,ï¼Œ!ï¼?ï¼Ÿ:ï¼šâ€)]}ã€",
+        default="\"'.,!?:)]}",
         description="Punctuations to merge with previous word"
     )
     max_new_tokens: Optional[int] = Field(default=None, description="Maximum number of new tokens per chunk")
@@ -381,47 +387,15 @@ class WhisperParams(BaseParams):
     def normalize_lang_value(v):
         from modules.utils.constants import AUTOMATIC_DETECTION
 
-        if v is None:
+        if isinstance(v, str) and v.strip().casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
             return None
-
-        if hasattr(v, "unwrap"):
-            v = v.unwrap()
-
-        if not isinstance(v, str):
-            return v
-
-        normalized = v.strip()
-        if not normalized:
-            return None
-
-        if normalized.casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
-            return None
-
-        lowered = normalized.lower()
-        if lowered in whisper.tokenizer.LANGUAGES:
-            return lowered
-        if lowered in whisper.tokenizer.LANGUAGES.values():
-            return whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
-        if lowered in whisper.tokenizer.TO_LANGUAGE_CODE:
-            return whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
-        return lowered
+        return normalize_whisper_lang_value(v)
 
     @staticmethod
     def normalize_lang_choice(v):
         from modules.utils.constants import AUTOMATIC_DETECTION
 
-        normalized = WhisperParams.normalize_lang_value(v)
-        if normalized is None:
-            raw_value = v.unwrap() if hasattr(v, "unwrap") else v
-            if isinstance(raw_value, str) and raw_value.strip() and raw_value.strip().casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
-                return AUTOMATIC_DETECTION.unwrap()
-            return "english"
-
-        if isinstance(normalized, str) and normalized in whisper.tokenizer.LANGUAGES:
-            return whisper.tokenizer.LANGUAGES[normalized]
-        if isinstance(normalized, str) and normalized in whisper.tokenizer.LANGUAGES.values():
-            return normalized
-        return "english"
+        return normalize_whisper_lang_choice(v, AUTOMATIC_DETECTION.unwrap())
 
     @staticmethod
     def get_language_choices(available_langs: Optional[List]) -> List:
@@ -456,34 +430,55 @@ class WhisperParams(BaseParams):
             if field_name not in {"model_size", "lang", "is_translate"}
         ]
 
+    @staticmethod
+    def supports_batch_size(whisper_type: Optional[str] = None) -> bool:
+        whisper_type = WhisperImpl.FASTER_WHISPER.value if whisper_type is None else whisper_type.strip().lower()
+        return whisper_type in {
+            WhisperImpl.FASTER_WHISPER.value,
+            WhisperImpl.INSANELY_FAST_WHISPER.value,
+        }
+
     @classmethod
     def to_batch_size_input(cls,
                             defaults: Optional[Dict] = None,
                             whisper_type: Optional[str] = None):
-        whisper_type = WhisperImpl.FASTER_WHISPER.value if whisper_type is None else whisper_type.strip().lower()
         defaults = defaults or {}
+        batch_size_value = int(defaults.get("batch_size", cls.__fields__["batch_size"].default))
 
-        batch_size_input = gr.Number(
+        batch_size_input = gr.Slider(
+            minimum=1,
+            maximum=max(32, batch_size_value),
+            step=1,
             label="Batch Size",
-            value=defaults.get("batch_size", cls.__fields__["batch_size"].default),
-            precision=0,
+            value=batch_size_value,
             info=(
-                "In standard mode, this pre-encodes upcoming windows to speed up high-quality transcription "
-                "when Condition On Previous Text stays enabled, without changing the normal decode logic. "
-                "If Use Batched Inference is enabled in Advanced Parameters, it also controls the full batched "
-                "decoder path. Higher batch size usually improves throughput but uses more VRAM. In standard "
-                "high-quality mode, 4 to 8 is usually the sweet spot. Good starting points: 4 for GPUs under "
-                "11 GB, 8 for larger GPUs."
+                "When Use Batched Inference is disabled, this loads that many separate model instances, splits "
+                "the audio into equal time ranges, transcribes each range independently, and then merges the "
+                "result with corrected timestamps. When Use Batched Inference is enabled, it controls the "
+                "faster-whisper batched decoder path instead."
             ),
         )
 
-        if whisper_type not in {
-            WhisperImpl.FASTER_WHISPER.value,
-            WhisperImpl.INSANELY_FAST_WHISPER.value,
-        }:
+        if not cls.supports_batch_size(whisper_type):
             batch_size_input.visible = False
 
         return batch_size_input
+
+    @classmethod
+    def to_start_as_subprocess_input(cls, defaults: Optional[Dict] = None):
+        defaults = defaults or {}
+
+        return gr.Checkbox(
+            label="Start As Sub Process",
+            value=defaults.get(
+                "start_as_subprocess",
+                cls.__fields__["start_as_subprocess"].default,
+            ),
+            info=(
+                "Recommended ON. Runs the job in a dedicated subprocess so torch, VRAM, and RAM are fully released "
+                "when the job finishes, and allows hard cancellation."
+            ),
+        )
 
     @classmethod
     def to_batched_inference_input(cls,
@@ -609,6 +604,7 @@ class WhisperParams(BaseParams):
                 value=defaults.get("condition_on_previous_text", cls.__fields__["condition_on_previous_text"].default),
                 info="ðŸ”— Use previous transcription as context for next segment. âœ… Recommended ON for better coherence and flow. Disable if getting stuck in repetitive loops. Helps maintain context across segments."
             ))
+            inputs.append(cls.to_start_as_subprocess_input(defaults=defaults))
             inputs.append(gr.Slider(
                 label="Prompt Reset On Temperature",
                 value=defaults.get("prompt_reset_on_temperature",
@@ -780,7 +776,7 @@ class WhisperParams(BaseParams):
                 info="ðŸ’¾ Unload model from VRAM after transcription. âœ… Enable if VRAM is limited (<8GB). âŒ DISABLED (current) for unlimited compute - keeps model loaded for faster repeated use. Disable for batch processing multiple files."
             ))
 
-        return inputs
+        return [repair_component_text(component) for component in inputs]
     
     @classmethod
     def to_gradio_inputs_3col(cls,
@@ -887,3 +883,4 @@ class TranscriptionPipelineParams(BaseModel):
             diarization=DiarizationParams.from_list(diarization_list),
             bgm_separation=BGMSeparationParams.from_list(bgm_sep_list)
         )
+

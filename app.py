@@ -15,11 +15,9 @@ from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
 enable_cuda_runtime_autodiscovery()
 
 import gradio as gr
-import torch
-from faster_whisper.audio import decode_audio
 
 from modules.translation.deepl_api import DeepLAPI
-from modules.translation.nllb_inference import NLLBInference
+from modules.runtime.subprocess_client import build_runtime_proxies
 from modules.ui.htmls import *
 from modules.ui.presets import (
     build_default_ui_config,
@@ -50,18 +48,11 @@ from modules.utils.paths import (
     UVR_MODELS_DIR,
     WHISPER_MODELS_DIR,
 )
-from modules.utils.torch_compat import (
-    enable_torch_2_6_weights_only_compat,
-    enable_torchaudio_2_9_compat,
-)
 from modules.utils.youtube_manager import get_ytmetas
 from modules.whisper.data_classes import *
 
 
 logger = get_logger()
-enable_torch_2_6_weights_only_compat()
-enable_torchaudio_2_9_compat()
-from modules.whisper.whisper_factory import WhisperFactory
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_TITLE = "Whisper TTS Premium App by SECourses V4.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
@@ -80,18 +71,7 @@ class App:
             title=self.title,
             delete_cache=(3600, 86400),
         )
-        self.whisper_inf = WhisperFactory.create_whisper_inference(
-            whisper_type=self.args.whisper_type,
-            whisper_model_dir=self.args.whisper_model_dir,
-            faster_whisper_model_dir=self.args.faster_whisper_model_dir,
-            insanely_fast_whisper_model_dir=self.args.insanely_fast_whisper_model_dir,
-            uvr_model_dir=self.args.uvr_model_dir,
-            output_dir=self.args.output_dir,
-        )
-        self.nllb_inf = NLLBInference(
-            model_dir=self.args.nllb_model_dir,
-            output_dir=os.path.join(self.args.output_dir, "translations"),
-        )
+        self.whisper_inf, self.nllb_inf = build_runtime_proxies(self.args)
         self.deepl_api = DeepLAPI(
             output_dir=os.path.join(self.args.output_dir, "translations"),
         )
@@ -135,32 +115,12 @@ class App:
             paths.append(os.getcwd())
         return paths
 
-    @staticmethod
-    def get_gpu_total_memory_gb():
-        try:
-            if torch.cuda.is_available():
-                device_index = torch.cuda.current_device()
-                properties = torch.cuda.get_device_properties(device_index)
-                return properties.total_memory / (1024 ** 3)
-
-            xpu = getattr(torch, "xpu", None)
-            if xpu is not None and xpu.is_available():
-                device_index = xpu.current_device() if hasattr(xpu, "current_device") else 0
-                properties = xpu.get_device_properties(device_index)
-                total_memory = getattr(properties, "total_memory", None)
-                if total_memory:
-                    return total_memory / (1024 ** 3)
-        except Exception as exc:
-            logger.warning(f"Unable to detect GPU memory size: {exc}")
-
-        return None
-
     def apply_dynamic_batch_size_defaults(self, default_params):
         whisper_defaults = default_params.get("whisper", {})
         if not isinstance(whisper_defaults, dict):
             return default_params
 
-        gpu_memory_gb = self.get_gpu_total_memory_gb()
+        gpu_memory_gb = getattr(self.whisper_inf, "gpu_total_memory_gb", None)
         if gpu_memory_gb is None:
             return default_params
 
@@ -221,9 +181,15 @@ class App:
             pass
 
         try:
-            audio = decode_audio(absolute_path)
-            if audio is not None and len(audio) > 0:
-                return len(audio) / 16000.0
+            import av
+
+            with av.open(absolute_path) as container:
+                if container.duration is not None:
+                    return float(container.duration / av.time_base)
+
+                for stream in container.streams:
+                    if stream.duration is not None and stream.time_base is not None:
+                        return float(stream.duration * stream.time_base)
         except Exception:
             return None
 
@@ -469,6 +435,15 @@ class App:
         ):
             yield live_output, result_str, self.prepare_download_output(collected_paths)
 
+    def cancel_active_generation(self, confirmed: bool):
+        if not confirmed:
+            return
+
+        if self.whisper_inf.cancel_active_generation():
+            gr.Info("Cancellation requested. Terminating the running subprocess.")
+        else:
+            gr.Info("No running subprocess was found.")
+
     def create_whisper_inputs_3col(self, whisper_params):
         inputs = []
 
@@ -608,34 +583,41 @@ class App:
                     variant="primary",
                     elem_classes=["action-button", "generate-subtitle-button"],
                 )
-                batch_size_input = WhisperParams.to_batch_size_input(
-                    defaults=whisper_params,
-                    whisper_type=self.args.whisper_type,
-                )
-                if not place_condition_on_previous_text_right:
-                    condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
-                        defaults=whisper_params,
-                    )
-                    gr.Markdown(
-                        "Important: If output shows repetition, all caps, or subtitle drift, "
-                        "try disabling **Condition On Previous Text**. In rare cases this can "
-                        "significantly improve output quality."
-                    )
             with gr.Column(scale=1):
-                if place_condition_on_previous_text_right:
-                    condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
-                        defaults=whisper_params,
-                    )
-                    gr.Markdown(
-                        "Important: If output shows repetition, all caps, or subtitle drift, "
-                        "try disabling **Condition On Previous Text**. In rare cases this can "
-                        "significantly improve output quality."
-                    )
-                elif open_outputs_btn is None:
+                if open_outputs_btn is None:
                     open_outputs_btn = gr.Button(
                         "OPEN OUTPUTS FOLDER",
                         elem_classes=["action-button", "open-outputs-folder-button"],
                     )
+
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=3, visible=WhisperParams.supports_batch_size(self.args.whisper_type)):
+                with gr.Group():
+                    with gr.Row(equal_height=True):
+                        with gr.Column(scale=4):
+                            gr.Markdown("**Batch Size**")
+                            gr.Markdown(
+                                "When Use Batched Inference is disabled, this loads that many separate model "
+                                "instances, splits the audio into equal time ranges, transcribes each range "
+                                "independently, and then merges the result with corrected timestamps. When Use "
+                                "Batched Inference is enabled, it controls the faster-whisper batched decoder "
+                                "path instead."
+                            )
+                        with gr.Column(scale=2, min_width=220):
+                            batch_size_input = WhisperParams.to_batch_size_input(
+                                defaults=whisper_params,
+                                whisper_type=self.args.whisper_type,
+                            )
+                            batch_size_input.show_label = False
+                            batch_size_input.info = None
+            with gr.Column(scale=2):
+                condition_on_previous_text_input = WhisperParams.to_condition_on_previous_text_input(
+                    defaults=whisper_params,
+                )
+            with gr.Column(scale=2):
+                start_as_subprocess_input = WhisperParams.to_start_as_subprocess_input(
+                    defaults=whisper_params,
+                )
 
         with gr.Accordion(_("Advanced Parameters"), open=False):
             whisper_inputs = WhisperParams.to_gradio_inputs(
@@ -648,10 +630,13 @@ class App:
 
         whisper_advanced_fields = WhisperParams.advanced_input_field_names()
         condition_on_previous_text_index = whisper_advanced_fields.index("condition_on_previous_text")
+        start_as_subprocess_index = whisper_advanced_fields.index("start_as_subprocess")
         batch_size_index = whisper_advanced_fields.index("batch_size")
 
         whisper_inputs[condition_on_previous_text_index].visible = False
         whisper_inputs[condition_on_previous_text_index] = condition_on_previous_text_input
+        whisper_inputs[start_as_subprocess_index].visible = False
+        whisper_inputs[start_as_subprocess_index] = start_as_subprocess_input
         whisper_inputs[batch_size_index].visible = False
         whisper_inputs[batch_size_index] = batch_size_input
 
@@ -709,6 +694,7 @@ class App:
                 interactive=True,
                 visible=False,
             )
+            cancel_confirmed = gr.State(False)
             with Translate(self.i18n):
                 with gr.Row():
                     with gr.Column():
@@ -729,6 +715,7 @@ class App:
                                 ui_preset_load_btn = gr.Button("Load Selected")
                                 ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
                                 ui_preset_delete_btn = gr.Button("Delete", variant="stop")
+                                cancel_generation_btn = gr.Button("Cancel Generation", variant="stop")
                             ui_preset_status = gr.Markdown(startup_preset_status)
                     with gr.Column(scale=2):
                         file_download_btn = gr.DownloadButton(
@@ -741,6 +728,12 @@ class App:
                             "OPEN OUTPUTS FOLDER",
                             elem_classes=["action-button", "open-outputs-folder-button"],
                         )
+                        tb_load_file_path = gr.Textbox(
+                            label=_("Load From File Path"),
+                            placeholder="C:\\media\\clip.mp4, /workspace/media/clip.mp4, ./media/clip.mp4, or file:///path/to/clip.mp4",
+                            info=_("Supports Windows, Linux, relative, absolute, quoted, and file:// paths."),
+                        )
+                        btn_load_file_path = gr.Button(_("Load"))
 
                 with gr.Tabs():
                     with gr.TabItem(_("File")):
@@ -799,14 +792,6 @@ class App:
                         )
                         with gr.Row():
                             file_output = gr.Textbox(label=_("Output"), interactive=False)
-                        with gr.Row():
-                            tb_load_file_path = gr.Textbox(
-                                label=_("Load From File Path"),
-                                placeholder="C:\\media\\clip.mp4, /workspace/media/clip.mp4, ./media/clip.mp4, or file:///path/to/clip.mp4",
-                                info=_("Supports Windows, Linux, relative, absolute, quoted, and file:// paths."),
-                                scale=6,
-                            )
-                            btn_load_file_path = gr.Button(_("Load"), scale=1)
                         file_inputs = [
                             input_file,
                             cb_batch_processing,
@@ -838,7 +823,7 @@ class App:
                             queue=False,
                             show_progress="hidden",
                         )
-                        file_transcription_ui["run_button"].click(
+                        file_run_event = file_transcription_ui["run_button"].click(
                             fn=self.transcribe_file_with_download,
                             inputs=file_inputs + file_transcription_ui["pipeline"],
                             outputs=[tb_live_transcription, file_output, file_download_btn],
@@ -882,7 +867,7 @@ class App:
                             youtube_transcription_ui["file_formats"],
                             youtube_transcription_ui["add_timestamp"],
                         ]
-                        youtube_transcription_ui["run_button"].click(
+                        youtube_run_event = youtube_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_youtube,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
                             outputs=[youtube_output, youtube_outputs],
@@ -926,7 +911,7 @@ class App:
                             mic_transcription_ui["file_formats"],
                             mic_transcription_ui["add_timestamp"],
                         ]
-                        mic_transcription_ui["run_button"].click(
+                        mic_run_event = mic_transcription_ui["run_button"].click(
                             fn=self.whisper_inf.transcribe_mic,
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_output, mic_outputs],
@@ -935,6 +920,15 @@ class App:
                             fn=lambda: self.open_folder(self.args.output_dir),
                             inputs=None,
                             outputs=None,
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        cancel_generation_btn.click(
+                            fn=self.cancel_active_generation,
+                            inputs=[cancel_confirmed],
+                            outputs=None,
+                            js="() => [confirm('Terminate the running subprocess?')]",
+                            cancels=[file_run_event, youtube_run_event, mic_run_event],
                             queue=False,
                             show_progress="hidden",
                         )

@@ -1,5 +1,4 @@
 import json
-import whisper
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +12,7 @@ from modules.utils.constants import (
 )
 from modules.utils.files_manager import load_yaml
 from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, PRESETS_DIR
+from modules.utils.whisper_languages import normalize_lang_choice as normalize_whisper_lang_choice
 
 UI_PRESET_VERSION = "1.0"
 UI_PRESET_FORMAT = "whisper_webui_ui"
@@ -124,22 +124,7 @@ def _as_ui_optional_number(value: Any) -> Any:
 
 
 def _normalize_ui_lang(value: Any) -> str:
-    if not isinstance(value, str) or not value.strip():
-        return "english"
-
-    normalized = value.strip()
-    if normalized.casefold() == AUTOMATIC_DETECTION.unwrap().casefold():
-        return AUTOMATIC_DETECTION.unwrap()
-
-    lowered = normalized.lower()
-    if lowered in whisper.tokenizer.LANGUAGES:
-        return whisper.tokenizer.LANGUAGES[lowered]
-    if lowered in whisper.tokenizer.LANGUAGES.values():
-        return lowered
-    if lowered in whisper.tokenizer.TO_LANGUAGE_CODE:
-        code = whisper.tokenizer.TO_LANGUAGE_CODE[lowered]
-        return whisper.tokenizer.LANGUAGES[code]
-    return lowered
+    return normalize_whisper_lang_choice(value, AUTOMATIC_DETECTION.unwrap())
 
 
 def _normalize_whisper_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
