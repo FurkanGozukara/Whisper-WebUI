@@ -120,3 +120,8 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
         (0.49333333333333335, "second chunk"),
     ]
     assert progress.events[0] == (0, "Loading audio..")
+    assert progress.events[1] == (FasterWhisperInference.MODEL_READY_PROGRESS, "Loading audio..")
+    assert progress.events[2] == (FasterWhisperInference.AUDIO_PREPARED_PROGRESS, "Audio loaded. Preparing chunks..")
+    assert progress.events[3] == (FasterWhisperInference.CHUNKS_PREPARED_PROGRESS, "Prepared 4 chunks. Starting transcription..")
+    assert progress.events[4] == (FasterWhisperInference.TRANSCRIPTION_PROGRESS_START, "Transcribing..")
+    assert progress.events[5][0] > FasterWhisperInference.TRANSCRIPTION_PROGRESS_START

@@ -22,6 +22,12 @@ logger = get_logger()
 
 
 class FasterWhisperInference(BaseTranscriptionPipeline):
+    MODEL_READY_PROGRESS = 0.08
+    AUDIO_PREPARED_PROGRESS = 0.16
+    CHUNKS_PREPARED_PROGRESS = 0.24
+    TRANSCRIPTION_PROGRESS_START = 0.3
+    TRANSCRIPTION_PROGRESS_END = 0.98
+
     def __init__(self,
                  model_dir: str = FASTER_WHISPER_MODELS_DIR,
                  diarization_model_dir: str = DIARIZATION_MODELS_DIR,
@@ -76,11 +82,13 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             self.update_model(params.model_size, params.compute_type, progress)
 
         progress(0, desc="Loading audio..")
-        segments, info = self._transcribe_with_batching(audio=audio, params=params)
+        progress(self.MODEL_READY_PROGRESS, desc="Loading audio..")
+        segments, info = self._transcribe_with_batching(audio=audio, params=params, progress=progress)
 
         segments_result = []
         for idx, segment in enumerate(segments):
             progress_n = 0.0 if not info.duration else min(segment.end / info.duration, 0.99)
+            ui_progress_n = self.map_transcription_progress(progress_n)
             seg_obj = Segment.from_faster_whisper(segment)
             segments_result.append(seg_obj)
 
@@ -88,7 +96,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
 
             # Update progress with current segment info
-            progress(progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
+            progress(ui_progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
 
             self.emit_progress_callback(progress_callback, progress_n, seg_obj)
 
@@ -99,21 +107,25 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         self,
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
+        progress: gr.Progress = gr.Progress(),
     ):
         batch_pipeline_cls = getattr(faster_whisper, "BatchedInferencePipeline", None)
         if batch_pipeline_cls is None:
             logger.warning("Installed faster-whisper build does not support BatchedInferencePipeline. Falling back to standard transcription.")
-            return self._transcribe_with_standard_pipeline(audio=audio, params=params)
+            return self._transcribe_with_standard_pipeline(audio=audio, params=params, progress=progress)
 
         sampling_rate = self.model.feature_extractor.sampling_rate
         audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        progress(self.AUDIO_PREPARED_PROGRESS, desc="Audio loaded. Preparing chunks..")
         clip_timestamps = self.build_clip_timestamps(
             audio=audio_array,
             chunk_length=params.chunk_length,
             sampling_rate=sampling_rate,
         )
+        progress(self.CHUNKS_PREPARED_PROGRESS, desc=f"Prepared {len(clip_timestamps) or 1} chunks. Starting transcription..")
 
         batch_pipeline = batch_pipeline_cls(model=self.model)
+        progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
         return batch_pipeline.transcribe(
             audio=audio_array,
             language=params.lang,
@@ -153,7 +165,9 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         self,
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
+        progress: gr.Progress = gr.Progress(),
     ):
+        progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
         return self.model.transcribe(
             audio=audio,
             language=params.lang,
@@ -185,6 +199,12 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             condition_on_previous_text=params.condition_on_previous_text,
             prompt_reset_on_temperature=params.prompt_reset_on_temperature,
         )
+
+    @classmethod
+    def map_transcription_progress(cls, raw_progress: float) -> float:
+        bounded = min(max(raw_progress, 0.0), 0.99)
+        span = cls.TRANSCRIPTION_PROGRESS_END - cls.TRANSCRIPTION_PROGRESS_START
+        return cls.TRANSCRIPTION_PROGRESS_START + (bounded * span)
 
     @staticmethod
     def prepare_audio_array(audio: Union[str, BinaryIO, np.ndarray], sampling_rate: int) -> np.ndarray:
@@ -264,7 +284,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         progress: gr.Progress
             Indicator to show progress directly in gradio.
         """
-        progress(0, desc="Initializing Model..")
+        progress(0.02, desc="Initializing Model..")
 
         model_size_dirname = model_size.replace("/", "--") if "/" in model_size else model_size
         if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
