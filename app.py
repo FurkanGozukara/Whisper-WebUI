@@ -24,6 +24,7 @@ from modules.ui.presets import (
     build_default_ui_config,
     clear_last_used_ui_preset,
     delete_ui_preset,
+    get_default_startup_ui_preset,
     get_last_used_ui_preset,
     get_nested_value,
     is_locked_ui_preset,
@@ -57,7 +58,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V4.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V5.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -741,18 +742,23 @@ class App:
         }
 
     def launch(self, prevent_thread_lock: bool = False, quiet: bool = False):
-        startup_preset_name = get_last_used_ui_preset()
+        remembered_preset_name = get_last_used_ui_preset()
+        startup_preset_name = remembered_preset_name or get_default_startup_ui_preset()
         default_ui_config = merge_ui_config(self.ui_default_config, default_params=self.default_params)
         startup_preset_status = ""
         if startup_preset_name:
             startup_cfg = load_ui_preset(startup_preset_name, default_params=self.default_params)
             if startup_cfg:
                 default_ui_config = startup_cfg
-                startup_preset_status = f"Loaded last used preset **{startup_preset_name}**"
+                if remembered_preset_name:
+                    startup_preset_status = f"Loaded last used preset **{startup_preset_name}**"
+                else:
+                    startup_preset_status = f"Loaded default preset **{startup_preset_name}**"
             else:
                 clear_last_used_ui_preset()
+                failed_startup_preset_name = startup_preset_name
                 startup_preset_name = None
-                startup_preset_status = "Last used preset was not found. Loaded defaults."
+                startup_preset_status = f"Preset **{failed_startup_preset_name}** could not be loaded. Loaded defaults."
 
         file_defaults = default_ui_config["file_tab"]
         youtube_defaults = default_ui_config["youtube_tab"]
@@ -776,7 +782,7 @@ class App:
 
                 with gr.Row():
                     with gr.Column(scale=3):
-                        with gr.Accordion("Config Presets (Save / Load)", open=True):
+                        with gr.Accordion("Config Presets", open=True):
                             with gr.Row():
                                 ui_preset_dropdown = gr.Dropdown(
                                     label="Select Preset",
@@ -786,7 +792,6 @@ class App:
                                 ui_preset_name = gr.Textbox(label="New Preset Name", placeholder="my_preset")
                             with gr.Row():
                                 ui_preset_save_btn = gr.Button("Save", variant="primary")
-                                ui_preset_load_btn = gr.Button("Load Selected")
                                 ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
                                 ui_preset_delete_btn = gr.Button("Delete", variant="stop")
                             ui_preset_status = gr.Markdown(startup_preset_status)
@@ -1333,30 +1338,39 @@ class App:
                         values.append(value)
                     return values
 
+                def _load_preset_values_and_status(preset_name: str):
+                    if not preset_name:
+                        values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
+                        return values, "No preset selected. Showing defaults."
+
+                    safe_name = sanitize_preset_name(preset_name)
+                    cfg = load_ui_preset(safe_name, default_params=self.default_params)
+                    if not cfg:
+                        if get_last_used_ui_preset() == safe_name:
+                            clear_last_used_ui_preset()
+                        values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
+                        return values, f"Preset **{preset_name}** was not found. Loaded defaults."
+
+                    set_last_used_ui_preset(safe_name)
+                    values = _ui_config_to_values(cfg)
+                    return values, f"Loaded preset **{safe_name}**"
+
                 def _save_preset_ui(preset_name: str, *values):
                     try:
                         cfg = _values_to_ui_config(*values)
                         saved = save_ui_preset(preset_name, cfg, default_params=self.default_params)
-                        set_last_used_ui_preset(saved)
-                        return gr.update(choices=list_ui_presets(), value=saved), f"Saved preset **{saved}**"
+                        loaded_values, _ = _load_preset_values_and_status(saved)
+                        return (
+                            gr.update(choices=list_ui_presets(), value=saved),
+                            *loaded_values,
+                            f"Saved and loaded preset **{saved}**",
+                        )
                     except Exception as exc:
-                        return gr.update(), f"Save failed: {exc}"
+                        return (gr.update(), *values, f"Save failed: {exc}")
 
                 def _load_preset_ui(preset_name: str):
-                    if not preset_name:
-                        values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
-                        return (*values, "No preset selected. Showing defaults.")
-
-                    cfg = load_ui_preset(preset_name, default_params=self.default_params)
-                    if not cfg:
-                        if get_last_used_ui_preset() == sanitize_preset_name(preset_name):
-                            clear_last_used_ui_preset()
-                        values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
-                        return (*values, f"Preset **{preset_name}** was not found. Loaded defaults.")
-
-                    set_last_used_ui_preset(preset_name)
-                    values = _ui_config_to_values(cfg)
-                    return (*values, f"Loaded preset **{preset_name}**")
+                    values, status = _load_preset_values_and_status(preset_name)
+                    return (*values, status)
 
                 def _reset_defaults_ui():
                     values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
@@ -1380,11 +1394,11 @@ class App:
                 ui_preset_save_btn.click(
                     fn=_save_preset_ui,
                     inputs=[ui_preset_name] + config_components,
-                    outputs=[ui_preset_dropdown, ui_preset_status],
+                    outputs=[ui_preset_dropdown] + config_components + [ui_preset_status],
                     queue=False,
                     show_progress="hidden",
                 )
-                ui_preset_load_btn.click(
+                ui_preset_dropdown.change(
                     fn=_load_preset_ui,
                     inputs=[ui_preset_dropdown],
                     outputs=config_components + [ui_preset_status],

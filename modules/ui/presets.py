@@ -17,6 +17,7 @@ from modules.utils.whisper_languages import normalize_lang_choice as normalize_w
 UI_PRESET_VERSION = "1.0"
 UI_PRESET_FORMAT = "whisper_webui_ui"
 LAST_USED_UI_PRESET_FILENAME = "last_used_ui_preset.txt"
+DEFAULT_STARTUP_UI_PRESET = "best_quality"
 
 
 def sanitize_preset_name(name: str) -> str:
@@ -109,6 +110,13 @@ def get_last_used_ui_preset() -> Optional[str]:
         clear_last_used_ui_preset()
         return None
 
+    return safe_name
+
+
+def get_default_startup_ui_preset(preset_name: str = DEFAULT_STARTUP_UI_PRESET) -> Optional[str]:
+    safe_name = sanitize_preset_name(preset_name)
+    if find_ui_preset_path(safe_name) is None:
+        return None
     return safe_name
 
 
