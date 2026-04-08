@@ -85,6 +85,9 @@
 <img height="600" alt="image" src="https://github.com/user-attachments/assets/f0647197-25f5-4e7b-9ab6-dd3740f743af" />
 
 
+### Full Page Screenshot
+
+<img width="3840" height="3382" alt="screencapture-127-0-0-1-7864-2026-04-08-17_22_41" src="https://github.com/user-attachments/assets/b4e49a9e-80fa-48c8-b935-a32d088022fe" />
 
 ## Features
 
