@@ -40,6 +40,7 @@ logger = get_logger()
 class BaseTranscriptionPipeline(ABC):
     LIVE_TRANSCRIPTION_HISTORY_LINES = 30
     LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC = 0.1
+    NO_WORD_TIMESTAMPS_SUFFIX = "_noword_timestaps"
 
     def __init__(self,
                  model_dir: str = WHISPER_MODELS_DIR,
@@ -290,12 +291,13 @@ class BaseTranscriptionPipeline(ABC):
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
                 target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
-                existing_outputs = self._find_existing_outputs(file_name, target_output_dir, file_formats)
+                output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+                existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
                 live_output = append_live_lines(f"📂 Processing: {file_name}", "=" * 60, "")
                 yield live_output, "", collected_paths
 
-                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(file_formats):
+                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
                     skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
                     collected_paths.extend(skipped_paths)
                     live_output = append_live_lines(
@@ -388,21 +390,15 @@ class BaseTranscriptionPipeline(ABC):
                         )
 
                 # Generate final output(s)
-                generated_paths = []
-                for fmt in file_formats:
-                    fmt_key = self._normalize_format_key(fmt)
-                    if batch_mode and (not overwrite_existing) and fmt_key in existing_outputs:
-                        file_path = sorted(existing_outputs[fmt_key])[-1]
-                    else:
-                        _, file_path = generate_file(
-                            output_dir=target_output_dir,
-                            output_file_name=file_name,
-                            output_format=fmt,
-                            result=transcribed_segments,
-                            add_timestamp=add_timestamp,
-                            **writer_options
-                        )
-                    generated_paths.append(file_path)
+                _, generated_paths = self._write_output_files(
+                    output_specs=output_specs,
+                    output_dir=target_output_dir,
+                    result=transcribed_segments,
+                    add_timestamp=add_timestamp,
+                    existing_outputs=existing_outputs,
+                    batch_mode=batch_mode,
+                    overwrite_existing=overwrite_existing,
+                )
 
                 collected_paths.extend(generated_paths)
                 live_output = append_live_lines(
@@ -486,9 +482,10 @@ class BaseTranscriptionPipeline(ABC):
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
                 target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
-                existing_outputs = self._find_existing_outputs(file_name, target_output_dir, file_formats)
+                output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+                existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
-                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(file_formats):
+                if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
                     skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
                     all_paths.extend(skipped_paths)
                     files_info[file_name] = {
@@ -508,24 +505,15 @@ class BaseTranscriptionPipeline(ABC):
                     *pipeline_params,
                 )
 
-                generated_paths = []
-                subtitle_preview = ""
-                for fmt in file_formats:
-                    fmt_key = self._normalize_format_key(fmt)
-                    if batch_mode and (not overwrite_existing) and fmt_key in existing_outputs:
-                        file_path = sorted(existing_outputs[fmt_key])[-1]
-                        subtitle_preview = subtitle_preview or read_file(file_path)
-                    else:
-                        subtitle, file_path = generate_file(
-                            output_dir=target_output_dir,
-                            output_file_name=file_name,
-                            output_format=fmt,
-                            result=transcribed_segments,
-                            add_timestamp=add_timestamp,
-                            **writer_options
-                        )
-                        subtitle_preview = subtitle_preview or subtitle
-                    generated_paths.append(file_path)
+                subtitle_preview, generated_paths = self._write_output_files(
+                    output_specs=output_specs,
+                    output_dir=target_output_dir,
+                    result=transcribed_segments,
+                    add_timestamp=add_timestamp,
+                    existing_outputs=existing_outputs,
+                    batch_mode=batch_mode,
+                    overwrite_existing=overwrite_existing,
+                )
 
                 all_paths.extend(generated_paths)
                 files_info[file_name] = {
@@ -602,19 +590,13 @@ class BaseTranscriptionPipeline(ABC):
             progress(1, desc="Completed!")
 
             file_name = "Mic"
-            file_paths = []
-            subtitle_preview = ""
-            for fmt in file_formats:
-                subtitle, file_path = generate_file(
-                    output_dir=self.output_dir,
-                    output_file_name=file_name,
-                    output_format=fmt,
-                    result=transcribed_segments,
-                    add_timestamp=add_timestamp,
-                    **writer_options
-                )
-                subtitle_preview = subtitle_preview or subtitle
-                file_paths.append(file_path)
+            output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+            subtitle_preview, file_paths = self._write_output_files(
+                output_specs=output_specs,
+                output_dir=self.output_dir,
+                result=transcribed_segments,
+                add_timestamp=add_timestamp,
+            )
 
             result_file_path = file_paths[0] if len(file_paths) == 1 else file_paths
             result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
@@ -675,19 +657,13 @@ class BaseTranscriptionPipeline(ABC):
             progress(1, desc="Completed!")
 
             file_name = safe_filename(yt.title)
-            file_paths = []
-            subtitle_preview = ""
-            for fmt in file_formats:
-                subtitle, file_path = generate_file(
-                    output_dir=self.output_dir,
-                    output_file_name=file_name,
-                    output_format=fmt,
-                    result=transcribed_segments,
-                    add_timestamp=add_timestamp,
-                    **writer_options
-                )
-                subtitle_preview = subtitle_preview or subtitle
-                file_paths.append(file_path)
+            output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+            subtitle_preview, file_paths = self._write_output_files(
+                output_specs=output_specs,
+                output_dir=self.output_dir,
+                result=transcribed_segments,
+                add_timestamp=add_timestamp,
+            )
 
             result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
 
@@ -726,16 +702,80 @@ class BaseTranscriptionPipeline(ABC):
         os.makedirs(target_output_dir, exist_ok=True)
         return target_output_dir
 
-    def _find_existing_outputs(self, file_name: str, output_dir: str, file_formats: List[str]) -> dict:
-        """Find already generated outputs for a file (supports timestamped filenames)."""
-        existing = {}
+    def _build_output_specs(self, file_name: str, file_formats: List[str], writer_options: Optional[dict] = None) -> List[dict]:
+        """Build concrete output specs, including the plain SRT companion file when word timestamps are enabled."""
+        output_specs = []
+        writer_options = dict(writer_options or {})
+        include_no_word_srt = bool(writer_options.get("highlight_words"))
+
         for fmt in file_formats:
-            fmt_key = self._normalize_format_key(fmt)
-            pattern = os.path.join(output_dir, f"{file_name}*.{fmt_key}")
-            matches = glob.glob(pattern)
+            normalized_format = self._normalize_format_key(fmt)
+            output_specs.append({
+                "lookup_key": normalized_format,
+                "output_format": fmt,
+                "output_file_name": file_name,
+                "writer_options": dict(writer_options),
+            })
+
+            if include_no_word_srt and normalized_format == "srt":
+                output_specs.append({
+                    "lookup_key": f"{normalized_format}{self.NO_WORD_TIMESTAMPS_SUFFIX}",
+                    "output_format": "srt",
+                    "output_file_name": f"{file_name}{self.NO_WORD_TIMESTAMPS_SUFFIX}",
+                    "writer_options": {**writer_options, "highlight_words": False},
+                })
+
+        return output_specs
+
+    def _find_existing_outputs(self, output_dir: str, output_specs: List[dict]) -> dict:
+        """Find already generated outputs for each requested output spec (supports timestamped filenames)."""
+        existing = {}
+        for spec in output_specs:
+            normalized_extension = self._normalize_format_key(spec["output_format"])
+            pattern = os.path.join(output_dir, f"*.{normalized_extension}")
+            matches = []
+            for match in glob.glob(pattern):
+                stem = os.path.splitext(os.path.basename(match))[0]
+                remainder = stem[len(spec["output_file_name"]):] if stem.startswith(spec["output_file_name"]) else None
+                if remainder is None:
+                    continue
+                if remainder == "" or (remainder.startswith("-") and remainder[1:].isdigit()):
+                    matches.append(match)
             if matches:
-                existing[fmt_key] = matches
+                existing[spec["lookup_key"]] = matches
         return existing
+
+    def _write_output_files(self,
+                            output_specs: List[dict],
+                            output_dir: str,
+                            result: Union[dict, List[Segment]],
+                            add_timestamp: bool = True,
+                            existing_outputs: Optional[dict] = None,
+                            batch_mode: bool = False,
+                            overwrite_existing: bool = False) -> Tuple[str, List[str]]:
+        """Write or reuse all requested output files and return the preview text plus saved paths."""
+        existing_outputs = existing_outputs or {}
+        subtitle_preview = ""
+        generated_paths = []
+
+        for spec in output_specs:
+            lookup_key = spec["lookup_key"]
+            if batch_mode and (not overwrite_existing) and lookup_key in existing_outputs:
+                file_path = sorted(existing_outputs[lookup_key])[-1]
+                subtitle_preview = subtitle_preview or read_file(file_path)
+            else:
+                subtitle, file_path = generate_file(
+                    output_dir=output_dir,
+                    output_file_name=spec["output_file_name"],
+                    output_format=spec["output_format"],
+                    result=result,
+                    add_timestamp=add_timestamp,
+                    **spec["writer_options"],
+                )
+                subtitle_preview = subtitle_preview or subtitle
+            generated_paths.append(file_path)
+
+        return subtitle_preview, generated_paths
 
     @staticmethod
     def format_input_files(files: Optional[Union[str, List]]) -> List[str]:

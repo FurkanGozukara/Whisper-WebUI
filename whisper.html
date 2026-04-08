@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper-WebUI Capability Board</title>
+  <style>
+    :root {
+      --line: rgba(129, 160, 185, 0.18);
+      --line-strong: rgba(129, 160, 185, 0.32);
+      --text: #edf4fa;
+      --muted: #9aabbc;
+      --teal: #67dec4;
+      --amber-soft: rgba(241, 180, 109, 0.12);
+      --shadow: 0 22px 70px rgba(0, 0, 0, 0.28);
+      --radius-lg: 22px;
+      --radius-md: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Aptos", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 14% 18%, rgba(103, 222, 196, 0.14), transparent 28%),
+        radial-gradient(circle at 88% 16%, rgba(142, 198, 255, 0.12), transparent 24%),
+        radial-gradient(circle at 68% 82%, rgba(241, 180, 109, 0.1), transparent 28%),
+        linear-gradient(180deg, #071018 0%, #0a131c 32%, #091119 100%);
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.65), transparent 95%);
+    }
+
+    .orb {
+      position: fixed;
+      width: 32rem;
+      height: 32rem;
+      border-radius: 999px;
+      filter: blur(60px);
+      pointer-events: none;
+      opacity: 0.22;
+      z-index: 0;
+    }
+
+    .orb-a {
+      top: -10rem;
+      left: -8rem;
+      background: #1f6658;
+    }
+
+    .orb-b {
+      top: 12rem;
+      right: -12rem;
+      background: #294a75;
+    }
+
+    .orb-c {
+      bottom: -12rem;
+      left: 30%;
+      background: #7b5b31;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 30px clamp(18px, 3vw, 34px) 48px;
+      display: grid;
+      gap: 22px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(17, 28, 39, 0.84), rgba(10, 16, 24, 0.78));
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.95fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .hero-copy,
+    .hero-side,
+    .panel-body,
+    .models-panel,
+    .languages-panel {
+      padding: 24px 28px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--teal);
+      background: rgba(103, 222, 196, 0.08);
+      border: 1px solid rgba(103, 222, 196, 0.18);
+    }
+
+    h1,
+    h2,
+    h3,
+    h4 {
+      margin: 0;
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }
+
+    .hero h1 {
+      margin-top: 18px;
+      font-size: clamp(2.35rem, 4vw, 4.4rem);
+      max-width: 12ch;
+    }
+
+    .lede,
+    .section-head p,
+    .feature p,
+    .route p,
+    .summary-card p,
+    .footer-note {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .lede {
+      margin: 18px 0 0;
+      max-width: 66ch;
+    }
+
+    .badge-row,
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge-row {
+      margin-top: 22px;
+    }
+
+    .badge,
+    .chip,
+    .tiny-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: #d8e5ef;
+      font-size: 0.84rem;
+      white-space: nowrap;
+    }
+
+    .badge.hot {
+      border-color: rgba(241, 180, 109, 0.25);
+      background: var(--amber-soft);
+      color: #ffd9aa;
+    }
+
+    .hero-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat,
+    .summary-card,
+    .feature,
+    .route {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .stat-label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 10px;
+    }
+
+    .stat-value {
+      display: block;
+      font-size: clamp(1.6rem, 2vw, 2.3rem);
+      font-weight: 800;
+      letter-spacing: -0.06em;
+    }
+
+    .stat-sub {
+      display: block;
+      margin-top: 6px;
+      color: #bfd0dd;
+      font-size: 0.9rem;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .section-head p {
+      margin: 0;
+      max-width: 60ch;
+    }
+
+    .section-title {
+      font-size: clamp(1.45rem, 2vw, 2.1rem);
+      margin-top: 10px;
+    }
+
+    .surface-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 22px;
+    }
+
+    .panel-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .feature h4 {
+      font-size: 0.98rem;
+      margin-bottom: 8px;
+    }
+
+    .route-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .route {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .method {
+      min-width: 54px;
+      text-align: center;
+      padding: 8px 10px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #0a1219;
+      background: linear-gradient(135deg, #6fe5c4, #7bc8ff);
+    }
+
+    .route code,
+    .model-name,
+    .lang-code {
+      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    }
+
+    .route code {
+      color: #eef6fd;
+      font-size: 0.92rem;
+    }
+
+    .model-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0 16px;
+    }
+
+    .table-wrap {
+      margin-top: 14px;
+      overflow-x: auto;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(7, 12, 18, 0.46);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 14px 16px;
+      text-align: left;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #bdd0dd;
+      background: rgba(13, 21, 30, 0.96);
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    tbody td {
+      padding: 12px 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      color: #dce8f1;
+      font-size: 0.95rem;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .family-tag,
+    .support,
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .family-tag {
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #d9e5ef;
+    }
+
+    .family-distil {
+      background: rgba(241, 180, 109, 0.12);
+      border-color: rgba(241, 180, 109, 0.25);
+      color: #ffd5a3;
+    }
+
+    .family-turbo {
+      background: rgba(103, 222, 196, 0.12);
+      border-color: rgba(103, 222, 196, 0.22);
+      color: #aaf5e4;
+    }
+
+    .family-english-only {
+      background: rgba(142, 198, 255, 0.12);
+      border-color: rgba(142, 198, 255, 0.22);
+      color: #cee5ff;
+    }
+
+    .support {
+      min-width: 58px;
+      padding: 7px 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .support-yes {
+      color: #b7f4e7;
+      background: rgba(103, 222, 196, 0.12);
+      border-color: rgba(103, 222, 196, 0.2);
+    }
+
+    .support-no {
+      color: #95a9bc;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 18px 0 16px;
+      flex-wrap: wrap;
+    }
+
+    .search {
+      width: min(560px, 100%);
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 13px 14px;
+      font: inherit;
+      outline: none;
+    }
+
+    .count-badge {
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #d4e1ea;
+      white-space: nowrap;
+    }
+
+    .language-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+    }
+
+    .language-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 11px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(255, 255, 255, 0.03);
+      min-height: 46px;
+    }
+
+    .lang-code {
+      min-width: 40px;
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: rgba(142, 198, 255, 0.1);
+      border: 1px solid rgba(142, 198, 255, 0.18);
+      color: #cfe4ff;
+      text-align: center;
+      font-size: 0.76rem;
+      text-transform: lowercase;
+    }
+
+    .lang-name {
+      font-size: 0.92rem;
+      color: #ebf2f8;
+      line-height: 1.2;
+    }
+
+    .footer-note {
+      margin-top: 18px;
+      font-size: 0.92rem;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(14px);
+      animation: rise 700ms cubic-bezier(.2, .75, .2, 1) forwards;
+    }
+
+    .delay-1 { animation-delay: 80ms; }
+    .delay-2 { animation-delay: 150ms; }
+    .delay-3 { animation-delay: 220ms; }
+    .delay-4 { animation-delay: 290ms; }
+
+    @keyframes rise {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 1080px) {
+      .hero,
+      .surface-grid,
+      .model-summary {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        padding-top: 20px;
+      }
+
+      .hero-copy,
+      .hero-side,
+      .panel-body,
+      .models-panel,
+      .languages-panel {
+        padding: 18px;
+      }
+
+      .feature-grid,
+      .stat-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>
+  <div class="orb orb-c"></div>
+
+  <main class="page">
+    <section class="hero">
+      <article class="panel hero-copy reveal">
+        <span class="eyebrow">Whisper-WebUI Capability Board</span>
+        <h1>100 languages and the full Whisper model surface in one compact page.</h1>
+        <p class="lede">
+          This standalone board is based on the current repository scan. It separates full app capabilities from the
+          backend API, highlights the runtime distinction between classic Whisper and accelerated paths, and keeps the
+          supported transcription languages searchable without wasting screen space.
+        </p>
+        <div class="badge-row">
+          <span class="badge">Standalone HTML file</span>
+          <span class="badge">UI includes automatic language detection</span>
+          <span class="badge hot">Backend transcription router uses faster-whisper</span>
+        </div>
+      </article>
+
+      <aside class="panel hero-side reveal delay-1">
+        <div class="stat-grid">
+          <div class="stat">
+            <span class="stat-label">Languages</span>
+            <span class="stat-value">100</span>
+            <span class="stat-sub">Whisper transcription list</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Classic Models</span>
+            <span class="stat-value">14</span>
+            <span class="stat-sub">OpenAI Whisper list</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Accelerated Models</span>
+            <span class="stat-value">18</span>
+            <span class="stat-sub">Faster and insanely-fast</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Backend Routes</span>
+            <span class="stat-value">5</span>
+            <span class="stat-sub">Actionable API endpoints</span>
+          </div>
+        </div>
+        <div class="chip-row">
+          <span class="chip">6 subtitle output formats</span>
+          <span class="chip">4 Distil variants</span>
+          <span class="chip">3 app runtime implementations</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="reveal delay-2">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Surface Scan</span>
+          <h2 class="section-title">What the app exposes vs what the backend serves</h2>
+        </div>
+        <p>
+          The main Gradio app exposes more workflows than the FastAPI backend. The backend is focused on queued
+          processing and task retrieval, while the app adds YouTube, microphone, translation tabs, presets, and richer
+          interactive controls.
+        </p>
+      </div>
+
+      <div class="surface-grid">
+        <article class="panel">
+          <div class="panel-body">
+            <div class="panel-top">
+              <h3>Full App Features</h3>
+              <span class="tiny-pill">Gradio + runtime</span>
+            </div>
+            <div class="feature-grid">
+              <div class="feature"><h4>File Transcription</h4><p>Audio and video upload, live transcript output, multi-format subtitle export.</p></div>
+              <div class="feature"><h4>YouTube Workflow</h4><p>Direct YouTube link transcription in the app UI.</p></div>
+              <div class="feature"><h4>Mic Capture</h4><p>Microphone recording flow for direct subtitle generation.</p></div>
+              <div class="feature"><h4>Batch Folder Mode</h4><p>Folder scan, optional subdirectory traversal, overwrite control, multiple formats at once.</p></div>
+              <div class="feature"><h4>Translation Modes</h4><p>Whisper translate-to-English plus subtitle translation tabs for DeepL API and NLLB.</p></div>
+              <div class="feature"><h4>Cleanup Stack</h4><p>Silero VAD, UVR background-music removal, and optional speaker diarization.</p></div>
+              <div class="feature"><h4>Runtime Controls</h4><p>Model, language, compute type, batching, word timestamps, prompts, offload, presets.</p></div>
+              <div class="feature"><h4>Output Formats</h4><p>SRT, WebVTT, TXT, LRC, JSON, and TSV are available in the app UI.</p></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-body">
+            <div class="panel-top">
+              <h3>Backend API</h3>
+              <span class="tiny-pill">FastAPI</span>
+            </div>
+            <div class="route-list">
+              <div class="route"><span class="method">POST</span><div><code>/transcription</code><p>Queues transcription for uploaded audio or video with whisper, VAD, BGM separation, and diarization parameters.</p></div></div>
+              <div class="route"><span class="method">POST</span><div><code>/vad</code><p>Runs voice activity detection and returns a speech timeline as a queued task result.</p></div></div>
+              <div class="route"><span class="method">POST</span><div><code>/bgm-separation</code><p>Queues background music separation and stores instrumental and vocal outputs for download.</p></div></div>
+              <div class="route"><span class="method">GET</span><div><code>/task/{identifier}</code><p>Polls queued task state, progress, duration, and final result payload.</p></div></div>
+              <div class="route"><span class="method">GET</span><div><code>/task/file/{identifier}</code><p>Downloads zipped BGM separation results. Delete and list-all task endpoints exist in code but are disabled.</p></div></div>
+            </div>
+            <p class="footer-note">
+              Backend root redirects to <code>/docs</code>, and Redoc is available at <code>/redoc</code>. The
+              backend transcription router currently constructs <code>FasterWhisperInference</code>, so the REST path is
+              tied to faster-whisper even though the full app supports three runtime implementations.
+            </p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel models-panel reveal delay-3">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Model Support</span>
+          <h2 class="section-title">Implementation matrix</h2>
+        </div>
+        <p>
+          Classic Whisper exposes the core OpenAI list. Faster-whisper and insanely-fast-whisper extend that with Distil
+          variants. The table below reflects the current code and installed-package lists used by this repo scan.
+        </p>
+      </div>
+
+      <div class="model-summary">
+        <div class="summary-card"><h4>Whisper</h4><p>14 models from <code>whisper.available_models()</code>. This is the classic implementation path.</p></div>
+        <div class="summary-card"><h4>Faster-Whisper</h4><p>18 models, including 4 Distil variants. This is the backend REST transcription implementation.</p></div>
+        <div class="summary-card"><h4>Insanely-Fast-Whisper</h4><p>18 models, matching the accelerated set with Distil support in the app runtime.</p></div>
+      </div>
+
+      <div class="chip-row">
+        <span class="chip">4 English-only</span>
+        <span class="chip">8 multilingual</span>
+        <span class="chip">2 turbo</span>
+        <span class="chip">4 distil</span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Family</th>
+              <th>Whisper</th>
+              <th>Faster-Whisper</th>
+              <th>Insanely-Fast</th>
+            </tr>
+          </thead>
+          <tbody id="modelTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel languages-panel reveal delay-4">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Language Support</span>
+          <h2 class="section-title">Searchable transcription languages</h2>
+        </div>
+        <p>
+          These 100 entries come from the repository language map used for Whisper transcription. The UI adds one more
+          convenience mode on top: <strong>Automatic Detection</strong>.
+        </p>
+      </div>
+
+      <div class="toolbar">
+        <input id="languageSearch" class="search" type="search" placeholder="Search language name or code, for example: turkish, tr, cantonese, yue">
+        <span class="count-badge" id="languageCount">100 shown</span>
+      </div>
+
+      <div class="language-grid" id="languageGrid"></div>
+
+      <p class="footer-note">
+        Source scan used: <code>app.py</code>, <code>backend/main.py</code>, <code>backend/routers/*</code>,
+        <code>modules/utils/whisper_languages.py</code>, <code>modules/whisper/base_transcription_pipeline.py</code>,
+        <code>modules/whisper/faster_whisper_inference.py</code>,
+        <code>modules/whisper/insanely_fast_whisper_inference.py</code>, and
+        <code>modules/whisper/whisper_Inference.py</code>.
+      </p>
+    </section>
+  </main>
+
+  <script>
+    const models = [
+      { name: "tiny.en", family: "English-only", whisper: true, faster: true, insanely: true },
+      { name: "tiny", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "base.en", family: "English-only", whisper: true, faster: true, insanely: true },
+      { name: "base", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "small.en", family: "English-only", whisper: true, faster: true, insanely: true },
+      { name: "small", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "medium.en", family: "English-only", whisper: true, faster: true, insanely: true },
+      { name: "medium", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "large-v1", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "large-v2", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "large-v3", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "large", family: "Multilingual", whisper: true, faster: true, insanely: true },
+      { name: "large-v3-turbo", family: "Turbo", whisper: true, faster: true, insanely: true },
+      { name: "turbo", family: "Turbo", whisper: true, faster: true, insanely: true },
+      { name: "distil-large-v2", family: "Distil", whisper: false, faster: true, insanely: true },
+      { name: "distil-medium.en", family: "Distil", whisper: false, faster: true, insanely: true },
+      { name: "distil-small.en", family: "Distil", whisper: false, faster: true, insanely: true },
+      { name: "distil-large-v3", family: "Distil", whisper: false, faster: true, insanely: true }
+    ];
+    const languages = [
+      { code: "af", name: "Afrikaans" },
+      { code: "sq", name: "Albanian" },
+      { code: "am", name: "Amharic" },
+      { code: "ar", name: "Arabic" },
+      { code: "hy", name: "Armenian" },
+      { code: "as", name: "Assamese" },
+      { code: "az", name: "Azerbaijani" },
+      { code: "ba", name: "Bashkir" },
+      { code: "eu", name: "Basque" },
+      { code: "be", name: "Belarusian" },
+      { code: "bn", name: "Bengali" },
+      { code: "bs", name: "Bosnian" },
+      { code: "br", name: "Breton" },
+      { code: "bg", name: "Bulgarian" },
+      { code: "yue", name: "Cantonese" },
+      { code: "ca", name: "Catalan" },
+      { code: "zh", name: "Chinese" },
+      { code: "hr", name: "Croatian" },
+      { code: "cs", name: "Czech" },
+      { code: "da", name: "Danish" },
+      { code: "nl", name: "Dutch" },
+      { code: "en", name: "English" },
+      { code: "et", name: "Estonian" },
+      { code: "fo", name: "Faroese" },
+      { code: "fi", name: "Finnish" },
+      { code: "fr", name: "French" },
+      { code: "gl", name: "Galician" },
+      { code: "ka", name: "Georgian" },
+      { code: "de", name: "German" },
+      { code: "el", name: "Greek" },
+      { code: "gu", name: "Gujarati" },
+      { code: "ht", name: "Haitian Creole" },
+      { code: "ha", name: "Hausa" },
+      { code: "haw", name: "Hawaiian" },
+      { code: "he", name: "Hebrew" },
+      { code: "hi", name: "Hindi" },
+      { code: "hu", name: "Hungarian" },
+      { code: "is", name: "Icelandic" },
+      { code: "id", name: "Indonesian" },
+      { code: "it", name: "Italian" },
+      { code: "ja", name: "Japanese" },
+      { code: "jw", name: "Javanese" },
+      { code: "kn", name: "Kannada" },
+      { code: "kk", name: "Kazakh" },
+      { code: "km", name: "Khmer" },
+      { code: "ko", name: "Korean" },
+      { code: "lo", name: "Lao" },
+      { code: "la", name: "Latin" },
+      { code: "lv", name: "Latvian" },
+      { code: "ln", name: "Lingala" },
+      { code: "lt", name: "Lithuanian" },
+      { code: "lb", name: "Luxembourgish" },
+      { code: "mk", name: "Macedonian" },
+      { code: "mg", name: "Malagasy" },
+      { code: "ms", name: "Malay" },
+      { code: "ml", name: "Malayalam" },
+      { code: "mt", name: "Maltese" },
+      { code: "mi", name: "Maori" },
+      { code: "mr", name: "Marathi" },
+      { code: "mn", name: "Mongolian" },
+      { code: "my", name: "Myanmar" },
+      { code: "ne", name: "Nepali" },
+      { code: "no", name: "Norwegian" },
+      { code: "nn", name: "Nynorsk" },
+      { code: "oc", name: "Occitan" },
+      { code: "ps", name: "Pashto" },
+      { code: "fa", name: "Persian" },
+      { code: "pl", name: "Polish" },
+      { code: "pt", name: "Portuguese" },
+      { code: "pa", name: "Punjabi" },
+      { code: "ro", name: "Romanian" },
+      { code: "ru", name: "Russian" },
+      { code: "sa", name: "Sanskrit" },
+      { code: "sr", name: "Serbian" },
+      { code: "sn", name: "Shona" },
+      { code: "sd", name: "Sindhi" },
+      { code: "si", name: "Sinhala" },
+      { code: "sk", name: "Slovak" },
+      { code: "sl", name: "Slovenian" },
+      { code: "so", name: "Somali" },
+      { code: "es", name: "Spanish" },
+      { code: "su", name: "Sundanese" },
+      { code: "sw", name: "Swahili" },
+      { code: "sv", name: "Swedish" },
+      { code: "tl", name: "Tagalog" },
+      { code: "tg", name: "Tajik" },
+      { code: "ta", name: "Tamil" },
+      { code: "tt", name: "Tatar" },
+      { code: "te", name: "Telugu" },
+      { code: "th", name: "Thai" },
+      { code: "bo", name: "Tibetan" },
+      { code: "tr", name: "Turkish" },
+      { code: "tk", name: "Turkmen" },
+      { code: "uk", name: "Ukrainian" },
+      { code: "ur", name: "Urdu" },
+      { code: "uz", name: "Uzbek" },
+      { code: "vi", name: "Vietnamese" },
+      { code: "cy", name: "Welsh" },
+      { code: "yi", name: "Yiddish" },
+      { code: "yo", name: "Yoruba" }
+    ];
+    const modelTableBody = document.getElementById("modelTableBody");
+    const languageGrid = document.getElementById("languageGrid");
+    const languageSearch = document.getElementById("languageSearch");
+    const languageCount = document.getElementById("languageCount");
+
+    function familyClass(family) {
+      return "family-" + family.toLowerCase().replace(/[^a-z]+/g, "-");
+    }
+
+    function supportCell(value) {
+      return value
+        ? '<span class="support support-yes">Yes</span>'
+        : '<span class="support support-no">No</span>';
+    }
+
+    function renderModels() {
+      modelTableBody.innerHTML = models.map((model) => `
+        <tr>
+          <td><span class="model-name">${model.name}</span></td>
+          <td><span class="family-tag ${familyClass(model.family)}">${model.family}</span></td>
+          <td>${supportCell(model.whisper)}</td>
+          <td>${supportCell(model.faster)}</td>
+          <td>${supportCell(model.insanely)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderLanguages(items) {
+      languageGrid.innerHTML = items.map((language) => `
+        <div class="language-item" title="${language.name} (${language.code})">
+          <span class="lang-code">${language.code}</span>
+          <span class="lang-name">${language.name}</span>
+        </div>
+      `).join("");
+      languageCount.textContent = `${items.length} shown`;
+    }
+
+    languageSearch.addEventListener("input", (event) => {
+      const query = event.target.value.trim().toLowerCase();
+      const filtered = languages.filter((language) =>
+        language.name.toLowerCase().includes(query) || language.code.toLowerCase().includes(query)
+      );
+      renderLanguages(filtered);
+    });
+
+    renderModels();
+    renderLanguages(languages);
+  </script>
+</body>
+</html>

@@ -3,7 +3,29 @@ from __future__ import annotations
 from typing import Any
 
 
-_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð", "Å", "œ", "Ÿ", "€", "™", "\ufffd")
+_MOJIBAKE_MARKERS = (
+    "Ãƒ",
+    "Ã‚",
+    "Ã¢",
+    "Ã°",
+    "Ã…",
+    "Ã¯",
+    "Å“",
+    "Å¸",
+    "â‚¬",
+    "â„¢",
+    "Ã",
+    "Â",
+    "â",
+    "ð",
+    "ï¸",
+    "Å",
+    "œ",
+    "Ÿ",
+    "€",
+    "™",
+    "\ufffd",
+)
 
 
 def _looks_mojibake(value: str) -> bool:
@@ -68,3 +90,11 @@ def repair_component_text(component: Any) -> Any:
         component.choices = repair_mojibake_obj(component.choices)
 
     return component
+
+
+def repair_blocks_text(blocks: Any) -> Any:
+    block_map = getattr(blocks, "blocks", blocks)
+    if isinstance(block_map, dict):
+        for component in block_map.values():
+            repair_component_text(component)
+    return blocks

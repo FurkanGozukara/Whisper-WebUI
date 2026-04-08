@@ -51,6 +51,7 @@ from modules.utils.paths import (
     UVR_MODELS_DIR,
     WHISPER_MODELS_DIR,
 )
+from modules.utils.text import repair_blocks_text, repair_component_text
 from modules.utils.youtube_manager import get_ytmetas
 from modules.whisper.data_classes import *
 
@@ -521,17 +522,17 @@ class App:
                 label="Beam Size",
                 value=whisper_params["beam_size"],
                 precision=0,
-                info="ðŸ” Number of beams in beam search. Higher = more accurate but slower. Range: 1-20. Examples: 5 (balanced), 10 (high accuracy), 1 (fastest/greedy). Current: optimized at 10 for maximum English accuracy.",
+                info="Number of beams in beam search. Higher values are usually more accurate but slower. Range: 1-20.",
             ))
             inputs.append(gr.Number(
                 label="Log Probability Threshold",
                 value=whisper_params["log_prob_threshold"],
-                info="ðŸ“Š Rejects segments with average log probability below this. Lower (more negative) = stricter quality control. Examples: -1.0 (default), -0.5 (strict - rejects uncertain outputs), -1.5 (lenient). Current: -0.5 for high quality.",
+                info="Reject segments with average log probability below this value. Lower values are stricter.",
             ))
             inputs.append(gr.Number(
                 label="No Speech Threshold",
                 value=whisper_params["no_speech_threshold"],
-                info="ðŸ”‡ Probability threshold for detecting silence/no-speech. Range: 0.0-1.0. Examples: 0.6 (balanced), 0.4 (detects more speech in noisy audio), 0.8 (strict silence detection). Lower if audio has background noise.",
+                info="Probability threshold for detecting silence or no-speech. Range: 0.0-1.0.",
             ))
 
         with gr.Row():
@@ -539,25 +540,25 @@ class App:
                 label="Compute Type",
                 choices=self.whisper_inf.available_compute_types,
                 value=self.whisper_inf.current_compute_type,
-                info="âš™ï¸ Precision for model computation. float32 (most accurate, 2x VRAM), float16 (balanced - recommended), int8 (fastest, less accurate). Use float16 for GPU, float32 for CPU. Current: float16 (optimal balance).",
+                info="Precision for model computation. Use the setting that best fits your device speed, stability, and VRAM budget.",
             ))
             inputs.append(gr.Number(
                 label="Best Of",
                 value=whisper_params["best_of"],
                 precision=0,
-                info="ðŸŽ¯ Number of candidate sequences to generate when sampling (when temperature > 0). Higher = better quality but slower. Range: 1-20. Examples: 5 (default), 10 (high quality), 1 (fastest). Current: 10 for maximum accuracy.",
+                info="Number of candidate sequences to generate when sampling. Higher values can improve quality but are slower.",
             ))
             inputs.append(gr.Number(
                 label="Patience",
                 value=whisper_params["patience"],
-                info="â³ Beam search patience: how long to wait for better candidates. Higher = more thorough search. Examples: 1.0 (default), 2.0 (very thorough - current setting), 0.5 (faster). Increase for complex audio.",
+                info="Beam search patience controls how long to wait for better candidates. Higher values search more thoroughly.",
             ))
 
         with gr.Row():
             inputs.append(gr.Checkbox(
                 label="Condition On Previous Text",
                 value=whisper_params["condition_on_previous_text"],
-                info="ðŸ”— Use previous transcription as context for next segment. âœ… Recommended ON for better coherence and flow. Disable if getting stuck in repetitive loops. Helps maintain context across segments.",
+                info="Use the previous transcription as context for the next segment. Disable it if the model gets stuck in repetition.",
             ))
             inputs.append(gr.Slider(
                 label="Prompt Reset On Temperature",
@@ -565,12 +566,12 @@ class App:
                 minimum=0,
                 maximum=1,
                 step=0.01,
-                info="ðŸŒ¡ï¸ Reset conditioning prompt if temperature exceeds this value. Range: 0.0-1.0. Examples: 0.5 (default - balanced), 0.3 (reset more often), 0.7 (reset less often). Prevents getting stuck in bad outputs.",
+                info="Reset the conditioning prompt if temperature exceeds this value. Range: 0.0-1.0.",
             ))
             inputs.append(gr.Textbox(
                 label="Initial Prompt",
                 value=whisper_params.get("initial_prompt", ""),
-                info="ðŸ’¬ Text to guide transcription style/vocabulary. Examples: 'Medical terminology:', 'Interview with Dr. Smith about AI', 'Technical lecture on Python'. Helps with domain-specific terms. Leave empty for general transcription.",
+                info="Text that guides transcription style or vocabulary. Useful for domain-specific terms. Leave empty for general transcription.",
             ))
 
         with gr.Row():
@@ -580,20 +581,20 @@ class App:
                 minimum=0.0,
                 step=0.01,
                 maximum=1.0,
-                info="ðŸŽ² Randomness in decoding. 0.0 = deterministic (most accurate - recommended), 0.2-0.5 = slight variation, 0.8-1.0 = creative but less accurate. Use 0 for maximum accuracy. Current: 0 (optimal for accuracy).",
+                info="Randomness in decoding. Lower values are more deterministic and accurate.",
             ))
             inputs.append(gr.Number(
                 label="Compression Ratio Threshold",
                 value=whisper_params["compression_ratio_threshold"],
-                info="ðŸ“¦ Detects repetitive/hallucinated text by gzip compression ratio. If text compresses too much (< threshold), it's likely repetitive. Examples: 2.4 (default), 2.0 (stricter), 3.0 (lenient). Lower = catches more hallucinations.",
+                info="Detect repetitive or hallucinated text by gzip compression ratio. Lower values are stricter.",
             ))
             inputs.append(gr.Number(
                 label="Length Penalty",
                 value=whisper_params["length_penalty"],
-                info="ðŸ“ Penalty for longer sequences. >1.0 = favors longer outputs, <1.0 = favors shorter outputs. Examples: 1.0 (neutral - default), 1.2 (encourages longer segments), 0.8 (encourages shorter segments). Use 1.0 for balanced output.",
+                info="Penalty for longer sequences. Values above 1.0 favor longer outputs, below 1.0 favor shorter outputs, and 1.0 is neutral.",
             ))
 
-        return inputs
+        return [repair_component_text(component) for component in inputs]
 
     def create_pipeline_inputs(self,
                                defaults=None,
@@ -1420,6 +1421,7 @@ class App:
                     show_progress="hidden",
                 )
 
+        repair_blocks_text(self.app)
         args = self.args
         return self.app.queue(api_open=args.api_open).launch(
             share=args.share,

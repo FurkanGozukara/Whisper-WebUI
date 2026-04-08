@@ -128,17 +128,17 @@ class VadParams(BaseParams):
                 label=_("Enable Silero VAD Filter"),
                 value=defaults.get("vad_filter", cls.__fields__["vad_filter"].default),
                 interactive=True,
-                info="ðŸŽ™ï¸ Voice Activity Detection - removes silence before transcription. âœ… ENABLED (current) for cleaner output and faster processing. Highly recommended! Only disable if audio already pre-processed or you need exact timing including silences."
+                info="Voice Activity Detection removes silence before transcription. Recommended for cleaner output and faster processing."
             ))
             inputs.append(gr.Slider(
                 minimum=0.0, maximum=1.0, step=0.01, label="Speech Threshold",
                 value=defaults.get("threshold", cls.__fields__["threshold"].default),
-                info="ðŸ”Š Probability threshold for detecting speech vs silence. Range: 0.0-1.0. Examples: 0.5 (balanced - current), 0.3 (sensitive - detects quiet speech/background talk), 0.7 (strict - only clear speech). Lower for noisy audio."
+                info="Probability threshold for detecting speech versus silence. Lower values detect quieter speech."
             ))
             inputs.append(gr.Number(
                 label="Minimum Speech Duration (ms)", precision=0,
                 value=defaults.get("min_speech_duration_ms", cls.__fields__["min_speech_duration_ms"].default),
-                info="â±ï¸ Discard speech chunks shorter than this. Examples: 250ms (current - filters out very short sounds), 100ms (keep short utterances), 500ms (only longer speech). Increase to filter out quick noises/coughs."
+                info="Discard speech chunks shorter than this duration."
             ))
         
         # Row 2: Max Speech Duration, Min Silence Duration, Speech Padding
@@ -146,17 +146,17 @@ class VadParams(BaseParams):
             inputs.append(gr.Number(
                 label="Maximum Speech Duration (s)",
                 value=defaults.get("max_speech_duration_s", GRADIO_NONE_NUMBER_MAX),
-                info="â³ Maximum length of continuous speech chunks. Examples: 9999s (unlimited - current), 30s (split long monologues), 60s (for very long speeches). Use unlimited unless you need to force splitting long continuous speech."
+                info="Maximum length of continuous speech chunks before forcing a split."
             ))
             inputs.append(gr.Number(
                 label="Minimum Silence Duration (ms)", precision=0,
                 value=defaults.get("min_silence_duration_ms", cls.__fields__["min_silence_duration_ms"].default),
-                info="ðŸ”‡ Silence duration required to split speech chunks. Examples: 1000ms/1s (current - splits on 1s+ pauses), 500ms (split on shorter pauses), 2000ms (only split on long pauses). Affects segment boundaries."
+                info="Silence duration required to split speech chunks."
             ))
             inputs.append(gr.Number(
                 label="Speech Padding (ms)", precision=0,
                 value=defaults.get("speech_pad_ms", cls.__fields__["speech_pad_ms"].default),
-                info="ðŸ“ Add padding before/after detected speech. Examples: 2000ms/2s (current - includes 2s before/after), 1000ms (tighter boundaries), 3000ms (more context). Prevents cutting off start/end of words."
+                info="Padding added before and after detected speech so words are not cut off."
             ))
         
         return [repair_component_text(component) for component in inputs]
@@ -187,18 +187,18 @@ class DiarizationParams(BaseParams):
             inputs.append(gr.Checkbox(
                 label=_("Enable Diarization"),
                 value=defaults.get("is_diarize", cls.__fields__["is_diarize"].default),
-                info="ðŸ‘¥ Speaker Diarization - identifies WHO is speaking. Adds speaker labels like '[SPEAKER_00]' to transcription. âŒ Disabled by default. Enable for multi-speaker conversations, interviews, meetings. Requires HuggingFace token (free). Adds ~30% processing time."
+                info="Speaker diarization identifies who is speaking and adds speaker labels to the transcription."
             ))
             inputs.append(gr.Dropdown(
                 label=_("Device"),
                 choices=["cpu", "cuda", "xpu"] if available_devices is None else available_devices,
                 value=defaults.get("diarization_device", defaults.get("device", device)),
-                info="ðŸ–¥ï¸ Device for diarization model. cuda (GPU - fast), cpu (slow but works everywhere), xpu (Intel GPU). Use cuda if available. Diarization is compute-intensive!"
+                info="Device for the diarization model. Use CUDA when available for best speed."
             ))
             inputs.append(gr.Textbox(
                 label=_("HuggingFace Token"),
                 value=defaults.get("hf_token", cls.__fields__["hf_token"].default),
-                info="ðŸ”‘ Optional HuggingFace token (only needed if you hit download/rate-limit issues). The diarization pipeline is downloaded from the public repo: huggingface.co/MonsterMMORPG/Wan_GGUF (subfolder Speaker_Diarization_3_1)."
+                info="Optional HuggingFace token. Usually only needed for download or rate-limit issues."
             ))
         
         # Row 2: Offload model (single item, but in a row for consistency)
@@ -206,7 +206,7 @@ class DiarizationParams(BaseParams):
             inputs.append(gr.Checkbox(
                 label=_("Offload sub model when finished"),
                 value=defaults.get("enable_offload", cls.__fields__["enable_offload"].default),
-                info="ðŸ’¾ Unload diarization model from VRAM after use. âŒ DISABLED (current) for unlimited compute. âœ… Enable if VRAM limited. Diarization model uses ~2-3GB VRAM."
+                info="Unload the diarization model from VRAM after use."
             ))
         
         return [repair_component_text(component) for component in inputs]
@@ -248,20 +248,20 @@ class BGMSeparationParams(BaseParams):
                 label=_("Enable Background Music Remover Filter"),
                 value=defaults.get("is_separate_bgm", cls.__fields__["is_separate_bgm"].default),
                 interactive=True,
-                info="ðŸŽµ Remove background music/noise before transcription using UVR (Ultimate Vocal Remover). âŒ Disabled by default. âœ… Enable for: music videos, noisy recordings, podcasts with intro music. Improves accuracy ~10-20% for noisy audio. Adds processing time."
+                info="Remove background music or noise before transcription using UVR."
             ))
             inputs.append(gr.Dropdown(
                 label=_("Model"),
                 choices=["UVR-MDX-NET-Inst_HQ_4",
                          "UVR-MDX-NET-Inst_3"] if available_models is None else available_models,
                 value=defaults.get("uvr_model_size", cls.__fields__["uvr_model_size"].default),
-                info="ðŸŽ¼ UVR model quality. UVR-MDX-NET-Inst_HQ_4 (current - highest quality, slower, ~2GB VRAM), UVR-MDX-NET-Inst_3 (faster, good quality, ~1.5GB VRAM). HQ_4 recommended for best results."
+                info="UVR model quality preset. Higher quality is usually slower and uses more VRAM."
             ))
             inputs.append(gr.Dropdown(
                 label=_("Device"),
                 choices=["cpu", "cuda", "xpu"] if available_devices is None else available_devices,
                 value=defaults.get("uvr_device", defaults.get("device", device)),
-                info="ðŸ–¥ï¸ Device for BGM separation. cuda (GPU - recommended, ~10-20x faster), cpu (very slow, 10-30 min per song), xpu (Intel GPU). Use cuda if available!"
+                info="Device for background music separation. Use CUDA when available."
             ))
         
         # Row 2: Segment Size, Save Files, Offload Model
@@ -270,17 +270,17 @@ class BGMSeparationParams(BaseParams):
                 label="Segment Size",
                 value=defaults.get("segment_size", cls.__fields__["segment_size"].default),
                 precision=0,
-                info="ðŸ“¦ Processing chunk size - affects quality vs speed. Examples: 256 (balanced), 512 (current - higher quality, slower, more VRAM), 128 (faster, lower quality). Higher = better separation but more VRAM. 512 recommended with unlimited compute."
+                info="Processing chunk size affects quality, speed, and VRAM usage."
             ))
             inputs.append(gr.Checkbox(
                 label=_("Save separated files to output"),
                 value=defaults.get("save_file", cls.__fields__["save_file"].default),
-                info="ðŸ’¾ Save separated vocal/instrumental files to outputs/UVR/. âŒ Disabled by default - only transcribes, doesn't save. âœ… Enable to keep separated audio files for review or other uses. Files are large (~same size as input)."
+                info="Save separated vocal and instrumental files to outputs/UVR."
             ))
             inputs.append(gr.Checkbox(
                 label=_("Offload sub model when finished"),
                 value=defaults.get("enable_offload", cls.__fields__["enable_offload"].default),
-                info="ðŸ’¾ Unload UVR model from VRAM after separation. âŒ DISABLED (current) for unlimited compute. âœ… Enable if VRAM limited. UVR model uses ~2-3GB VRAM depending on model."
+                info="Unload the UVR model from VRAM after separation."
             ))
         
         return [repair_component_text(component) for component in inputs]
@@ -564,17 +564,17 @@ class WhisperParams(BaseParams):
                 label="Beam Size",
                 value=defaults.get("beam_size", cls.__fields__["beam_size"].default),
                 precision=0,
-                info="ðŸ” Number of beams in beam search. Higher = more accurate but slower. Range: 1-20. Examples: 5 (balanced), 10 (high accuracy), 1 (fastest/greedy). Current: optimized at 10 for maximum English accuracy."
+                info="Number of beams in beam search. Higher values are usually more accurate but slower. Range: 1-20."
             ))
             inputs.append(gr.Number(
                 label="Log Probability Threshold",
                 value=defaults.get("log_prob_threshold", cls.__fields__["log_prob_threshold"].default),
-                info="ðŸ“Š Rejects segments with average log probability below this. Lower (more negative) = stricter quality control. Examples: -1.0 (default), -0.5 (strict - rejects uncertain outputs), -1.5 (lenient). Current: -0.5 for high quality."
+                info="Reject segments with average log probability below this value. Lower values are stricter."
             ))
             inputs.append(gr.Number(
                 label="No Speech Threshold",
                 value=defaults.get("no_speech_threshold", cls.__fields__["no_speech_threshold"].default),
-                info="ðŸ”‡ Probability threshold for detecting silence/no-speech. Range: 0.0-1.0. Examples: 0.6 (balanced), 0.4 (detects more speech in noisy audio), 0.8 (strict silence detection). Lower if audio has background noise."
+                info="Probability threshold for detecting silence or no-speech. Range: 0.0-1.0."
             ))
         
         # Row 2: Compute Type, Best Of, Patience
@@ -583,18 +583,18 @@ class WhisperParams(BaseParams):
                 label="Compute Type",
                 choices=["bfloat16", "float16", "float32", "int8"] if available_compute_types is None else available_compute_types,
                 value=defaults.get("compute_type", compute_type),
-                info="âš™ï¸ Precision for model computation. bfloat16 (recommended - stable, good performance), float16 (faster but less stable), float32 (most accurate, 2x VRAM), int8 (fastest, less accurate). Use bfloat16 for GPU, float32 for CPU. Current: bfloat16 (optimal balance)."
+                info="Precision for model computation. Use the setting that best fits your device speed, stability, and VRAM budget."
             ))
             inputs.append(gr.Number(
                 label="Best Of",
                 value=defaults.get("best_of", cls.__fields__["best_of"].default),
                 precision=0,
-                info="ðŸŽ¯ Number of candidate sequences to generate when sampling (when temperature > 0). Higher = better quality but slower. Range: 1-20. Examples: 5 (default), 10 (high quality), 1 (fastest). Current: 10 for maximum accuracy."
+                info="Number of candidate sequences to generate when sampling. Higher values can improve quality but are slower."
             ))
             inputs.append(gr.Number(
                 label="Patience",
                 value=defaults.get("patience", cls.__fields__["patience"].default),
-                info="â³ Beam search patience: how long to wait for better candidates. Higher = more thorough search. Examples: 1.0 (default), 2.0 (very thorough - current setting), 0.5 (faster). Increase for complex audio."
+                info="Beam search patience controls how long to wait for better candidates. Higher values search more thoroughly."
             ))
         
         # Row 3: Condition On Previous Text, Prompt Reset On Temperature, Initial Prompt
@@ -602,7 +602,7 @@ class WhisperParams(BaseParams):
             inputs.append(gr.Checkbox(
                 label="Condition On Previous Text",
                 value=defaults.get("condition_on_previous_text", cls.__fields__["condition_on_previous_text"].default),
-                info="ðŸ”— Use previous transcription as context for next segment. âœ… Recommended ON for better coherence and flow. Disable if getting stuck in repetitive loops. Helps maintain context across segments."
+                info="Use the previous transcription as context for the next segment. Disable it if the model gets stuck in repetition."
             ))
             inputs.append(cls.to_start_as_subprocess_input(defaults=defaults))
             inputs.append(gr.Slider(
@@ -612,12 +612,12 @@ class WhisperParams(BaseParams):
                 minimum=0,
                 maximum=1,
                 step=0.01,
-                info="ðŸŒ¡ï¸ Reset conditioning prompt if temperature exceeds this value. Range: 0.0-1.0. Examples: 0.5 (default - balanced), 0.3 (reset more often), 0.7 (reset less often). Prevents getting stuck in bad outputs."
+                info="Reset the conditioning prompt if temperature exceeds this value. Range: 0.0-1.0."
             ))
             inputs.append(gr.Textbox(
                 label="Initial Prompt",
                 value=defaults.get("initial_prompt", GRADIO_NONE_STR),
-                info="ðŸ’¬ Text to guide transcription style/vocabulary. Examples: 'Medical terminology:', 'Interview with Dr. Smith about AI', 'Technical lecture on Python'. Helps with domain-specific terms. Leave empty for general transcription."
+                info="Text that guides transcription style or vocabulary. Useful for domain-specific terms. Leave empty for general transcription."
             ))
             inputs.append(gr.Checkbox(
                 label="Repeat Initial Prompt Every Window",
@@ -641,18 +641,18 @@ class WhisperParams(BaseParams):
                 minimum=0.0,
                 step=0.01,
                 maximum=1.0,
-                info="ðŸŽ² Randomness in decoding. 0.0 = deterministic (most accurate - recommended), 0.2-0.5 = slight variation, 0.8-1.0 = creative but less accurate. Use 0 for maximum accuracy. Current: 0 (optimal for accuracy)."
+                info="Randomness in decoding. Lower values are more deterministic and accurate."
             ))
             inputs.append(gr.Number(
                 label="Compression Ratio Threshold",
                 value=defaults.get("compression_ratio_threshold",
                                    cls.__fields__["compression_ratio_threshold"].default),
-                info="ðŸ“¦ Detects repetitive/hallucinated text by gzip compression ratio. If text compresses too much (< threshold), it's likely repetitive. Examples: 2.4 (default), 2.0 (stricter), 3.0 (lenient). Lower = catches more hallucinations."
+                info="Detect repetitive or hallucinated text by gzip compression ratio. Lower values are stricter."
             ))
             inputs.append(gr.Number(
                 label="Length Penalty",
                 value=defaults.get("length_penalty", cls.__fields__["length_penalty"].default),
-                info="ðŸ“ Penalty for longer sequences. >1.0 = favors longer outputs, <1.0 = favors shorter outputs. Examples: 1.0 (neutral - default), 1.2 (encourages longer segments), 0.8 (encourages shorter segments). Use 1.0 for balanced output."
+                info="Penalty for longer sequences. Values above 1.0 favor longer outputs, below 1.0 favor shorter outputs, and 1.0 is neutral."
             ))
         
 
@@ -663,18 +663,18 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Number(
                 label="Repetition Penalty",
                 value=defaults.get("repetition_penalty", cls.__fields__["repetition_penalty"].default),
-                info="ðŸ” Penalizes repeated tokens. >1.0 = discourages repetition. Examples: 1.0 (no penalty), 1.2 (current - reduces repetition), 1.5 (strongly discourages repetition). Increase if you see repeated phrases."
+                info="Penalty applied to repeated tokens. Increase it if you see repeated phrases."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="No Repeat N-gram Size",
                 value=defaults.get("no_repeat_ngram_size", cls.__fields__["no_repeat_ngram_size"].default),
                 precision=0,
-                info="ðŸš« Blocks exact repetition of N-word phrases. Examples: 0 (no blocking), 3 (current - blocks 3-word repetitions like 'the the the'), 5 (blocks longer phrases). Use 3-5 to prevent stuttering."
+                info="Block exact repetition of N-word phrases. Use small values such as 3-5 to reduce stuttering."
             ))
             faster_whisper_inputs.append(gr.Textbox(
                 label="Prefix",
                 value=defaults.get("prefix", GRADIO_NONE_STR),
-                info="â–¶ï¸ Text to prepend to every segment (e.g., speaker name). Example: 'Speaker A: '. Different from Initial Prompt - this is added to every segment's output. Leave empty for normal transcription."
+                info="Text to prepend to every segment, for example a speaker name."
             ))
         
         # Row 6: Suppress Blank, Suppress Tokens, Max Initial Timestamp
@@ -682,17 +682,17 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Checkbox(
                 label="Suppress Blank",
                 value=defaults.get("suppress_blank", cls.__fields__["suppress_blank"].default),
-                info="â¬œ Suppress blank/empty outputs at start of sampling. âœ… Recommended ON to avoid empty segments. Disable only if you need to detect exact silence positions."
+                info="Suppress blank or empty outputs at the start of sampling."
             ))
             faster_whisper_inputs.append(gr.Textbox(
                 label="Suppress Tokens",
                 value=defaults.get("suppress_tokens", "[-1]"),
-                info="ðŸŽ­ Token IDs to never generate. [-1] = suppress non-speech tokens. Examples: '[-1]' (default - suppress special tokens), '[-1, 220, 50257]' (suppress specific IDs). Advanced users only - see OpenAI tokenizer docs."
+                info="Token IDs that should never be generated."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Max Initial Timestamp",
                 value=defaults.get("max_initial_timestamp", cls.__fields__["max_initial_timestamp"].default),
-                info="â±ï¸ Maximum allowed initial timestamp in seconds. Prevents model from starting transcription too late into audio. Examples: 1.0 (default), 0.5 (stricter - must start within 0.5s), 2.0 (more lenient). Use default."
+                info="Maximum allowed initial timestamp in seconds."
             ))
         
         # Row 7: Word Timestamps, Prepend Punctuations, Append Punctuations
@@ -700,17 +700,17 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Checkbox(
                 label="Word Timestamps",
                 value=defaults.get("word_timestamps", cls.__fields__["word_timestamps"].default),
-                info="ðŸ“ Extract timestamps for each individual word (not just segments). âœ… ENABLED for maximum accuracy - reduces hallucinations by ~10%! Slightly slower but highly recommended. Needed for word-level subtitle formats."
+                info="Extract timestamps for each individual word, not just each segment."
             ))
             faster_whisper_inputs.append(gr.Textbox(
                 label="Prepend Punctuations",
                 value=defaults.get("prepend_punctuations", cls.__fields__["prepend_punctuations"].default),
-                info="â¬…ï¸ Punctuation marks to attach to NEXT word (e.g., opening quotes). Default: \"'Â¿([{- Keeps ' \"Hello' as one unit vs splitting. Rarely needs changing unless working with special languages."
+                info="Punctuation marks to attach to the next word. Default: \"'([{-."
             ))
             faster_whisper_inputs.append(gr.Textbox(
                 label="Append Punctuations",
                 value=defaults.get("append_punctuations", cls.__fields__["append_punctuations"].default),
-                info="âž¡ï¸ Punctuation marks to attach to PREVIOUS word (e.g., periods, commas). Default: \"'.ã€‚,ï¼Œ!ï¼?ï¼Ÿ:ï¼š\")]}ã€ Keeps 'hello.' as one unit. Ensures proper punctuation alignment in subtitles."
+                info="Punctuation marks to attach to the previous word. Default: \"'.,!?:)]}."
             ))
         
         # Row 8: Max New Tokens, Chunk Length, Hallucination Silence Threshold
@@ -719,18 +719,18 @@ class WhisperParams(BaseParams):
                 label="Max New Tokens",
                 value=defaults.get("max_new_tokens", GRADIO_NONE_NUMBER_MIN),
                 precision=0,
-                info="ðŸ”¢ Maximum tokens per chunk. Limits output length per segment. Examples: None (auto - recommended), 224 (Whisper default), 448 (longer segments). Leave empty for automatic. Reduce if segments are too long."
+                info="Maximum tokens per chunk. Leave empty for automatic behavior."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Chunk Length (s)",
                 value=defaults.get("chunk_length", cls.__fields__["chunk_length"].default),
-                info="âœ‚ï¸ Length of each audio window in seconds. Shorter windows can improve stability, while longer windows can be faster but may hurt accuracy on long files. Current default: 20 seconds."
+                info="Length of each audio window in seconds."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Hallucination Silence Threshold (sec)",
                 value=defaults.get("hallucination_silence_threshold",
                                    GRADIO_NONE_NUMBER_MIN),
-                info="ðŸ‘» Skip silent periods longer than this to detect hallucinations. Examples: 2.0 (current - skip 2+sec silence), 3.0 (lenient), 1.0 (strict). If audio has >2s silence and model still outputs text, it's likely hallucinating."
+                info="Skip silent periods longer than this when detecting hallucinations."
             ))
         
         # Row 9: Hotwords, Language Detection Threshold, Language Detection Segments
@@ -738,20 +738,20 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Textbox(
                 label="Hotwords",
                 value=defaults.get("hotwords", cls.__fields__["hotwords"].default),
-                info="ðŸ”¥ Boost recognition of specific words/phrases. Examples: 'OpenAI, ChatGPT, GPT-4' or 'Dr. Smith, cardiology'. Comma-separated. Helps with names, technical terms, brand names. Leave empty for general transcription."
+                info="Boost recognition of specific words or phrases. Leave empty for general transcription."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Language Detection Threshold",
                 value=defaults.get("language_detection_threshold",
                                    GRADIO_NONE_NUMBER_MIN),
-                info="ðŸŒ Confidence threshold for language detection. Examples: 0.5 (default), 0.7 (only use detected language if very confident), 0.3 (use even uncertain detections). Only matters if language = auto-detect."
+                info="Confidence threshold for language detection."
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Language Detection Segments",
                 value=defaults.get("language_detection_segments",
                                    cls.__fields__["language_detection_segments"].default),
                 precision=0,
-                info="ðŸŽ§ Number of audio segments to analyze for language detection. Examples: 1 (fast, less accurate), 3 (current - balanced), 5 (very accurate but slower). More segments = better detection but slower start. 3 recommended."
+                info="Number of audio segments to analyze for language detection."
             ))
         
 
@@ -773,7 +773,7 @@ class WhisperParams(BaseParams):
             inputs.append(gr.Checkbox(
                 label=_("Offload sub model when finished"),
                 value=defaults.get("enable_offload", cls.__fields__["enable_offload"].default),
-                info="ðŸ’¾ Unload model from VRAM after transcription. âœ… Enable if VRAM is limited (<8GB). âŒ DISABLED (current) for unlimited compute - keeps model loaded for faster repeated use. Disable for batch processing multiple files."
+                info="Unload the model from VRAM after transcription."
             ))
 
         return [repair_component_text(component) for component in inputs]
@@ -805,11 +805,11 @@ class WhisperParams(BaseParams):
         # Common inputs
         input_configs.extend([
             ("number", "Beam Size", 0, defaults.get("beam_size", cls.__fields__["beam_size"].default), 
-             "ðŸ” Number of beams in beam search. Higher = more accurate but slower. Range: 1-20. Examples: 5 (balanced), 10 (high accuracy), 1 (fastest/greedy). Current: optimized at 10 for maximum English accuracy."),
+             "Number of beams in beam search. Higher values are usually more accurate but slower. Range: 1-20."),
             ("number", "Log Probability Threshold", None, defaults.get("log_prob_threshold", cls.__fields__["log_prob_threshold"].default),
-             "ðŸ“Š Rejects segments with average log probability below this. Lower (more negative) = stricter quality control. Examples: -1.0 (default), -0.5 (strict - rejects uncertain outputs), -1.5 (lenient). Current: -0.5 for high quality."),
+             "Reject segments with average log probability below this value. Lower values are stricter."),
             ("number", "No Speech Threshold", None, defaults.get("no_speech_threshold", cls.__fields__["no_speech_threshold"].default),
-             "ðŸ”‡ Probability threshold for detecting silence/no-speech. Range: 0.0-1.0. Examples: 0.6 (balanced), 0.4 (detects more speech in noisy audio), 0.8 (strict silence detection). Lower if audio has background noise."),
+             "Probability threshold for detecting silence or no-speech. Range: 0.0-1.0."),
         ])
         
         # Create inputs in rows of 3

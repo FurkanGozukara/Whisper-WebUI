@@ -72,7 +72,8 @@ def run_asr_pipeline(
             *hparams,
         )
         assert isinstance(subtitle_str, str) and subtitle_str
-        assert os.path.exists(file_path)
+        output_paths = file_path if isinstance(file_path, list) else [file_path]
+        assert all(os.path.exists(path) for path in output_paths)
 
     subtitle_str, file_path = whisper_inferencer.transcribe_mic(
         audio_path,
@@ -81,7 +82,8 @@ def run_asr_pipeline(
         gr.Progress(),
         *hparams,
     )
-    subtitle = read_file(file_path).split("\n")
+    primary_output_path = file_path[0] if isinstance(file_path, list) else file_path
+    subtitle = read_file(primary_output_path).split("\n")
     wer = calculate_wer(answer, subtitle[2].strip().replace(",", "").replace(".", ""))
     assert wer < 0.1, f"WER is too high, it's {wer}"
 
