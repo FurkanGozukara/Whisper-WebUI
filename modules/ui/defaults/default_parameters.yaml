@@ -32,7 +32,7 @@ whisper:
   language_detection_threshold: 0.5
   language_detection_segments: 1
   use_batched_inference: false
-  batch_size: 8
+  batch_size: 1
   enable_offload: false
   add_timestamp: false
   file_format: SRT

@@ -192,7 +192,7 @@ def test_standard_pipeline_enables_encoder_batching_when_batch_size_gt_one():
     FasterWhisperInference._transcribe_with_standard_pipeline(
         inferencer,
         np.zeros(16000, dtype=np.float32),
-        WhisperParams(batch_size=4),
+        WhisperParams(batch_size=4, condition_on_previous_text=True),
         DummyProgress(),
     )
 
@@ -372,7 +372,7 @@ def test_transcribe_uses_standard_pipeline_by_default(monkeypatch):
         compute_type="float16",
         lang="en",
         chunk_length=15,
-        batch_size=4,
+        batch_size=1,
         word_timestamps=True,
     ).to_list()
 
@@ -415,6 +415,7 @@ def test_transcribe_keeps_conditioning_for_short_standard_audio():
         compute_type="float16",
         lang="en",
         chunk_length=1,
+        batch_size=1,
         condition_on_previous_text=True,
         word_timestamps=True,
     ).to_list()
@@ -458,6 +459,7 @@ def test_transcribe_auto_disables_conditioning_for_long_standard_audio():
         compute_type="float16",
         lang="en",
         chunk_length=1,
+        batch_size=1,
         condition_on_previous_text=True,
         word_timestamps=True,
     ).to_list()

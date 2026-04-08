@@ -49,12 +49,15 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     whisper_inf = create_whisper_inferencer(args)
 
     gpu_total_memory_gb = None
+    gpu_name = None
     try:
         import torch
 
         if torch.cuda.is_available():
             device_index = torch.cuda.current_device()
-            gpu_total_memory_gb = torch.cuda.get_device_properties(device_index).total_memory / (1024 ** 3)
+            device_properties = torch.cuda.get_device_properties(device_index)
+            gpu_total_memory_gb = device_properties.total_memory / (1024 ** 3)
+            gpu_name = getattr(device_properties, "name", None)
         else:
             xpu = getattr(torch, "xpu", None)
             if xpu is not None and xpu.is_available():
@@ -63,8 +66,10 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
                 total_memory = getattr(properties, "total_memory", None)
                 if total_memory:
                     gpu_total_memory_gb = total_memory / (1024 ** 3)
+                gpu_name = getattr(properties, "name", None)
     except Exception:
         gpu_total_memory_gb = None
+        gpu_name = None
 
     from modules.translation.nllb_inference import NLLBInference
 
@@ -81,6 +86,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
             "available_compute_types": list(whisper_inf.available_compute_types),
             "current_compute_type": whisper_inf.current_compute_type,
             "gpu_total_memory_gb": gpu_total_memory_gb,
+            "gpu_name": gpu_name,
             "music_separator": {
                 "device": whisper_inf.music_separator.device,
                 "available_devices": list(whisper_inf.music_separator.available_devices),

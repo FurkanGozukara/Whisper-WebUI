@@ -75,7 +75,13 @@ class RuntimeWorkerClient:
         def drain_stderr() -> None:
             assert process.stderr is not None
             for line in process.stderr:
-                stderr_lines.append(line.decode("utf-8", errors="replace").rstrip())
+                decoded_line = line.decode("utf-8", errors="replace").rstrip()
+                stderr_lines.append(decoded_line)
+                try:
+                    sys.stderr.write(decoded_line + "\n")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
 
         stderr_thread = Thread(target=drain_stderr, daemon=True)
         stderr_thread.start()
@@ -210,6 +216,7 @@ class SubprocessWhisperProxy:
         self.available_compute_types = metadata["available_compute_types"]
         self.current_compute_type = metadata["current_compute_type"]
         self.gpu_total_memory_gb = metadata.get("gpu_total_memory_gb")
+        self.gpu_name = metadata.get("gpu_name")
         self.music_separator = _MusicSeparatorProxy(self._client, metadata["music_separator"])
         self.diarizer = _DiarizerProxy(metadata["diarizer"])
 

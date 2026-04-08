@@ -1,5 +1,6 @@
 import argparse
 import html
+import json
 import os
 import re
 import shutil
@@ -61,6 +62,8 @@ TIMESTAMP_INFO = (
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
     "Disable it if you want shorter, stable filenames."
 )
+BATCH_SIZE_CALIBRATION_FILENAME = "batch_size_calibration.json"
+BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB = 1.0
 
 
 class App:
@@ -115,26 +118,90 @@ class App:
             paths.append(os.getcwd())
         return paths
 
+    def get_batch_size_calibration_path(self):
+        return os.path.join(self.args.output_dir, BATCH_SIZE_CALIBRATION_FILENAME)
+
+    def load_batch_size_calibration(self, whisper_defaults):
+        calibration_path = self.get_batch_size_calibration_path()
+        if not os.path.exists(calibration_path):
+            return None
+
+        try:
+            calibration = json.loads(Path(calibration_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to read batch-size calibration file '%s': %s", calibration_path, exc)
+            return None
+
+        if not isinstance(calibration, dict):
+            return None
+
+        recommended_batch_size = calibration.get("recommended_batch_size")
+        if not isinstance(recommended_batch_size, int) or recommended_batch_size < 1:
+            return None
+
+        expected_model_size = calibration.get("model_size")
+        current_model_size = whisper_defaults.get("model_size")
+        if expected_model_size and current_model_size and expected_model_size != current_model_size:
+            return None
+
+        current_gpu_name = getattr(self.whisper_inf, "gpu_name", None)
+        expected_gpu_name = calibration.get("gpu_name")
+        if expected_gpu_name and current_gpu_name and expected_gpu_name != current_gpu_name:
+            return None
+
+        current_gpu_memory_gb = getattr(self.whisper_inf, "gpu_total_memory_gb", None)
+        expected_gpu_memory_gb = calibration.get("gpu_total_memory_gb")
+        if (
+            current_gpu_memory_gb is not None
+            and expected_gpu_memory_gb is not None
+            and abs(float(current_gpu_memory_gb) - float(expected_gpu_memory_gb)) > BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB
+        ):
+            return None
+
+        return calibration
+
     def apply_dynamic_batch_size_defaults(self, default_params):
         whisper_defaults = default_params.get("whisper", {})
         if not isinstance(whisper_defaults, dict):
             return default_params
 
+        calibration = self.load_batch_size_calibration(whisper_defaults)
         gpu_memory_gb = getattr(self.whisper_inf, "gpu_total_memory_gb", None)
-        if gpu_memory_gb is None:
+        gpu_name = getattr(self.whisper_inf, "gpu_name", None)
+        gpu_label = gpu_name or "GPU"
+
+        if calibration is not None:
+            recommended_batch_size = int(calibration["recommended_batch_size"])
+            whisper_defaults["batch_size"] = recommended_batch_size
+            if gpu_memory_gb is not None:
+                logger.info(
+                    "Detected %s with %.1f GB GPU memory. Using locally benchmarked default batch size %d.",
+                    gpu_label,
+                    gpu_memory_gb,
+                    recommended_batch_size,
+                )
+            else:
+                logger.info(
+                    "Detected %s. Using locally benchmarked default batch size %d.",
+                    gpu_label,
+                    recommended_batch_size,
+                )
             return default_params
 
-        recommended_batch_size = None
-        if gpu_memory_gb < 11:
-            recommended_batch_size = 4
-        else:
-            recommended_batch_size = 8
-
-        if recommended_batch_size is not None:
-            whisper_defaults["batch_size"] = recommended_batch_size
+        gpu_memory_gb = getattr(self.whisper_inf, "gpu_total_memory_gb", None)
+        recommended_batch_size = 1
+        whisper_defaults["batch_size"] = recommended_batch_size
+        if gpu_memory_gb is not None:
             logger.info(
-                f"Detected {gpu_memory_gb:.1f} GB GPU memory. "
-                f"Default batch size set to {recommended_batch_size}."
+                "Detected %s with %.1f GB GPU memory. Default batch size set to %d for standard mode.",
+                gpu_label,
+                gpu_memory_gb,
+                recommended_batch_size,
+            )
+        else:
+            logger.info(
+                "Default batch size set to %d for standard mode.",
+                recommended_batch_size,
             )
 
         return default_params
@@ -577,14 +644,19 @@ class App:
         open_outputs_btn = open_outputs_button
 
         with gr.Row(equal_height=True):
-            with gr.Column(scale=1):
+            with gr.Column(scale=2):
                 run_btn = gr.Button(
                     _("GENERATE SUBTITLE FILE"),
                     variant="primary",
                     elem_classes=["action-button", "generate-subtitle-button"],
                 )
             with gr.Column(scale=1):
-                if open_outputs_btn is None:
+                cancel_btn = gr.Button(
+                    "Cancel Generation",
+                    variant="stop",
+                )
+            if open_outputs_btn is None:
+                with gr.Column(scale=1):
                     open_outputs_btn = gr.Button(
                         "OPEN OUTPUTS FOLDER",
                         elem_classes=["action-button", "open-outputs-folder-button"],
@@ -663,6 +735,7 @@ class App:
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
             "run_button": run_btn,
+            "cancel_button": cancel_btn,
             "open_outputs_button": open_outputs_btn,
         }
 
@@ -715,7 +788,6 @@ class App:
                                 ui_preset_load_btn = gr.Button("Load Selected")
                                 ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
                                 ui_preset_delete_btn = gr.Button("Delete", variant="stop")
-                                cancel_generation_btn = gr.Button("Cancel Generation", variant="stop")
                             ui_preset_status = gr.Markdown(startup_preset_status)
                     with gr.Column(scale=2):
                         file_download_btn = gr.DownloadButton(
@@ -828,6 +900,15 @@ class App:
                             inputs=file_inputs + file_transcription_ui["pipeline"],
                             outputs=[tb_live_transcription, file_output, file_download_btn],
                         )
+                        file_transcription_ui["cancel_button"].click(
+                            fn=self.cancel_active_generation,
+                            inputs=[cancel_confirmed],
+                            outputs=None,
+                            js="() => [confirm('Terminate the running subprocess?')]",
+                            cancels=[file_run_event],
+                            queue=False,
+                            show_progress="hidden",
+                        )
                         file_transcription_ui["open_outputs_button"].click(
                             fn=self.open_file_output_folder,
                             inputs=[tb_output_folder, tb_input_folder, cb_batch_processing],
@@ -871,6 +952,15 @@ class App:
                             fn=self.whisper_inf.transcribe_youtube,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
                             outputs=[youtube_output, youtube_outputs],
+                        )
+                        youtube_transcription_ui["cancel_button"].click(
+                            fn=self.cancel_active_generation,
+                            inputs=[cancel_confirmed],
+                            outputs=None,
+                            js="() => [confirm('Terminate the running subprocess?')]",
+                            cancels=[youtube_run_event],
+                            queue=False,
+                            show_progress="hidden",
                         )
                         tb_youtubelink.change(get_ytmetas, inputs=[tb_youtubelink], outputs=[img_thumbnail, tb_title, tb_description])
                         youtube_transcription_ui["open_outputs_button"].click(
@@ -916,19 +1006,19 @@ class App:
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_output, mic_outputs],
                         )
-                        mic_transcription_ui["open_outputs_button"].click(
-                            fn=lambda: self.open_folder(self.args.output_dir),
-                            inputs=None,
-                            outputs=None,
-                            queue=False,
-                            show_progress="hidden",
-                        )
-                        cancel_generation_btn.click(
+                        mic_transcription_ui["cancel_button"].click(
                             fn=self.cancel_active_generation,
                             inputs=[cancel_confirmed],
                             outputs=None,
                             js="() => [confirm('Terminate the running subprocess?')]",
-                            cancels=[file_run_event, youtube_run_event, mic_run_event],
+                            cancels=[mic_run_event],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        mic_transcription_ui["open_outputs_button"].click(
+                            fn=lambda: self.open_folder(self.args.output_dir),
+                            inputs=None,
+                            outputs=None,
                             queue=False,
                             show_progress="hidden",
                         )

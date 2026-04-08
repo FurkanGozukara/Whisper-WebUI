@@ -1,9 +1,14 @@
 import logging
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import time
 import math
 from contextlib import contextmanager
-from queue import Queue
+from queue import Empty, Queue
 from threading import Thread
 from types import MethodType
 import huggingface_hub
@@ -709,8 +714,21 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         model=None,
     ):
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
-        repeat_initial_prompt = self.should_repeat_initial_prompt(params)
         target_model = self.model if model is None else model
+        return self.run_standard_pipeline_with_model(
+            model=target_model,
+            audio=audio,
+            params=params,
+        )
+
+    @classmethod
+    def run_standard_pipeline_with_model(
+        cls,
+        model,
+        audio: Union[str, BinaryIO, np.ndarray],
+        params: WhisperParams,
+    ):
+        repeat_initial_prompt = cls.should_repeat_initial_prompt(params)
         encoder_batch_size = max(1, int(params.batch_size))
         use_encoder_batching = encoder_batch_size > 1 and bool(params.condition_on_previous_text)
         if use_encoder_batching:
@@ -719,15 +737,15 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 "(batch_size=%d) for quality-preserving acceleration.",
                 encoder_batch_size,
             )
-        with self.repeat_initial_prompt_context(
-            target_model,
+        with cls.repeat_initial_prompt_context(
+            model,
             params.initial_prompt if repeat_initial_prompt else None,
         ):
-            with self.standard_encoder_batching_context(
-                target_model,
+            with cls.standard_encoder_batching_context(
+                model,
                 encoder_batch_size if use_encoder_batching else 1,
             ):
-                return target_model.transcribe(
+                return model.transcribe(
                     audio=audio,
                     language=params.lang,
                     task="translate" if params.is_translate else "transcribe",
@@ -776,6 +794,12 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             batch_size=max(1, int(params.batch_size)),
             sampling_rate=sampling_rate,
         )
+        logger.info(
+            "Preparing %d parallel slice subprocesses for %.2f seconds of audio (batch_size=%d).",
+            len(slice_specs),
+            total_duration,
+            max(1, int(params.batch_size)),
+        )
         progress(self.AUDIO_PREPARED_PROGRESS, desc="Audio loaded. Preparing slice jobs..")
         progress(
             self.CHUNKS_PREPARED_PROGRESS,
@@ -792,99 +816,337 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             self.offload()
 
         slice_params = params.model_copy(update={"batch_size": 1})
-        slice_queues: List[Queue] = []
-        slice_threads: List[Thread] = []
+        slice_jobs = []
 
         for slice_index, start_sample, end_sample, offset_seconds in slice_specs:
-            queue: Queue = Queue()
-            slice_audio = np.ascontiguousarray(audio_array[start_sample:end_sample], dtype=np.float32)
-            worker = Thread(
-                target=self._run_parallel_slice_worker,
-                args=(
-                    queue,
-                    slice_index,
-                    slice_audio,
-                    offset_seconds,
-                    slice_params,
-                    model_size_or_path,
-                    local_files_only,
-                ),
-                daemon=True,
+            slice_end_seconds = float(end_sample) / float(sampling_rate)
+            logger.info(
+                "Slice P%d planned for %.3fs -> %.3fs (%.3fs span).",
+                slice_index + 1,
+                offset_seconds,
+                slice_end_seconds,
+                max(0.0, slice_end_seconds - offset_seconds),
             )
-            worker.start()
-            slice_queues.append(queue)
-            slice_threads.append(worker)
+            slice_audio = np.ascontiguousarray(audio_array[start_sample:end_sample], dtype=np.float32)
+            standard_audio, standard_params = self.resolve_standard_audio_and_params(
+                audio=slice_audio,
+                params=slice_params,
+                sampling_rate=sampling_rate,
+            )
+            slice_jobs.append(
+                self.start_parallel_slice_subprocess(
+                    slice_index=slice_index,
+                    slice_audio=standard_audio,
+                    start_seconds=offset_seconds,
+                    end_seconds=slice_end_seconds,
+                    offset_seconds=offset_seconds,
+                    params=standard_params,
+                    model_size_or_path=model_size_or_path,
+                    local_files_only=local_files_only,
+                )
+            )
+        progress(
+            self.CHUNKS_PREPARED_PROGRESS,
+            desc=f"Started {len(slice_jobs)} slice subprocesses. Waiting for completion..",
+        )
 
         segments_result: List[Segment] = []
-        segment_id = 0
+        completed_slice_payloads = []
+        total_jobs = len(slice_jobs)
 
         try:
-            for queue in slice_queues:
-                while True:
-                    message = queue.get()
-                    message_type = message["type"]
+            pending_jobs = list(slice_jobs)
+            while pending_jobs:
+                for job in list(pending_jobs):
+                    self.drain_parallel_slice_events(
+                        job=job,
+                        total_duration=total_duration,
+                        progress=progress,
+                        progress_callback=progress_callback,
+                    )
+                    return_code = job["process"].poll()
+                    if return_code is None:
+                        continue
 
-                    if message_type == "segment":
-                        segment = message["segment"]
-                        segment_id += 1
-                        segment.id = segment_id
-                        segments_result.append(segment)
+                    self.drain_parallel_slice_events(
+                        job=job,
+                        total_duration=total_duration,
+                        progress=progress,
+                        progress_callback=progress_callback,
+                    )
+                    job["stderr_handle"].close()
+                    if return_code != 0:
+                        raise RuntimeError(self.format_parallel_slice_error(job, return_code))
 
-                        progress_n = 0.0 if not total_duration else min((segment.end or 0.0) / total_duration, 0.99)
-                        ui_progress_n = self.map_transcription_progress(progress_n)
-                        progress(ui_progress_n, desc=f"Transcribing.. [{segment_id} segments] {(segment.text or '')[:50]}...")
-                        self.emit_progress_callback(progress_callback, progress_n, segment)
-                    elif message_type == "error":
-                        raise RuntimeError(message["error"])
-                    elif message_type == "done":
-                        break
+                    completed_slice_payloads.append(self.read_parallel_slice_result(job))
+                    logger.info(
+                        "Slice P%d finished successfully with %d streamed segments.",
+                        int(job["slice_index"]) + 1,
+                        int(job.get("streamed_segments", 0)),
+                    )
+                    pending_jobs.remove(job)
+                    completed_count = total_jobs - len(pending_jobs)
+                    progress_ratio = completed_count / float(total_jobs or 1)
+                    ui_progress_n = self.map_transcription_progress(progress_ratio)
+                    progress(ui_progress_n, desc=f"Completed {completed_count}/{total_jobs} slice subprocesses..")
+                    self.emit_progress_callback(progress_callback, progress_ratio, None)
+
+                if pending_jobs:
+                    time.sleep(0.1)
+        except Exception:
+            self.terminate_parallel_slice_jobs(slice_jobs)
+            raise
         finally:
-            for worker in slice_threads:
-                worker.join()
+            self.cleanup_parallel_slice_jobs(slice_jobs)
+
+        completed_slice_payloads.sort(key=lambda item: (item["offset_seconds"], item["slice_index"]))
+        for payload in completed_slice_payloads:
+            offset_seconds = float(payload["offset_seconds"])
+            for segment_data in payload["segments"]:
+                segments_result.append(self.offset_segment(Segment(**segment_data), offset_seconds))
+
+        logger.info(
+            "Merging %d completed slice payloads into %d final segments.",
+            len(completed_slice_payloads),
+            len(segments_result),
+        )
+        segments_result.sort(key=lambda segment: ((segment.start or 0.0), (segment.end or 0.0), segment.text or ""))
+        for segment_id, segment in enumerate(segments_result, start=1):
+            segment.id = segment_id
+
+        progress(
+            self.map_transcription_progress(1.0),
+            desc=f"Merged {len(segments_result)} segments from {len(completed_slice_payloads)} slice subprocesses.",
+        )
+        self.emit_progress_callback(progress_callback, 1.0, None)
 
         return segments_result, Namespace(duration=total_duration)
 
-    def _run_parallel_slice_worker(
+    def start_parallel_slice_subprocess(
         self,
-        queue: Queue,
         slice_index: int,
         slice_audio: np.ndarray,
+        start_seconds: float,
+        end_seconds: float,
         offset_seconds: float,
         params: WhisperParams,
         model_size_or_path: str,
         local_files_only: bool,
-    ) -> None:
-        model = None
-        try:
-            model = faster_whisper.WhisperModel(
-                device=self.device,
-                model_size_or_path=model_size_or_path,
-                download_root=self.model_dir,
-                compute_type=params.compute_type,
-                local_files_only=local_files_only,
-            )
-            standard_audio, standard_params = self.resolve_standard_audio_and_params(
-                audio=slice_audio,
-                params=params,
-                sampling_rate=16000,
-            )
-            segments, _info = self._transcribe_with_standard_pipeline(
-                audio=standard_audio,
-                params=standard_params,
-                progress=gr.Progress(),
-                model=model,
-            )
+    ) -> Dict:
+        repo_root = str(Path(__file__).resolve().parents[2])
+        audio_file = tempfile.NamedTemporaryFile(
+            prefix=f"whisper_slice_audio_{slice_index}_",
+            suffix=".npy",
+            delete=False,
+        )
+        audio_file.close()
+        np.save(audio_file.name, np.ascontiguousarray(slice_audio, dtype=np.float32), allow_pickle=False)
 
-            for segment in segments:
-                queue.put({
-                    "type": "segment",
-                    "segment": self.offset_segment(Segment.from_faster_whisper(segment), offset_seconds),
-                })
-            queue.put({"type": "done", "slice_index": slice_index})
-        except Exception as exc:
-            queue.put({"type": "error", "error": f"Slice {slice_index + 1} failed: {type(exc).__name__}: {exc}"})
-        finally:
-            self.release_temp_model(model)
+        result_file = tempfile.NamedTemporaryFile(
+            prefix=f"whisper_slice_result_{slice_index}_",
+            suffix=".json",
+            delete=False,
+        )
+        result_file.close()
+
+        request_payload = {
+            "slice_index": slice_index,
+            "audio_path": audio_file.name,
+            "result_path": result_file.name,
+            "model_dir": self.model_dir,
+            "device": self.device,
+            "model_size_or_path": model_size_or_path,
+            "local_files_only": local_files_only,
+            "params": params.model_dump(),
+            "offset_seconds": offset_seconds,
+        }
+        request_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            prefix=f"whisper_slice_request_{slice_index}_",
+            suffix=".json",
+            delete=False,
+            encoding="utf-8",
+        )
+        json.dump(request_payload, request_file, ensure_ascii=False)
+        request_file.close()
+
+        stderr_file = tempfile.NamedTemporaryFile(
+            prefix=f"whisper_slice_stderr_{slice_index}_",
+            suffix=".log",
+            delete=False,
+        )
+        stderr_file.close()
+        stderr_handle = open(stderr_file.name, "wb")
+        event_queue: Queue = Queue()
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "modules.whisper.parallel_slice_worker",
+                "--request",
+                request_file.name,
+            ],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=stderr_handle,
+        )
+        logger.info(
+            "Started slice subprocess P%d (pid=%s) for %.3fs -> %.3fs.",
+            slice_index + 1,
+            process.pid,
+            start_seconds,
+            end_seconds,
+        )
+
+        def drain_stdout() -> None:
+            stdout_pipe = process.stdout
+            if stdout_pipe is None:
+                return
+            for raw_line in stdout_pipe:
+                try:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                except Exception:
+                    continue
+                if not line:
+                    continue
+                try:
+                    event_queue.put(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        stdout_thread = Thread(target=drain_stdout, daemon=True)
+        stdout_thread.start()
+
+        return {
+            "slice_index": slice_index,
+            "offset_seconds": offset_seconds,
+            "start_seconds": start_seconds,
+            "end_seconds": end_seconds,
+            "audio_path": audio_file.name,
+            "request_path": request_file.name,
+            "result_path": result_file.name,
+            "stderr_path": stderr_file.name,
+            "stderr_handle": stderr_handle,
+            "event_queue": event_queue,
+            "stdout_thread": stdout_thread,
+            "streamed_segments": 0,
+            "process": process,
+        }
+
+    def drain_parallel_slice_events(
+        self,
+        job: Dict,
+        total_duration: float,
+        progress: gr.Progress,
+        progress_callback: Optional[Callable] = None,
+    ) -> None:
+        event_queue = job.get("event_queue")
+        if event_queue is None:
+            return
+
+        while True:
+            try:
+                event = event_queue.get_nowait()
+            except Empty:
+                break
+
+            if event.get("event") != "segment":
+                continue
+
+            payload = event.get("payload") or {}
+            segment_data = payload.get("segment")
+            if not isinstance(segment_data, dict):
+                continue
+
+            segment = self.offset_segment(Segment(**segment_data), float(job["offset_seconds"]))
+            prefixed_segment = segment.model_copy(deep=True)
+            prefixed_segment.text = f"[P{int(job['slice_index']) + 1}] {prefixed_segment.text or ''}".strip()
+            job["streamed_segments"] = int(job.get("streamed_segments", 0)) + 1
+            logger.info(
+                "P%d streamed [%s -> %s] %s",
+                int(job["slice_index"]) + 1,
+                self.format_timestamp(segment.start),
+                self.format_timestamp(segment.end),
+                prefixed_segment.text,
+            )
+            progress_n = 0.0 if not total_duration else min((segment.end or 0.0) / total_duration, 0.99)
+            ui_progress_n = self.map_transcription_progress(progress_n)
+            progress(ui_progress_n, desc=f"Transcribing.. {prefixed_segment.text[:60]}...")
+            self.emit_progress_callback(progress_callback, progress_n, prefixed_segment)
+
+    @staticmethod
+    def read_parallel_slice_result(job: Dict) -> Dict:
+        payload = json.loads(Path(job["result_path"]).read_text(encoding="utf-8"))
+        payload["slice_index"] = payload.get("slice_index", job["slice_index"])
+        payload["offset_seconds"] = payload.get("offset_seconds", job["offset_seconds"])
+        return payload
+
+    @staticmethod
+    def format_parallel_slice_error(job: Dict, return_code: int) -> str:
+        stderr_text = ""
+        stderr_path = job.get("stderr_path")
+        if stderr_path and os.path.exists(stderr_path):
+            stderr_text = Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
+
+        message = f"Slice {job['slice_index'] + 1} subprocess exited with code {return_code}."
+        if stderr_text:
+            return f"{message}\n{stderr_text}"
+        return message
+
+    @staticmethod
+    def terminate_parallel_slice_jobs(slice_jobs: List[Dict]) -> None:
+        for job in slice_jobs:
+            process = job.get("process")
+            if process is None or process.poll() is not None:
+                continue
+            try:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                else:
+                    process.terminate()
+            except Exception:
+                pass
+
+    @staticmethod
+    def cleanup_parallel_slice_jobs(slice_jobs: List[Dict]) -> None:
+        for job in slice_jobs:
+            stderr_handle = job.get("stderr_handle")
+            if stderr_handle is not None and not stderr_handle.closed:
+                try:
+                    stderr_handle.close()
+                except Exception:
+                    pass
+
+            stdout_thread = job.get("stdout_thread")
+            if stdout_thread is not None:
+                stdout_thread.join(timeout=0.5)
+
+            process = job.get("process")
+            if process is not None:
+                try:
+                    if process.stdout is not None:
+                        process.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=0.1)
+                except Exception:
+                    pass
+
+            for path_key in ("audio_path", "request_path", "result_path", "stderr_path"):
+                path = job.get(path_key)
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
 
     @staticmethod
     def build_equal_audio_slices(
