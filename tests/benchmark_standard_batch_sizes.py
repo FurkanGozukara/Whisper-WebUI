@@ -311,7 +311,7 @@ def run_parent(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark standard slice-based batch sizes on a real media file.")
+    parser = argparse.ArgumentParser(description="Benchmark standard faster-whisper batch sizes on a real media file.")
     parser.add_argument("--input", required=True, help="Path to the media file to benchmark.")
     parser.add_argument("--model", default=None, help="Optional faster-whisper model size override.")
     parser.add_argument("--python", default=None, help="Python executable to use for child runs.")

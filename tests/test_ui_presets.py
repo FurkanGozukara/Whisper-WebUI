@@ -38,6 +38,7 @@ def test_default_parameters_path_is_outside_configs():
 
 def test_ui_presets_round_trip_and_backfill_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(tmp_path))
+    monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(tmp_path / "_system"))
 
     partial_cfg = {
         "file_tab": {
@@ -91,6 +92,7 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
 
 def test_last_used_preset_is_persisted_and_cleared_when_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(tmp_path))
+    monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(tmp_path / "_system"))
 
     saved_name = save_ui_preset("daily setup", {"file_tab": {"batch_processing": True}})
     remembered_name = set_last_used_ui_preset(saved_name)
@@ -104,6 +106,43 @@ def test_last_used_preset_is_persisted_and_cleared_when_missing(tmp_path, monkey
     assert not last_used_ui_preset_path().exists()
 
     clear_last_used_ui_preset()
+
+
+def test_locked_system_presets_are_listed_loaded_and_protected(tmp_path, monkeypatch):
+    user_dir = tmp_path / "user"
+    system_dir = tmp_path / "system"
+    system_dir.mkdir(parents=True)
+    monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(user_dir))
+    monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(system_dir))
+
+    system_preset_path = system_dir / "best_quality.json"
+    system_preset_path.write_text(
+        """
+        {
+          "file_tab": {
+            "whisper": {
+              "condition_on_previous_text": true,
+              "batch_size": 1
+            }
+          }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    assert list_ui_presets() == ["best_quality"]
+    loaded_cfg = load_ui_preset("best_quality")
+    assert loaded_cfg is not None
+    assert loaded_cfg["file_tab"]["whisper"]["condition_on_previous_text"] is True
+    assert ui_presets.is_locked_ui_preset("best_quality") is True
+
+    try:
+        save_ui_preset("best_quality", {"file_tab": {"batch_processing": True}})
+        assert False, "Expected save_ui_preset to reject overwriting a locked preset."
+    except ValueError:
+        pass
+
+    assert delete_ui_preset("best_quality") is False
 
 
 def test_runtime_parameter_caching_is_disabled():

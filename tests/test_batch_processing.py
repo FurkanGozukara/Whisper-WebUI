@@ -202,6 +202,36 @@ def test_standard_pipeline_enables_encoder_batching_when_batch_size_gt_one():
     assert restored_func is original_func
 
 
+def test_standard_pipeline_enables_encoder_batching_without_conditioning():
+    captured = {}
+
+    class DummyModel:
+        def __init__(self):
+            self.feature_extractor = SimpleNamespace(sampling_rate=16000)
+            self.generate_segments = self._original_generate_segments
+
+        def _original_generate_segments(self, *args, **kwargs):
+            return iter(())
+
+        def transcribe(self, **kwargs):
+            current_func = getattr(self.generate_segments, "__func__", self.generate_segments)
+            original_func = getattr(self._original_generate_segments, "__func__", self._original_generate_segments)
+            captured["generate_segments_patched"] = current_func is not original_func
+            return iter([]), SimpleNamespace(duration=1.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = DummyModel()
+
+    FasterWhisperInference._transcribe_with_standard_pipeline(
+        inferencer,
+        np.zeros(16000, dtype=np.float32),
+        WhisperParams(batch_size=4, condition_on_previous_text=False),
+        DummyProgress(),
+    )
+
+    assert captured["generate_segments_patched"] is True
+
+
 def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch):
     captured = {}
     callback_events = []
@@ -386,6 +416,50 @@ def test_transcribe_uses_standard_pipeline_by_default(monkeypatch):
 
     assert captured["standard_called"] is True
     assert captured["params"].use_batched_inference is False
+    assert len(segments) == 1
+    assert elapsed_time >= 0
+
+
+def test_transcribe_uses_standard_pipeline_for_non_batched_batch_sizes(monkeypatch):
+    captured = {"standard_called": False}
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=16000))
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+
+    def fake_standard_pipeline(audio, params, progress):
+        captured["standard_called"] = True
+        captured["params"] = params
+        return iter([make_dummy_segment(1, 0.0, 1.0, "standard path")]), SimpleNamespace(duration=1.0)
+
+    inferencer._transcribe_with_standard_pipeline = fake_standard_pipeline
+    inferencer._transcribe_with_batching = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("Batched pipeline should not run when use_batched_inference is disabled.")
+    )
+
+    progress = DummyProgress()
+    whisper_params = WhisperParams(
+        model_size="large-v3",
+        compute_type="float16",
+        lang="en",
+        chunk_length=15,
+        batch_size=4,
+        word_timestamps=True,
+    ).to_list()
+
+    segments, elapsed_time = FasterWhisperInference.transcribe(
+        inferencer,
+        np.zeros(60 * 16000, dtype=np.float32),
+        progress,
+        None,
+        *whisper_params,
+    )
+
+    assert captured["standard_called"] is True
+    assert captured["params"].use_batched_inference is False
+    assert captured["params"].batch_size == 4
     assert len(segments) == 1
     assert elapsed_time >= 0
 

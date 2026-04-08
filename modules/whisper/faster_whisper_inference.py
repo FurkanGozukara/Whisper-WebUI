@@ -43,6 +43,7 @@ class StandardEncoderPrefetchCache:
         self.content_frames = features.shape[-1] - 1
         self.window_frames = int(model.feature_extractor.nb_max_frames)
         self.cache = {}
+        self.cache_owners = {}
         self.cache_clip_end = None
 
     def get(self, seek: int, seek_clip_end: int) -> ctranslate2.StorageView:
@@ -51,6 +52,7 @@ class StandardEncoderPrefetchCache:
 
         if seek not in self.cache or self.cache_clip_end != seek_clip_end:
             self.cache.clear()
+            self.cache_owners.clear()
             self.cache_clip_end = seek_clip_end
             self._prefetch_from_seek(seek=seek, seek_clip_end=seek_clip_end)
 
@@ -75,8 +77,9 @@ class StandardEncoderPrefetchCache:
             raise ValueError(f"No encoder windows available for seek {seek}")
 
         encoded_batch = self.model.encode(np.stack(windows, axis=0))
-        for window_seek, storage_view in zip(seeks, self._split_storage_view_batch(encoded_batch)):
+        for window_seek, (storage_view, owner) in zip(seeks, self._split_storage_view_batch(encoded_batch)):
             self.cache[window_seek] = storage_view
+            self.cache_owners[window_seek] = owner
 
     def _build_segment(self, seek: int, seek_clip_end: int) -> np.ndarray:
         segment_size = min(
@@ -90,8 +93,30 @@ class StandardEncoderPrefetchCache:
     @staticmethod
     def _split_storage_view_batch(
         encoded_batch: ctranslate2.StorageView,
-    ) -> List[ctranslate2.StorageView]:
+    ) -> List[Tuple[ctranslate2.StorageView, Optional[torch.Tensor]]]:
         batch_length = int(encoded_batch.shape[0])
+        if batch_length <= 0:
+            return []
+
+        batch_tensor: Optional[torch.Tensor] = None
+        try:
+            if getattr(encoded_batch, "device", "cpu") == "cuda":
+                device = f"cuda:{getattr(encoded_batch, 'device_index', 0)}"
+                batch_tensor = torch.as_tensor(encoded_batch, device=device)
+            else:
+                batch_tensor = torch.as_tensor(encoded_batch)
+        except Exception:
+            batch_tensor = None
+
+        if batch_tensor is not None:
+            return [
+                (
+                    ctranslate2.StorageView.from_array(batch_tensor[idx : idx + 1]),
+                    batch_tensor,
+                )
+                for idx in range(batch_length)
+            ]
+
         batch_view = encoded_batch
         if getattr(encoded_batch, "device", "cpu") == "cuda":
             batch_view = encoded_batch.to_device(ctranslate2.Device.cpu)
@@ -101,7 +126,10 @@ class StandardEncoderPrefetchCache:
         except RuntimeError:
             batch_array = np.asarray(batch_view.to(ctranslate2.DataType.float32))
         return [
-            ctranslate2.StorageView.from_array(np.ascontiguousarray(batch_array[idx : idx + 1]))
+            (
+                ctranslate2.StorageView.from_array(np.ascontiguousarray(batch_array[idx : idx + 1])),
+                None,
+            )
             for idx in range(batch_length)
         ]
 
@@ -216,7 +244,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
     @staticmethod
     def should_use_parallel_slice_batching(params: WhisperParams) -> bool:
-        return (not FasterWhisperInference.should_use_batched_inference(params)) and max(1, int(params.batch_size)) > 1
+        return False
 
     def resolve_standard_audio_and_params(
         self,
@@ -730,7 +758,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     ):
         repeat_initial_prompt = cls.should_repeat_initial_prompt(params)
         encoder_batch_size = max(1, int(params.batch_size))
-        use_encoder_batching = encoder_batch_size > 1 and bool(params.condition_on_previous_text)
+        use_encoder_batching = encoder_batch_size > 1
         if use_encoder_batching:
             logger.info(
                 "Using standard faster-whisper inference with encoder prefetch batching "

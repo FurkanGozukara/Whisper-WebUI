@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "format": "whisper_webui_ui",
+    "locked": true,
+    "display_name": "Fast",
+    "description": "High-throughput preset using the same base quality settings with faster-whisper batched inference."
+  },
+  "file_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": true,
+      "batch_size": 32
+    }
+  },
+  "youtube_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": true,
+      "batch_size": 32
+    }
+  },
+  "mic_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": true,
+      "batch_size": 32
+    }
+  }
+}

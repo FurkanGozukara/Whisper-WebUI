@@ -452,10 +452,10 @@ class WhisperParams(BaseParams):
             label="Batch Size",
             value=batch_size_value,
             info=(
-                "When Use Batched Inference is disabled, this loads that many separate model instances, splits "
-                "the audio into equal time ranges, transcribes each range independently, and then merges the "
-                "result with corrected timestamps. When Use Batched Inference is enabled, it controls the "
-                "faster-whisper batched decoder path instead."
+                "When Use Batched Inference is disabled, this controls the standard faster-whisper encoder "
+                "prefetch batch size on a single model instance. Higher values can improve throughput with much "
+                "lower quality risk than the batched decoder path, but the gain depends on your audio and GPU. "
+                "When Use Batched Inference is enabled, it controls the faster-whisper batched decoder path instead."
             ),
         )
 

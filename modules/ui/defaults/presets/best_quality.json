@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "format": "whisper_webui_ui",
+    "locked": true,
+    "display_name": "Best Quality",
+    "description": "Best overall subtitle quality preset tuned for accurate words, casing, and punctuation."
+  },
+  "file_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": false,
+      "batch_size": 1
+    }
+  },
+  "youtube_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": false,
+      "batch_size": 1
+    }
+  },
+  "mic_tab": {
+    "whisper": {
+      "condition_on_previous_text": true,
+      "repetition_penalty": 1.0,
+      "use_batched_inference": false,
+      "batch_size": 1
+    }
+  }
+}

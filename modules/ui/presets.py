@@ -11,7 +11,7 @@ from modules.utils.constants import (
     GRADIO_NONE_STR,
 )
 from modules.utils.files_manager import load_yaml
-from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, PRESETS_DIR
+from modules.utils.paths import DEFAULT_PARAMETERS_CONFIG_PATH, PRESETS_DIR, UI_SYSTEM_PRESETS_DIR
 from modules.utils.whisper_languages import normalize_lang_choice as normalize_whisper_lang_choice
 
 UI_PRESET_VERSION = "1.0"
@@ -28,15 +28,40 @@ def ui_preset_path(preset_name: str) -> Path:
     return Path(PRESETS_DIR) / f"{sanitize_preset_name(preset_name)}.json"
 
 
+def system_ui_preset_path(preset_name: str) -> Path:
+    return Path(UI_SYSTEM_PRESETS_DIR) / f"{sanitize_preset_name(preset_name)}.json"
+
+
+def find_ui_preset_path(preset_name: str) -> Optional[Path]:
+    safe_name = sanitize_preset_name(preset_name)
+    system_path = system_ui_preset_path(safe_name)
+    if system_path.exists():
+        return system_path
+
+    user_path = ui_preset_path(safe_name)
+    if user_path.exists():
+        return user_path
+
+    return None
+
+
+def is_locked_ui_preset(preset_name: str) -> bool:
+    if not preset_name:
+        return False
+    return system_ui_preset_path(preset_name).exists()
+
+
 def last_used_ui_preset_path() -> Path:
     return Path(PRESETS_DIR) / LAST_USED_UI_PRESET_FILENAME
 
 
 def list_ui_presets() -> list[str]:
-    root = Path(PRESETS_DIR)
-    if not root.exists():
-        return []
-    return sorted([path.stem for path in root.glob("*.json") if path.is_file()])
+    preset_names = set()
+    for root in (Path(UI_SYSTEM_PRESETS_DIR), Path(PRESETS_DIR)):
+        if not root.exists():
+            continue
+        preset_names.update(path.stem for path in root.glob("*.json") if path.is_file())
+    return sorted(preset_names)
 
 
 def clear_last_used_ui_preset() -> None:
@@ -80,7 +105,7 @@ def get_last_used_ui_preset() -> Optional[str]:
         return None
 
     safe_name = sanitize_preset_name(raw_name)
-    if not ui_preset_path(safe_name).exists():
+    if find_ui_preset_path(safe_name) is None:
         clear_last_used_ui_preset()
         return None
 
@@ -269,6 +294,9 @@ def save_ui_preset(preset_name: str, config: dict[str, Any], default_params: Opt
         raise ValueError("Preset name cannot be empty.")
 
     safe_name = sanitize_preset_name(str(preset_name).strip())
+    if is_locked_ui_preset(safe_name):
+        raise ValueError(f"Preset '{safe_name}' is built in and cannot be overwritten.")
+
     root = Path(PRESETS_DIR)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -290,8 +318,8 @@ def save_ui_preset(preset_name: str, config: dict[str, Any], default_params: Opt
 def load_ui_preset(preset_name: str, default_params: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
     if not preset_name:
         return None
-    path = ui_preset_path(preset_name)
-    if not path.exists():
+    path = find_ui_preset_path(preset_name)
+    if path is None or not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -302,6 +330,8 @@ def load_ui_preset(preset_name: str, default_params: Optional[dict[str, Any]] = 
 
 def delete_ui_preset(preset_name: str) -> bool:
     if not preset_name:
+        return False
+    if is_locked_ui_preset(preset_name):
         return False
     path = ui_preset_path(preset_name)
     if not path.exists():

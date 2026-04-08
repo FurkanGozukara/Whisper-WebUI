@@ -10,6 +10,7 @@ DIARIZATION_MODELS_DIR = os.path.join(MODELS_DIR, "Diarization")
 UVR_MODELS_DIR = os.path.join(MODELS_DIR, "UVR", "MDX_Net_Models")
 CONFIGS_DIR = os.path.join(WEBUI_DIR, "configs")
 UI_DEFAULTS_DIR = os.path.join(WEBUI_DIR, "modules", "ui", "defaults")
+UI_SYSTEM_PRESETS_DIR = os.path.join(UI_DEFAULTS_DIR, "presets")
 DEFAULT_PARAMETERS_PATH = os.path.join(UI_DEFAULTS_DIR, "default_parameters.yaml")
 DEFAULT_PARAMETERS_CONFIG_PATH = DEFAULT_PARAMETERS_PATH
 I18N_YAML_PATH = os.path.join(CONFIGS_DIR, "translation.yaml")
@@ -33,6 +34,7 @@ for dir_path in [MODELS_DIR,
                  UVR_MODELS_DIR,
                  CONFIGS_DIR,
                  UI_DEFAULTS_DIR,
+                 UI_SYSTEM_PRESETS_DIR,
                  OUTPUT_DIR,
                  TRANSLATION_OUTPUT_DIR,
                  UVR_INSTRUMENTAL_OUTPUT_DIR,

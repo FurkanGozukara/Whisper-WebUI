@@ -26,6 +26,7 @@ from modules.ui.presets import (
     delete_ui_preset,
     get_last_used_ui_preset,
     get_nested_value,
+    is_locked_ui_preset,
     list_ui_presets,
     load_ui_preset,
     merge_ui_config,
@@ -669,11 +670,11 @@ class App:
                         with gr.Column(scale=4):
                             gr.Markdown("**Batch Size**")
                             gr.Markdown(
-                                "When Use Batched Inference is disabled, this loads that many separate model "
-                                "instances, splits the audio into equal time ranges, transcribes each range "
-                                "independently, and then merges the result with corrected timestamps. When Use "
-                                "Batched Inference is enabled, it controls the faster-whisper batched decoder "
-                                "path instead."
+                                "When Use Batched Inference is disabled, this controls the standard faster-whisper "
+                                "encoder prefetch batch size on a single model instance. Higher values can improve "
+                                "throughput with much lower quality risk than the batched decoder path, but the gain "
+                                "depends on your audio and GPU. When Use Batched Inference is enabled, it controls "
+                                "the faster-whisper batched decoder path instead."
                             )
                         with gr.Column(scale=2, min_width=220):
                             batch_size_input = WhisperParams.to_batch_size_input(
@@ -1364,6 +1365,10 @@ class App:
                 def _delete_preset_ui(preset_name: str):
                     if not preset_name:
                         return gr.update(), "No preset selected"
+                    if is_locked_ui_preset(preset_name):
+                        return gr.update(choices=list_ui_presets(), value=preset_name), (
+                            f"Preset **{preset_name}** is built in and cannot be deleted."
+                        )
                     ok = delete_ui_preset(preset_name)
                     presets = list_ui_presets()
                     if ok:

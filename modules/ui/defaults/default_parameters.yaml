@@ -8,7 +8,7 @@ whisper:
   compute_type: bfloat16
   best_of: 5
   patience: 1.5
-  condition_on_previous_text: false
+  condition_on_previous_text: true
   start_as_subprocess: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
