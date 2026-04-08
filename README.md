@@ -11,6 +11,8 @@
   - Get the latest zip file and make a fresh install please > https://www.patreon.com/posts/145395299
 
   - 1-Click to install on Windows, RunPod, SimplePod, Massed Compute, Linux
+ 
+  - <img height="500" alt="image" src="https://github.com/user-attachments/assets/27909c4a-bd77-408f-824a-ab8fc9837379" />
 
 - New preset save and load system with extremely well tested best_quality and fast pre-made presets
 
