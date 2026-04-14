@@ -19,6 +19,31 @@ DEFAULT_DIARIZATION_REPO_ID = "MonsterMMORPG/Wan_GGUF"
 DEFAULT_DIARIZATION_SUBFOLDER = "Speaker_Diarization_3_1"
 
 
+def _is_pipeline_dir(path: str) -> bool:
+    return os.path.isdir(path) and os.path.isfile(os.path.join(path, "config.yaml"))
+
+
+def _find_local_pipeline_dir(
+    model_name: str,
+    cache_dir: str,
+    subfolder: str,
+) -> Optional[str]:
+    candidates = []
+
+    if model_name:
+        candidates.append(model_name)
+
+    if cache_dir:
+        candidates.append(cache_dir)
+        candidates.append(os.path.join(cache_dir, subfolder))
+
+    for candidate in candidates:
+        if _is_pipeline_dir(candidate):
+            return candidate
+
+    return None
+
+
 def _resolve_pipeline_dir(
     model_name: str,
     cache_dir: str,
@@ -28,11 +53,14 @@ def _resolve_pipeline_dir(
     """
     Resolve a pyannote Pipeline directory.
 
-    - If `model_name` is a local path, it is returned as-is.
-    - Otherwise, `model_name` is treated as a HF repo id and `subfolder` is downloaded.
+    Resolution order:
+    - an explicit local pipeline directory in `model_name`
+    - an offline bundle stored in `cache_dir` or `cache_dir/subfolder`
+    - Hugging Face cache/download fallback for repo ids
     """
-    if os.path.isdir(model_name):
-        return model_name
+    local_pipeline_dir = _find_local_pipeline_dir(model_name, cache_dir, subfolder)
+    if local_pipeline_dir is not None:
+        return local_pipeline_dir
 
     repo_id = model_name
 
@@ -77,15 +105,9 @@ def _resolve_pipeline_dir(
             return pipeline_dir
 
     pipeline_dir = os.path.join(snapshot_path, subfolder)
-    if not os.path.isdir(pipeline_dir):
+    if not _is_pipeline_dir(pipeline_dir):
         raise FileNotFoundError(
-            f"Diarization pipeline subfolder not found after download: {pipeline_dir}"
-        )
-
-    config_path = os.path.join(pipeline_dir, "config.yaml")
-    if not os.path.isfile(config_path):
-        raise FileNotFoundError(
-            f"Diarization pipeline config.yaml not found: {config_path}"
+            f"Diarization pipeline config.yaml not found after download: {pipeline_dir}"
         )
 
     return pipeline_dir
@@ -109,8 +131,9 @@ class DiarizationPipeline:
             use_auth_token=use_auth_token,
             subfolder=DEFAULT_DIARIZATION_SUBFOLDER,
         )
+        pipeline_config_path = os.path.join(pipeline_dir, "config.yaml")
         self.model = Pipeline.from_pretrained(
-            pipeline_dir,
+            pipeline_config_path,
             use_auth_token=use_auth_token,
             cache_dir=cache_dir
         ).to(device)
