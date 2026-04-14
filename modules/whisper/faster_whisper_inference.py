@@ -166,6 +166,8 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                    progress: gr.Progress = gr.Progress(),
                    progress_callback: Optional[Callable] = None,
                    *whisper_params,
+                   log_console: bool = True,
+                   log_model_banner: bool = True,
                    ) -> Tuple[List[Segment], float]:
         """
         transcribe method for faster-whisper.
@@ -212,12 +214,19 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 progress_callback=progress_callback,
             )
         else:
-            logger.info("Using standard faster-whisper inference for maximum subtitle quality.")
-            standard_audio, standard_params = self.resolve_standard_audio_and_params(audio=audio, params=params)
+            if log_model_banner:
+                logger.info("Using standard faster-whisper inference for maximum subtitle quality.")
+            standard_audio, standard_params = self.resolve_standard_audio_and_params(
+                audio=audio,
+                params=params,
+                log_console=log_model_banner,
+            )
             segments, info = self._transcribe_with_standard_pipeline(
                 audio=standard_audio,
                 params=standard_params,
                 progress=progress,
+                log_console=log_console,
+                log_model_banner=log_model_banner,
             )
 
         segments_result = []
@@ -228,7 +237,8 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             segments_result.append(seg_obj)
 
             # Live transcription display in terminal
-            logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
+            if log_console:
+                logger.info(f"[{self.format_timestamp(seg_obj.start)} -> {self.format_timestamp(seg_obj.end)}] {seg_obj.text}")
 
             # Update progress with current segment info
             progress(ui_progress_n, desc=f"Transcribing.. [{idx+1} segments] {seg_obj.text[:50]}...")
@@ -251,6 +261,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
         sampling_rate: Optional[int] = None,
+        log_console: bool = True,
     ) -> Tuple[Union[str, BinaryIO, np.ndarray], WhisperParams]:
         if not params.condition_on_previous_text:
             return audio, params
@@ -271,12 +282,13 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if sampling_rate > 0:
             duration_seconds = float(audio_array.shape[-1]) / float(sampling_rate)
 
-        logger.info(
-            "Auto-disabling condition_on_previous_text for long-form audio "
-            "(%.1f minutes across ~%d windows) to prevent repetition drift.",
-            duration_seconds / 60.0 if duration_seconds else 0.0,
-            estimated_windows,
-        )
+        if log_console:
+            logger.info(
+                "Auto-disabling condition_on_previous_text for long-form audio "
+                "(%.1f minutes across ~%d windows) to prevent repetition drift.",
+                duration_seconds / 60.0 if duration_seconds else 0.0,
+                estimated_windows,
+            )
         return audio_array, params.model_copy(update={"condition_on_previous_text": False})
 
     @staticmethod
@@ -739,6 +751,8 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
         progress: gr.Progress = gr.Progress(),
+        log_console: bool = True,
+        log_model_banner: bool = True,
         model=None,
     ):
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
@@ -747,6 +761,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             model=target_model,
             audio=audio,
             params=params,
+            log_console=log_model_banner,
         )
 
     @classmethod
@@ -755,11 +770,12 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         model,
         audio: Union[str, BinaryIO, np.ndarray],
         params: WhisperParams,
+        log_console: bool = True,
     ):
         repeat_initial_prompt = cls.should_repeat_initial_prompt(params)
         encoder_batch_size = max(1, int(params.batch_size))
         use_encoder_batching = encoder_batch_size > 1
-        if use_encoder_batching:
+        if use_encoder_batching and log_console:
             logger.info(
                 "Using standard faster-whisper inference with encoder prefetch batching "
                 "(batch_size=%d) for quality-preserving acceleration.",

@@ -63,7 +63,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V7.1 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V8.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -600,12 +600,21 @@ class App:
     def create_live_mic_state(cls):
         return {
             "audio": np.array([], dtype=np.float32),
+            "full_audio": np.array([], dtype=np.float32),
             "sample_rate": cls.LIVE_MIC_SAMPLE_RATE,
             "last_processed_samples": 0,
             "transcript": "",
             "stream_total_samples": 0,
             "stream_mode": cls.LIVE_MIC_STREAM_MODE_UNKNOWN,
         }
+
+    @staticmethod
+    def measure_live_audio_seconds(audio: np.ndarray | None, sample_rate: int | None):
+        if not isinstance(audio, np.ndarray) or audio.size == 0:
+            return 0.0
+        if not sample_rate or sample_rate <= 0:
+            return 0.0
+        return float(audio.shape[0]) / float(sample_rate)
 
     @staticmethod
     def build_record_mic_idle_status():
@@ -755,24 +764,51 @@ class App:
         return staged_path
 
     def stage_live_mic_audio(self, live_mic_audio, live_state, prefix: str = "live_record"):
-        sample_rate, audio = self.normalize_live_mic_chunk(live_mic_audio)
-        fallback_message = ""
+        state = live_state if isinstance(live_state, dict) else {}
+        payload_sample_rate, payload_audio = self.normalize_live_mic_chunk(live_mic_audio)
+        state_sample_rate = int(state.get("sample_rate") or self.LIVE_MIC_SAMPLE_RATE)
+        state_full_audio = state.get("full_audio")
+        state_preview_audio = state.get("audio")
 
-        if audio is None:
-            state = live_state if isinstance(live_state, dict) else {}
-            preview_audio = state.get("audio")
-            if isinstance(preview_audio, np.ndarray) and preview_audio.size:
-                audio = np.ascontiguousarray(preview_audio, dtype=np.float32)
-                sample_rate = int(state.get("sample_rate") or self.LIVE_MIC_SAMPLE_RATE)
-                fallback_message = " The browser did not return the final clip, so the recent preview window was saved instead."
-            else:
-                return None, 0.0, ""
+        candidates = []
+        if isinstance(state_full_audio, np.ndarray) and state_full_audio.size:
+            candidates.append(("captured live stream", state_sample_rate, np.ascontiguousarray(state_full_audio, dtype=np.float32)))
+        if isinstance(payload_audio, np.ndarray) and payload_audio.size:
+            candidates.append(("browser stop clip", int(payload_sample_rate or self.LIVE_MIC_SAMPLE_RATE), np.ascontiguousarray(payload_audio, dtype=np.float32)))
+        if not candidates and isinstance(state_preview_audio, np.ndarray) and state_preview_audio.size:
+            candidates.append(("recent preview window", state_sample_rate, np.ascontiguousarray(state_preview_audio, dtype=np.float32)))
+
+        if not candidates:
+            return None, 0.0, ""
+
+        source_label, sample_rate, audio = max(
+            candidates,
+            key=lambda item: self.measure_live_audio_seconds(item[2], item[1]),
+        )
+
+        payload_seconds = self.measure_live_audio_seconds(payload_audio, payload_sample_rate or self.LIVE_MIC_SAMPLE_RATE)
+        selected_seconds = self.measure_live_audio_seconds(audio, sample_rate)
+        if source_label == "captured live stream" and payload_seconds > 0 and selected_seconds > payload_seconds + 0.25:
+            fallback_message = " Saved the accumulated live stream because the recorder stop payload was shorter."
+        elif source_label == "captured live stream" and payload_seconds <= 0:
+            fallback_message = " Saved the accumulated live stream because the recorder did not return a final clip."
+        elif source_label == "recent preview window":
+            fallback_message = " The full live stream was unavailable, so only the recent preview window was saved."
+        else:
+            fallback_message = ""
 
         sample_rate = int(sample_rate or self.LIVE_MIC_SAMPLE_RATE)
         basename = self.build_mic_output_basename(prefix)
         staged_path = os.path.join(self.get_mic_staging_dir(), f"{basename}.wav")
         sf.write(staged_path, audio, sample_rate, format="WAV")
         captured_seconds = float(audio.shape[0]) / float(sample_rate) if sample_rate and audio.size else 0.0
+        logger.info(
+            "Live mic stop staged %s (%.2fs at %d Hz) to %s",
+            source_label,
+            captured_seconds,
+            sample_rate,
+            staged_path,
+        )
         return staged_path, captured_seconds, fallback_message
 
     @staticmethod
@@ -784,6 +820,25 @@ class App:
                 os.remove(staged_path)
         except Exception:
             logger.debug("Failed to remove staged microphone audio: %s", staged_path, exc_info=True)
+
+    def persist_staged_mic_audio_output(self, staged_path: str | None):
+        source_path = coerce_audio_input_path(staged_path)
+        if source_path is None or not os.path.exists(source_path):
+            return None
+
+        output_dir = getattr(getattr(self, "args", None), "output_dir", None)
+        if not output_dir:
+            output_dir = getattr(getattr(self, "whisper_inf", None), "output_dir", None)
+        if not output_dir:
+            return None
+
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, os.path.basename(source_path))
+
+        if os.path.abspath(source_path) != os.path.abspath(output_path):
+            shutil.copy2(source_path, output_path)
+
+        return output_path
 
     def transcribe_staged_mic_with_download(self,
                                             staged_mic_audio: str,
@@ -800,6 +855,8 @@ class App:
             )
             return
 
+        persisted_audio_path = self.persist_staged_mic_audio_output(staged_path)
+
         try:
             for live_output, result_str, collected_paths in self.whisper_inf.transcribe_mic_with_live_output(
                 staged_path,
@@ -808,7 +865,10 @@ class App:
                 progress,
                 *pipeline_params,
             ):
-                yield live_output, result_str, self.prepare_files_output(collected_paths)
+                downloadable_paths = list(collected_paths)
+                if result_str and persisted_audio_path and persisted_audio_path not in downloadable_paths:
+                    downloadable_paths.append(persisted_audio_path)
+                yield live_output, result_str, self.prepare_files_output(downloadable_paths)
         finally:
             self.cleanup_staged_mic_audio(staged_path)
 
@@ -929,41 +989,40 @@ class App:
             incoming_audio = self.resample_live_mic_audio(incoming_audio, sample_rate, self.LIVE_MIC_SAMPLE_RATE)
             sample_rate = self.LIVE_MIC_SAMPLE_RATE
 
-        existing_audio = state.get("audio")
-        if not isinstance(existing_audio, np.ndarray):
-            existing_audio = np.array([], dtype=np.float32)
+        existing_preview_audio = state.get("audio")
+        if not isinstance(existing_preview_audio, np.ndarray):
+            existing_preview_audio = np.array([], dtype=np.float32)
+        existing_full_audio = state.get("full_audio")
+        if not isinstance(existing_full_audio, np.ndarray):
+            existing_full_audio = np.array([], dtype=np.float32)
 
         stream_mode = self.detect_live_mic_stream_mode(
-            existing_audio,
+            existing_full_audio if existing_full_audio.size else existing_preview_audio,
             incoming_audio,
             sample_rate,
             str(state.get("stream_mode") or self.LIVE_MIC_STREAM_MODE_UNKNOWN),
         )
-        previous_stream_total_samples = int(state.get("stream_total_samples") or 0)
 
         if stream_mode == self.LIVE_MIC_STREAM_MODE_CUMULATIVE:
-            combined_audio = np.ascontiguousarray(incoming_audio, dtype=np.float32)
-            stream_total_samples = max(previous_stream_total_samples, int(incoming_audio.shape[0]))
+            full_audio = np.ascontiguousarray(incoming_audio, dtype=np.float32)
         else:
-            combined_audio = self.append_live_mic_audio(existing_audio, incoming_audio)
-            if existing_audio.size == 0 and previous_stream_total_samples == 0:
-                stream_total_samples = int(incoming_audio.shape[0])
-            else:
-                stream_total_samples = previous_stream_total_samples + int(incoming_audio.shape[0])
+            full_audio = self.append_live_mic_audio(existing_full_audio, incoming_audio)
             if stream_mode == self.LIVE_MIC_STREAM_MODE_UNKNOWN:
                 stream_mode = self.LIVE_MIC_STREAM_MODE_DELTA
 
         combined_audio, _ = self.trim_live_mic_audio(
-            combined_audio,
+            full_audio,
             sample_rate,
             self.LIVE_MIC_MAX_BUFFER_SECONDS,
         )
         state["audio"] = combined_audio
+        state["full_audio"] = full_audio
         state["sample_rate"] = sample_rate
         state["stream_mode"] = stream_mode
-        state["stream_total_samples"] = stream_total_samples
+        state["stream_total_samples"] = int(full_audio.shape[0]) if full_audio.size else 0
 
         preview_total_samples = int(combined_audio.shape[0]) if combined_audio.size else 0
+        stream_total_samples = int(full_audio.shape[0]) if full_audio.size else 0
         captured_seconds = (
             float(stream_total_samples) / float(sample_rate)
             if sample_rate and stream_total_samples

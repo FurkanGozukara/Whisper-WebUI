@@ -75,6 +75,8 @@ class BaseTranscriptionPipeline(ABC):
                    progress: gr.Progress = gr.Progress(),
                    progress_callback: Optional[Callable] = None,
                    *whisper_params,
+                   log_console: bool = True,
+                   log_model_banner: bool = True,
                    ):
         """Inference whisper model to transcribe"""
         pass
@@ -664,7 +666,9 @@ class BaseTranscriptionPipeline(ABC):
             audio_to_transcribe,
             gr.Progress(),
             None,
-            *params.whisper.to_list()
+            *params.whisper.to_list(),
+            log_console=True,
+            log_model_banner=False,
         )
 
         if speech_chunks:

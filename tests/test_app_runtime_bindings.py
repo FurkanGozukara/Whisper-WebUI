@@ -328,6 +328,47 @@ def test_prepare_live_mic_capture_for_generation_stages_named_wav(tmp_path, monk
     Path(capture_update["path"]).unlink(missing_ok=True)
 
 
+def test_stage_live_mic_audio_prefers_longer_accumulated_stream_over_short_stop_payload(tmp_path, monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+
+    monkeypatch.setattr(app_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        app_module.App,
+        "build_mic_output_basename",
+        staticmethod(lambda prefix, timestamp=None: f"{prefix}_2026_04_15_10_11_12"),
+    )
+
+    staged_path, captured_seconds, fallback_message = app_instance.stage_live_mic_audio(
+        (16000, np.ones(16000, dtype=np.float32)),
+        {
+            "sample_rate": 16000,
+            "full_audio": np.ones(160000, dtype=np.float32),
+            "audio": np.ones(32000, dtype=np.float32),
+        },
+    )
+
+    assert staged_path.endswith("live_record_2026_04_15_10_11_12.wav")
+    assert Path(staged_path).exists()
+    assert captured_seconds == pytest.approx(10.0)
+    assert "shorter" in fallback_message
+    Path(staged_path).unlink(missing_ok=True)
+
+
+def test_persist_staged_mic_audio_output_copies_recording_into_outputs(tmp_path, monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+    app_instance.args = type("Args", (), {"output_dir": str(tmp_path / "outputs")})()
+
+    staged_audio = tmp_path / "live_record_2026_04_15_10_11_12.wav"
+    staged_audio.write_bytes(b"wave")
+
+    persisted_path = app_instance.persist_staged_mic_audio_output(str(staged_audio))
+
+    assert Path(persisted_path) == (tmp_path / "outputs" / staged_audio.name)
+    assert Path(persisted_path).read_bytes() == b"wave"
+
+
 def test_refresh_record_mic_ready_state_reflects_attached_audio(tmp_path, monkeypatch):
     app_module = load_app_module(monkeypatch)
 

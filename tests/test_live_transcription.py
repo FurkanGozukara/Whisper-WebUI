@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import types
 import gradio as gr
+import numpy as np
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -87,10 +88,24 @@ if "modules.utils.youtube_manager" not in sys.modules:
     fake_youtube_manager.get_ytdata = lambda url: types.SimpleNamespace(title="Video")
     fake_youtube_manager.get_ytaudio = lambda _yt: ""
     fake_youtube_manager.get_latest_channel_videos = lambda url, limit=100: []
+    fake_youtube_manager.get_ytmetas = lambda url: (None, "", "")
     sys.modules["modules.utils.youtube_manager"] = fake_youtube_manager
 
 if "modules.utils.audio_manager" not in sys.modules:
     fake_audio_manager = types.ModuleType("modules.utils.audio_manager")
+    def _coerce_audio_input_path(audio):
+        if audio is None:
+            return None
+        if isinstance(audio, str):
+            audio = audio.strip()
+            return audio or None
+        if isinstance(audio, dict):
+            value = audio.get("path") or audio.get("name")
+            if isinstance(value, str):
+                value = value.strip()
+                return value or None
+        return None
+    fake_audio_manager.coerce_audio_input_path = _coerce_audio_input_path
     fake_audio_manager.validate_audio = lambda audio: audio
     sys.modules["modules.utils.audio_manager"] = fake_audio_manager
 
@@ -99,6 +114,7 @@ if "modules.utils.files_manager" not in sys.modules:
     fake_files_manager.get_media_files = lambda *args, **kwargs: []
     fake_files_manager.format_gradio_files = lambda files: files
     fake_files_manager.read_file = lambda file_path: Path(file_path).read_text(encoding="utf-8")
+    fake_files_manager.load_yaml = lambda *args, **kwargs: {}
     sys.modules["modules.utils.files_manager"] = fake_files_manager
 
 if "gradio_i18n" not in sys.modules:
@@ -145,8 +161,12 @@ class DummyLivePipeline(BaseTranscriptionPipeline):
         self.output_dir = str(output_dir)
         self.model = None
         self.device = "cpu"
+        self.last_log_console = None
+        self.last_log_model_banner = None
 
-    def transcribe(self, audio, progress=None, progress_callback=None, *whisper_params):
+    def transcribe(self, audio, progress=None, progress_callback=None, *whisper_params, log_console=True, log_model_banner=True):
+        self.last_log_console = log_console
+        self.last_log_model_banner = log_model_banner
         return [], 0.0
 
     def update_model(self, model_size, compute_type, progress=None):
@@ -263,6 +283,25 @@ def test_find_existing_outputs_distinguishes_main_srt_from_plain_companion(tmp_p
         "srt": [str(main_srt)],
         "srt_noword_timestaps": [str(no_word_srt)],
     }
+
+
+def test_transcribe_live_preview_disables_console_logging(tmp_path):
+    pipeline = DummyLivePipeline(output_dir=tmp_path)
+    pipeline.vad = types.SimpleNamespace(
+        run=lambda **kwargs: (kwargs["audio"], None),
+        restore_speech_timestamps=lambda segments, speech_chunks: segments,
+    )
+    pipeline.validate_gradio_values = lambda params: params
+
+    pipeline.transcribe_live_preview(
+        np.ones(32000, dtype=np.float32),
+        *TranscriptionPipelineParams(
+            whisper=WhisperParams(),
+        ).to_list(),
+    )
+
+    assert pipeline.last_log_console is True
+    assert pipeline.last_log_model_banner is False
 
 
 def test_live_transcription_writes_plain_srt_companion_when_word_timestamps_enabled(monkeypatch, tmp_path):

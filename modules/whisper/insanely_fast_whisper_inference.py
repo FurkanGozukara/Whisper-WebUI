@@ -42,6 +42,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
                    progress: gr.Progress = gr.Progress(),
                    progress_callback: Optional[Callable] = None,
                    *whisper_params,
+                   log_console: bool = True,
+                   log_model_banner: bool = True,
                    ) -> Tuple[List[Segment], float]:
         """
         transcribe method for faster-whisper.
