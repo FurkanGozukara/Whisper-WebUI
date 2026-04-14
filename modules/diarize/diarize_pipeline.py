@@ -9,7 +9,7 @@ import huggingface_hub
 
 from modules.whisper.data_classes import *
 from modules.utils.paths import DIARIZATION_MODELS_DIR
-from modules.utils.torch_compat import enable_torchaudio_2_9_compat
+from modules.utils.torch_compat import enable_torchaudio_2_9_compat, torch_load_safe_globals
 from modules.diarize.audio_loader import load_audio, SAMPLE_RATE
 
 enable_torchaudio_2_9_compat()
@@ -132,11 +132,12 @@ class DiarizationPipeline:
             subfolder=DEFAULT_DIARIZATION_SUBFOLDER,
         )
         pipeline_config_path = os.path.join(pipeline_dir, "config.yaml")
-        self.model = Pipeline.from_pretrained(
-            pipeline_config_path,
-            use_auth_token=use_auth_token,
-            cache_dir=cache_dir
-        ).to(device)
+        with torch_load_safe_globals():
+            self.model = Pipeline.from_pretrained(
+                pipeline_config_path,
+                use_auth_token=use_auth_token,
+                cache_dir=cache_dir
+            ).to(device)
 
     def __call__(self, audio: Union[str, np.ndarray], min_speakers=None, max_speakers=None):
         if isinstance(audio, str):

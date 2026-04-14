@@ -48,6 +48,34 @@ def _get_torchversion_cls() -> Optional[Type[object]]:
         return None
 
 
+def _get_pyannote_safe_globals() -> list[Type[object]]:
+    """
+    Best-effort lookup for lightweight pyannote task metadata classes found in
+    offline diarization checkpoints.
+    """
+    try:
+        enable_torchaudio_2_9_compat()
+        from pyannote.audio.core.task import Problem, Resolution, Specifications
+
+        return [Problem, Specifications, Resolution]
+    except Exception:
+        return []
+
+
+def _get_weights_only_safe_globals() -> list[Type[object]]:
+    """Collect known-safe globals required by bundled checkpoints."""
+    safe_globals: list[Type[object]] = []
+
+    torchversion_cls = _get_torchversion_cls()
+    if torchversion_cls is not None:
+        safe_globals.append(torchversion_cls)
+
+    safe_globals.extend(_get_pyannote_safe_globals())
+
+    # Preserve insertion order while removing duplicates.
+    return list(dict.fromkeys(safe_globals))
+
+
 def enable_torch_2_6_weights_only_compat() -> None:
     """
     Globally allowlist known-safe globals needed to load common checkpoints under
@@ -61,12 +89,12 @@ def enable_torch_2_6_weights_only_compat() -> None:
         if add_safe_globals is None:
             return
 
-        torchversion_cls = _get_torchversion_cls()
-        if torchversion_cls is None:
+        safe_globals = _get_weights_only_safe_globals()
+        if not safe_globals:
             return
 
         # Idempotent in practice; safe to call multiple times.
-        add_safe_globals([torchversion_cls])
+        add_safe_globals(safe_globals)
     except Exception:
         # Best-effort: never crash the app just because compat patching failed.
         return
@@ -85,18 +113,19 @@ def torch_load_safe_globals() -> Iterator[None]:
 
         serialization = getattr(torch, "serialization", None)
         safe_globals_cm = getattr(serialization, "safe_globals", None)
-        torchversion_cls = _get_torchversion_cls()
-
-        if safe_globals_cm is None or torchversion_cls is None:
-            # Fallback to a global patch (or a no-op on older torch versions).
-            enable_torch_2_6_weights_only_compat()
-            yield
-            return
-
-        with safe_globals_cm([torchversion_cls]):
-            yield
     except Exception:
         # Best-effort: do not block execution if torch isn't available for some reason.
+        yield
+        return
+
+    safe_globals = _get_weights_only_safe_globals()
+    if safe_globals_cm is None or not safe_globals:
+        # Fallback to a global patch (or a no-op on older torch versions).
+        enable_torch_2_6_weights_only_compat()
+        yield
+        return
+
+    with safe_globals_cm(safe_globals):
         yield
 
 
