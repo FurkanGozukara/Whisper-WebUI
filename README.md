@@ -4,6 +4,28 @@
 
 > https://www.patreon.com/posts/145395299
 
+## 14 April 2026 - Version 7.0
+
+- Now auto downloads Diarization files and thus you don't need to enter Hugging Face token and get permission
+
+- Now you can copy paste any YouTube link and generate subtitles
+
+  - This was broken and now fixed
+
+  - It will save generated files with same name as the video title
+
+- Now you can batch generate subtitles for YouTube video channels
+
+- Paste the video channel, enable batch and it will generate subtitles for every video
+
+  - Set how many videos you want (scans latest ones)
+
+  - You may get rate limited by YouTube
+
+- For update / install get the latest zip file, overwrite older files and run Windows_Install_Update.bat
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/023176ee-146f-4886-b92c-07a7904435eb" />
+
 ## 8 April 2026 - Version 5.0 
 
 - This is a massive update with so many new features
