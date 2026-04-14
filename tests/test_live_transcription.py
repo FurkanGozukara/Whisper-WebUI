@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 import sys
 import types
+import gradio as gr
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -85,6 +86,7 @@ if "modules.utils.youtube_manager" not in sys.modules:
     fake_youtube_manager = types.ModuleType("modules.utils.youtube_manager")
     fake_youtube_manager.get_ytdata = lambda url: types.SimpleNamespace(title="Video")
     fake_youtube_manager.get_ytaudio = lambda _yt: ""
+    fake_youtube_manager.get_latest_channel_videos = lambda url, limit=100: []
     sys.modules["modules.utils.youtube_manager"] = fake_youtube_manager
 
 if "modules.utils.audio_manager" not in sys.modules:
@@ -311,3 +313,68 @@ def test_live_transcription_writes_plain_srt_companion_when_word_timestamps_enab
         str(tmp_path / "clip.srt"),
         str(tmp_path / "clip_noword_timestaps.srt"),
     ]
+
+
+def test_transcribe_youtube_channel_batch_uses_video_titles(monkeypatch, tmp_path):
+    generated_names = []
+    audio_paths = []
+
+    videos = [
+        types.SimpleNamespace(title="First Video"),
+        types.SimpleNamespace(title="Second Video"),
+        types.SimpleNamespace(title="First Video"),
+    ]
+
+    def fake_get_latest_channel_videos(link, limit):
+        assert link == "https://www.youtube.com/@demo"
+        assert limit == 3
+        return videos
+
+    def fake_get_ytaudio(yt):
+        audio_path = tmp_path / f"{yt.title.replace(' ', '_')}.wav"
+        audio_path.write_bytes(b"fake")
+        audio_paths.append(audio_path)
+        return str(audio_path)
+
+    def fake_generate_file(**kwargs):
+        generated_names.append(kwargs["output_file_name"])
+        output_path = Path(kwargs["output_dir"]) / f"{kwargs['output_file_name']}.{kwargs['output_format'].lower()}"
+        output_path.write_text(kwargs["output_file_name"], encoding="utf-8")
+        return kwargs["output_file_name"], str(output_path)
+
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.get_latest_channel_videos",
+        fake_get_latest_channel_videos,
+    )
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.get_ytaudio",
+        fake_get_ytaudio,
+    )
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.generate_file",
+        fake_generate_file,
+    )
+
+    pipeline = DummyLivePipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(
+        whisper=WhisperParams(word_timestamps=False),
+    ).to_list()
+
+    result_str, output_paths = pipeline.transcribe_youtube(
+        "https://www.youtube.com/@demo",
+        ["SRT"],
+        False,
+        True,
+        3,
+        gr.Progress(),
+        *pipeline_params,
+    )
+
+    assert "Transcribed 3/3 latest channel videos" in result_str
+    assert generated_names == ["First Video", "Second Video", "First Video_2"]
+    assert output_paths == [
+        str(tmp_path / "First Video.srt"),
+        str(tmp_path / "Second Video.srt"),
+        str(tmp_path / "First Video_2.srt"),
+    ]
+    assert all(not path.exists() for path in audio_paths)

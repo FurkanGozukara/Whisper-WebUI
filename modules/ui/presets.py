@@ -216,6 +216,11 @@ def build_default_ui_config(default_params: Optional[dict[str, Any]] = None) -> 
     translation = deepcopy(params.get("translation", {}))
     deepl = deepcopy(translation.get("deepl", {}))
     nllb = deepcopy(translation.get("nllb", {}))
+    youtube_tab = _transcription_tab_defaults(params, include_file_options=False)
+    youtube_tab.update({
+        "mass_transcribe_channel": False,
+        "latest_video_count": 100,
+    })
 
     return {
         "_meta": {
@@ -223,7 +228,7 @@ def build_default_ui_config(default_params: Optional[dict[str, Any]] = None) -> 
             "format": UI_PRESET_FORMAT,
         },
         "file_tab": _transcription_tab_defaults(params, include_file_options=True),
-        "youtube_tab": _transcription_tab_defaults(params, include_file_options=False),
+        "youtube_tab": youtube_tab,
         "mic_tab": _transcription_tab_defaults(params, include_file_options=False),
         "translation_deepl": {
             "api_key": str(deepl.get("api_key", "")),

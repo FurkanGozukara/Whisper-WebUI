@@ -26,7 +26,7 @@ from modules.utils.constants import *
 from modules.utils.logger import get_logger
 from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
-from modules.utils.youtube_manager import get_ytdata, get_ytaudio
+from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio
 from modules.utils.files_manager import get_media_files, format_gradio_files, read_file
 from modules.utils.audio_manager import validate_audio
 from modules.whisper.data_classes import *
@@ -608,9 +608,11 @@ class BaseTranscriptionPipeline(ABC):
                            youtube_link: str,
                            file_format: Union[str, List[str]] = "SRT",
                            add_timestamp: bool = True,
+                           mass_transcribe_channel: bool = False,
+                           latest_video_count: int = 100,
                            progress=gr.Progress(),
                            *pipeline_params,
-                           ) -> Tuple[str, str]:
+                           ) -> Tuple[str, Union[str, List[str]]]:
         """
         Write subtitle file from Youtube
 
@@ -641,9 +643,116 @@ class BaseTranscriptionPipeline(ABC):
                 "highlight_words": True if params.whisper.word_timestamps else False
             }
 
+            if mass_transcribe_channel:
+                requested_count = max(1, min(9999, int(latest_video_count or 100)))
+                progress(0, desc=f"Loading latest {requested_count} channel videos..")
+                videos = get_latest_channel_videos(youtube_link, requested_count)
+                if not videos:
+                    raise ValueError("No videos were found for the provided YouTube channel.")
+
+                all_paths: List[str] = []
+                total_time = 0.0
+                successful_titles: List[str] = []
+                failed_titles: List[str] = []
+                used_output_names: dict[str, int] = {}
+                total_videos = len(videos)
+
+                for index, yt in enumerate(videos, start=1):
+                    video_title = getattr(yt, "title", None) or f"Video {index}"
+                    progress((index - 1) / total_videos, desc=f"Transcribing {index}/{total_videos}: {video_title}")
+                    try:
+                        output_file_name = self._unique_output_file_name(
+                            safe_filename(video_title),
+                            used_output_names,
+                        )
+                        _, file_paths, time_for_task = self._transcribe_single_youtube_video(
+                            yt=yt,
+                            file_formats=file_formats,
+                            add_timestamp=add_timestamp,
+                            progress=progress,
+                            pipeline_params=pipeline_params,
+                            writer_options=writer_options,
+                            output_file_name=output_file_name,
+                        )
+                        total_time += time_for_task
+                        all_paths.extend(file_paths)
+                        successful_titles.append(video_title)
+                    except Exception as exc:
+                        failed_titles.append(f"{video_title}: {exc}")
+
+                progress(1, desc="Completed!")
+
+                success_count = len(successful_titles)
+                if success_count == 0:
+                    raise RuntimeError(
+                        "No channel videos were transcribed successfully.\n"
+                        + "\n".join(failed_titles[:20])
+                    )
+
+                result_lines = [
+                    (
+                        f"Done in {self.format_time(total_time)}! Transcribed "
+                        f"{success_count}/{total_videos} latest channel videos. "
+                        "Subtitle files are in the outputs folder."
+                    ),
+                    "",
+                    "Completed:",
+                ]
+                completed_preview = successful_titles[:20]
+                result_lines.extend(f"- {title}" for title in completed_preview)
+                if success_count > len(completed_preview):
+                    result_lines.append(f"- ... and {success_count - len(completed_preview)} more")
+                if failed_titles:
+                    failed_preview = failed_titles[:20]
+                    result_lines.extend(["", "Failed:"])
+                    result_lines.extend(f"- {item}" for item in failed_preview)
+                    if len(failed_titles) > len(failed_preview):
+                        result_lines.append(f"- ... and {len(failed_titles) - len(failed_preview)} more")
+
+                result_file_path = all_paths[0] if len(all_paths) == 1 else all_paths
+                return "\n".join(result_lines), result_file_path
+
             progress(0, desc="Loading Audio from Youtube..")
             yt = get_ytdata(youtube_link)
+            subtitle_preview, file_paths, time_for_task = self._transcribe_single_youtube_video(
+                yt=yt,
+                file_formats=file_formats,
+                add_timestamp=add_timestamp,
+                progress=progress,
+                pipeline_params=pipeline_params,
+                writer_options=writer_options,
+                output_file_name=safe_filename(yt.title),
+            )
+            progress(1, desc="Completed!")
+
+            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
+            result_file_path = file_paths[0] if len(file_paths) == 1 else file_paths
+            return result_str, result_file_path
+
+        except Exception as e:
+            raise RuntimeError(f"Error transcribing youtube: {e}") from e
+
+    @staticmethod
+    def _unique_output_file_name(base_name: str, used_output_names: dict[str, int]) -> str:
+        count = used_output_names.get(base_name, 0) + 1
+        used_output_names[base_name] = count
+        return base_name if count == 1 else f"{base_name}_{count}"
+
+    def _transcribe_single_youtube_video(
+        self,
+        yt,
+        file_formats: List[str],
+        add_timestamp: bool,
+        progress,
+        pipeline_params,
+        writer_options: Optional[dict],
+        output_file_name: str,
+    ) -> Tuple[str, List[str], float]:
+        audio = None
+        try:
             audio = get_ytaudio(yt)
+            if not audio:
+                raise RuntimeError("Failed to download or convert the YouTube audio stream.")
 
             transcribed_segments, time_for_task = self.run(
                 audio,
@@ -654,27 +763,17 @@ class BaseTranscriptionPipeline(ABC):
                 *pipeline_params,
             )
 
-            progress(1, desc="Completed!")
-
-            file_name = safe_filename(yt.title)
-            output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+            output_specs = self._build_output_specs(output_file_name, file_formats, writer_options)
             subtitle_preview, file_paths = self._write_output_files(
                 output_specs=output_specs,
                 output_dir=self.output_dir,
                 result=transcribed_segments,
                 add_timestamp=add_timestamp,
             )
-
-            result_str = f"Done in {self.format_time(time_for_task)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
-
-            if os.path.exists(audio):
+            return subtitle_preview, file_paths, time_for_task
+        finally:
+            if audio and os.path.exists(audio):
                 os.remove(audio)
-
-            result_file_path = file_paths[0] if len(file_paths) == 1 else file_paths
-            return result_str, result_file_path
-
-        except Exception as e:
-            raise RuntimeError(f"Error transcribing youtube: {e}") from e
 
     @staticmethod
     def normalize_file_formats(file_formats: Union[str, List[str], None]) -> List[str]:

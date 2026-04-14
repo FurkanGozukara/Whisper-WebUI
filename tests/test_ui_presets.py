@@ -46,6 +46,10 @@ def test_ui_presets_round_trip_and_backfill_defaults(tmp_path, monkeypatch):
             "batch_processing": True,
             "input_folder": "D:/audio",
         },
+        "youtube_tab": {
+            "mass_transcribe_channel": True,
+            "latest_video_count": 321,
+        },
         "translation_deepl": {
             "api_key": "secret",
         },
@@ -61,6 +65,8 @@ def test_ui_presets_round_trip_and_backfill_defaults(tmp_path, monkeypatch):
     assert loaded_cfg["file_tab"]["input_folder"] == "D:/audio"
     assert "whisper" in loaded_cfg["file_tab"]
     assert "youtube_tab" in loaded_cfg
+    assert loaded_cfg["youtube_tab"]["mass_transcribe_channel"] is True
+    assert loaded_cfg["youtube_tab"]["latest_video_count"] == 321
     assert loaded_cfg["translation_deepl"]["api_key"] == "secret"
 
     assert delete_ui_preset(saved_name) is True
@@ -75,6 +81,8 @@ def test_merge_ui_config_restores_missing_sections():
     assert merged["mic_tab"] == defaults["mic_tab"]
     assert merged["file_tab"]["whisper"]["model_size"] == defaults["file_tab"]["whisper"]["model_size"]
     assert merged["file_tab"]["whisper"]["lang"] == "english"
+    assert defaults["youtube_tab"]["mass_transcribe_channel"] is False
+    assert defaults["youtube_tab"]["latest_video_count"] == 100
 
 
 def test_whisper_lang_is_normalized_for_ui_and_runtime():

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import gradio as gr
 from argparse import Namespace
 from collections import deque
 from dataclasses import dataclass
@@ -240,6 +241,12 @@ class SubprocessWhisperProxy:
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
         return bool(getattr(params.whisper, "start_as_subprocess", True))
 
+    @staticmethod
+    def _split_progress_and_pipeline_args(extra_args):
+        if extra_args and isinstance(extra_args[0], gr.Progress):
+            return extra_args[0], list(extra_args[1:])
+        return gr.Progress(), list(extra_args)
+
     def cancel_active_generation(self) -> bool:
         with self._active_lock:
             handle = self._active_handle
@@ -334,14 +341,18 @@ class SubprocessWhisperProxy:
         youtube_link: str,
         file_format="SRT",
         add_timestamp=True,
-        progress=None,
-        *pipeline_params,
+        mass_transcribe_channel=False,
+        latest_video_count=100,
+        *extra_args,
     ):
+        progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
         if not self._use_subprocess(pipeline_params):
             return self._get_local_inferencer().transcribe_youtube(
                 youtube_link,
                 file_format,
                 add_timestamp,
+                mass_transcribe_channel,
+                latest_video_count,
                 progress,
                 *pipeline_params,
             )
@@ -352,6 +363,8 @@ class SubprocessWhisperProxy:
                 "youtube_link": youtube_link,
                 "file_format": file_format,
                 "add_timestamp": add_timestamp,
+                "mass_transcribe_channel": mass_transcribe_channel,
+                "latest_video_count": latest_video_count,
                 "pipeline_params": list(pipeline_params),
             },
         )
@@ -361,9 +374,9 @@ class SubprocessWhisperProxy:
         mic_audio: str,
         file_format="SRT",
         add_timestamp=True,
-        progress=None,
-        *pipeline_params,
+        *extra_args,
     ):
+        progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
         if not self._use_subprocess(pipeline_params):
             return self._get_local_inferencer().transcribe_mic(
                 mic_audio,

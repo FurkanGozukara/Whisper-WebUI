@@ -59,7 +59,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V6.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V7.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -505,6 +505,38 @@ class App:
         ):
             yield live_output, result_str, self.prepare_download_output(collected_paths)
 
+    def transcribe_youtube_with_progress(self,
+                                         youtube_link: str,
+                                         file_formats="SRT",
+                                         add_timestamp=True,
+                                         mass_transcribe_channel=False,
+                                         latest_video_count=100,
+                                         progress=gr.Progress(),
+                                         *pipeline_params):
+        return self.whisper_inf.transcribe_youtube(
+            youtube_link,
+            file_formats,
+            add_timestamp,
+            mass_transcribe_channel,
+            latest_video_count,
+            progress,
+            *pipeline_params,
+        )
+
+    def transcribe_mic_with_progress(self,
+                                     mic_audio: str,
+                                     file_formats="SRT",
+                                     add_timestamp=True,
+                                     progress=gr.Progress(),
+                                     *pipeline_params):
+        return self.whisper_inf.transcribe_mic(
+            mic_audio,
+            file_formats,
+            add_timestamp,
+            progress,
+            *pipeline_params,
+        )
+
     def cancel_active_generation(self, confirmed: bool):
         if not confirmed:
             return
@@ -927,6 +959,20 @@ class App:
                     with gr.TabItem(_("Youtube")):
                         with gr.Row():
                             tb_youtubelink = gr.Textbox(label=_("Youtube Link"))
+                        with gr.Row():
+                            cb_mass_transcribe_channel = gr.Checkbox(
+                                label=_("Mass Transcribe Latest Channel Videos"),
+                                value=youtube_defaults.get("mass_transcribe_channel", False),
+                                info=_("Use a channel link to transcribe the latest N videos from that channel."),
+                            )
+                            sl_latest_video_count = gr.Slider(
+                                label=_("Latest Videos To Scan"),
+                                value=youtube_defaults.get("latest_video_count", 100),
+                                minimum=1,
+                                maximum=9999,
+                                step=1,
+                                info=_("How many latest channel videos to process when mass transcribe is enabled."),
+                            )
                         with gr.Row(equal_height=True):
                             with gr.Column():
                                 img_thumbnail = gr.Image(label=_("Youtube Thumbnail"))
@@ -935,6 +981,10 @@ class App:
                                 tb_description = gr.Textbox(label=_("Youtube Description"), max_lines=15)
 
                         youtube_transcription_ui = self.create_pipeline_inputs(youtube_defaults)
+                        youtube_transcription_ui["extra_components"] = [
+                            cb_mass_transcribe_channel,
+                            sl_latest_video_count,
+                        ]
 
                         with gr.Row():
                             gr.Textbox(
@@ -954,9 +1004,11 @@ class App:
                             tb_youtubelink,
                             youtube_transcription_ui["file_formats"],
                             youtube_transcription_ui["add_timestamp"],
+                            cb_mass_transcribe_channel,
+                            sl_latest_video_count,
                         ]
                         youtube_run_event = youtube_transcription_ui["run_button"].click(
-                            fn=self.whisper_inf.transcribe_youtube,
+                            fn=self.transcribe_youtube_with_progress,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
                             outputs=[youtube_output, youtube_outputs],
                         )
@@ -1009,7 +1061,7 @@ class App:
                             mic_transcription_ui["add_timestamp"],
                         ]
                         mic_run_event = mic_transcription_ui["run_button"].click(
-                            fn=self.whisper_inf.transcribe_mic,
+                            fn=self.transcribe_mic_with_progress,
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_output, mic_outputs],
                         )
@@ -1186,7 +1238,7 @@ class App:
                         return [_serialize_ui_value(item) for item in value]
                     return _normalize_choice(value)
 
-                def _transcription_config_paths(section_key: str, include_file_options: bool = False):
+                def _transcription_config_paths(section_key: str, include_file_options: bool = False, extra_paths=None):
                     paths = []
                     if include_file_options:
                         paths.extend([
@@ -1197,6 +1249,8 @@ class App:
                             (section_key, "output_folder"),
                         ])
                     paths.extend([(section_key, "file_formats"), (section_key, "add_timestamp")])
+                    if extra_paths:
+                        paths.extend(extra_paths)
                     for field in WhisperParams.__annotations__.keys():
                         paths.append((section_key, "whisper", field))
                     for field in VadParams.__annotations__.keys():
@@ -1218,12 +1272,19 @@ class App:
                             tb_output_folder,
                         ])
                     components.extend([transcription_ui["file_formats"], transcription_ui["add_timestamp"]])
+                    components.extend(transcription_ui.get("extra_components", []))
                     components.extend(transcription_ui["pipeline"])
                     return components
 
                 config_keys = (
                     _transcription_config_paths("file_tab", include_file_options=True)
-                    + _transcription_config_paths("youtube_tab")
+                    + _transcription_config_paths(
+                        "youtube_tab",
+                        extra_paths=[
+                            ("youtube_tab", "mass_transcribe_channel"),
+                            ("youtube_tab", "latest_video_count"),
+                        ],
+                    )
                     + _transcription_config_paths("mic_tab")
                     + [
                         ("translation_deepl", "api_key"),

@@ -144,6 +144,8 @@ def transcribe_youtube_result(request: Dict[str, Any]) -> Any:
         request["youtube_link"],
         request.get("file_format", "SRT"),
         request.get("add_timestamp", True),
+        request.get("mass_transcribe_channel", False),
+        request.get("latest_video_count", 100),
         gr.Progress(),
         *request.get("pipeline_params", []),
     )
