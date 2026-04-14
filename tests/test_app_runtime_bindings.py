@@ -91,6 +91,7 @@ def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch):
     app_module = load_app_module(monkeypatch)
     app_instance = app_module.App.__new__(app_module.App)
     captured = {}
+    expected_basename = "mic_record_2026_04_15_10_11_12"
 
     class DummyWhisperInference:
         def transcribe_mic_with_live_output(self, *args):
@@ -99,6 +100,11 @@ def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch):
 
     app_instance.whisper_inf = DummyWhisperInference()
     app_instance.prepare_files_output = lambda paths: {"visible": True, "value": paths}
+    monkeypatch.setattr(
+        app_module.App,
+        "build_mic_output_basename",
+        staticmethod(lambda prefix, timestamp=None: f"{prefix}_2026_04_15_10_11_12"),
+    )
 
     ui_inputs = [
         "tests/jfk.wav",
@@ -127,7 +133,8 @@ def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch):
     assert live_text == "live text"
     assert result_text == "done"
     assert files_update == {"visible": True, "value": ["tests/test.srt"]}
-    assert captured["args"][:3] == tuple(ui_inputs[:3])
+    assert Path(captured["args"][0]).name == f"{expected_basename}.wav"
+    assert captured["args"][1:3] == tuple(ui_inputs[1:3])
     assert isinstance(captured["args"][3], gr.Progress)
     assert captured["args"][4:] == tuple(ui_inputs[3:])
 
@@ -235,6 +242,7 @@ def test_transcribe_live_mic_chunk_updates_transcript_once_buffer_is_ready(monke
     assert transcript == "preview transcript"
     assert updated_state["transcript"] == "preview transcript"
     assert updated_state["last_processed_samples"] == 32000
+    assert updated_state["stream_total_samples"] == 32000
     assert captured["audio"].shape == (32000,)
     assert captured["pipeline_params"] == ("large-v3", "english")
     assert "Preview updated." in status
@@ -254,33 +262,70 @@ def test_trim_live_mic_audio_caps_buffer_to_recent_window(monkeypatch):
     assert np.array_equal(trimmed_audio, np.arange(80000, 320000, dtype=np.float32))
 
 
-def test_transcribe_live_mic_chunk_clamps_processed_samples_after_trim(monkeypatch):
+def test_transcribe_live_mic_chunk_keeps_updating_for_cumulative_stream_after_trim(monkeypatch):
     app_module = load_app_module(monkeypatch)
     app_instance = app_module.App.__new__(app_module.App)
+    captured = {}
 
     class DummyWhisperInference:
         def transcribe_live_preview(self, audio, *pipeline_params):
+            captured["audio"] = audio
+            captured["pipeline_params"] = pipeline_params
             return "preview transcript"
 
     app_instance.whisper_inf = DummyWhisperInference()
     state = {
-        "audio": np.arange(0, 240000, dtype=np.float32),
+        "audio": np.arange(16000, 256000, dtype=np.float32),
         "sample_rate": 16000,
-        "last_processed_samples": 240000,
+        "last_processed_samples": 256000,
         "transcript": "older preview",
+        "stream_total_samples": 256000,
+        "stream_mode": app_module.App.LIVE_MIC_STREAM_MODE_CUMULATIVE,
     }
 
     updated_state, transcript, status = app_instance.transcribe_live_mic_chunk(
-        (16000, np.arange(240000, 272000, dtype=np.float32)),
+        (16000, np.arange(0, 288000, dtype=np.float32)),
         True,
         state,
         "large-v3",
     )
 
-    assert transcript == "older preview"
+    assert transcript == "preview transcript"
     assert updated_state["audio"].shape == (240000,)
-    assert updated_state["last_processed_samples"] == 240000
-    assert "Listening..." in status
+    assert updated_state["last_processed_samples"] == 288000
+    assert updated_state["stream_total_samples"] == 288000
+    assert captured["audio"].shape == (240000,)
+    assert captured["pipeline_params"] == ("large-v3",)
+    assert "Preview updated." in status
+
+
+def test_prepare_live_mic_capture_for_generation_stages_named_wav(tmp_path, monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+
+    monkeypatch.setattr(app_module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        app_module.App,
+        "build_mic_output_basename",
+        staticmethod(lambda prefix, timestamp=None: f"{prefix}_2026_04_15_10_11_12"),
+    )
+
+    result = app_instance.prepare_live_mic_capture_for_generation(
+        True,
+        app_module.App.create_live_mic_state(),
+        (16000, np.ones(32000, dtype=np.float32)),
+    )
+
+    _, _, status, progress_text, _, files_update, capture_update, _, record_status, run_button_update = result
+
+    assert "live_record_2026_04_15_10_11_12" in status
+    assert "live_record_2026_04_15_10_11_12" in progress_text
+    assert capture_update["path"].endswith("live_record_2026_04_15_10_11_12.wav")
+    assert Path(capture_update["path"]).exists()
+    assert files_update["visible"] is False
+    assert record_status == app_module.App.build_record_mic_idle_status()
+    assert run_button_update["interactive"] is False
+    Path(capture_update["path"]).unlink(missing_ok=True)
 
 
 def test_refresh_record_mic_ready_state_reflects_attached_audio(tmp_path, monkeypatch):

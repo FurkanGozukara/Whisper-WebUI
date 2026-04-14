@@ -593,7 +593,7 @@ class BaseTranscriptionPipeline(ABC):
             )
             progress(1, desc="Completed!")
 
-            file_name = "Mic"
+            file_name = safe_filename(os.path.splitext(os.path.basename(mic_audio_path))[0]) or "Mic"
             output_specs = self._build_output_specs(file_name, file_formats, writer_options)
             subtitle_preview, file_paths = self._write_output_files(
                 output_specs=output_specs,
@@ -802,7 +802,8 @@ class BaseTranscriptionPipeline(ABC):
                         f"⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})",
                     )
 
-            output_specs = self._build_output_specs("Mic", file_formats, writer_options)
+            file_name = safe_filename(os.path.splitext(os.path.basename(mic_audio_path))[0]) or "Mic"
+            output_specs = self._build_output_specs(file_name, file_formats, writer_options)
             _, generated_paths = self._write_output_files(
                 output_specs=output_specs,
                 output_dir=self.output_dir,
