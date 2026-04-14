@@ -4,6 +4,27 @@
 
 > https://www.patreon.com/posts/145395299
 
+## 15 April 2026 - Version 8.0
+
+- Diarization had some error and this is fixed
+
+- Mic tab completey remade and now both live transcription from microphone and offline transcription from microphone working
+
+  - Live transcription quality is not that great
+
+  - Both live transcription and offline transcription recordings from microphone will be saved in outputs folder
+
+  - Live transcription will auto run but for offline transcription first record voice with microphone and then click Generate Subtitles button
+
+- Don't forget to select your working microphone and give permission for app to use your microphone from your browser
+
+- For update / install get the latest zip file, overwrite older files and run Windows_Install_Update.bat
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/961d6b7a-fd78-434c-977a-6785d12148a8" />
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/bf4e6bf1-af92-47a7-9df0-b1782bb0bd63" />
+
+
 ## 14 April 2026 - Version 7.0
 
 - Now auto downloads Diarization files and thus you don't need to enter Hugging Face token and get permission
