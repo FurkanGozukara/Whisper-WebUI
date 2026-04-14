@@ -75,6 +75,7 @@ class App:
     LIVE_MIC_SAMPLE_RATE = 16000
     LIVE_MIC_MIN_PREVIEW_SECONDS = 2.0
     LIVE_MIC_REFRESH_SECONDS = 2.0
+    LIVE_MIC_MAX_BUFFER_SECONDS = 15.0
 
     def __init__(self, args):
         self.args = args
@@ -654,6 +655,17 @@ class App:
 
         return np.ascontiguousarray(np.concatenate([existing_audio, incoming_audio]), dtype=np.float32)
 
+    @staticmethod
+    def trim_live_mic_audio(audio: np.ndarray, sample_rate: int, max_seconds: float):
+        if audio.size == 0 or sample_rate <= 0 or max_seconds <= 0:
+            return np.ascontiguousarray(audio, dtype=np.float32), False
+
+        max_samples = int(sample_rate * max_seconds)
+        if max_samples <= 0 or audio.shape[0] <= max_samples:
+            return np.ascontiguousarray(audio, dtype=np.float32), False
+
+        return np.ascontiguousarray(audio[-max_samples:], dtype=np.float32), True
+
     @classmethod
     def build_live_mic_status(cls, auto_live_enabled: bool, captured_seconds: float = 0.0, suffix: str = ""):
         if not auto_live_enabled:
@@ -661,7 +673,8 @@ class App:
 
         base = (
             f"Live auto-transcribe is ON. Recording buffer: {captured_seconds:.1f}s. "
-            f"Preview refresh target: every {cls.LIVE_MIC_REFRESH_SECONDS:.1f}s."
+            f"Preview refresh target: every {cls.LIVE_MIC_REFRESH_SECONDS:.1f}s. "
+            f"Rolling preview window: {cls.LIVE_MIC_MAX_BUFFER_SECONDS:.0f}s."
         )
         if suffix:
             return f"{base} {suffix}"
@@ -738,6 +751,11 @@ class App:
             existing_audio = np.array([], dtype=np.float32)
 
         combined_audio = self.append_live_mic_audio(existing_audio, incoming_audio)
+        combined_audio, trimmed = self.trim_live_mic_audio(
+            combined_audio,
+            sample_rate,
+            self.LIVE_MIC_MAX_BUFFER_SECONDS,
+        )
         state["audio"] = combined_audio
         state["sample_rate"] = sample_rate
 
@@ -747,6 +765,10 @@ class App:
         min_preview_samples = int(sample_rate * self.LIVE_MIC_MIN_PREVIEW_SECONDS)
         refresh_samples = int(sample_rate * self.LIVE_MIC_REFRESH_SECONDS)
         last_processed_samples = int(state.get("last_processed_samples") or 0)
+
+        if trimmed:
+            last_processed_samples = min(last_processed_samples, total_samples)
+            state["last_processed_samples"] = last_processed_samples
 
         if total_samples < min_preview_samples:
             return state, state.get("transcript", ""), self.build_live_mic_status(

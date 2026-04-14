@@ -240,6 +240,49 @@ def test_transcribe_live_mic_chunk_updates_transcript_once_buffer_is_ready(monke
     assert "Preview updated." in status
 
 
+def test_trim_live_mic_audio_caps_buffer_to_recent_window(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+
+    trimmed_audio, trimmed = app_module.App.trim_live_mic_audio(
+        np.arange(0, 320000, dtype=np.float32),
+        sample_rate=16000,
+        max_seconds=15.0,
+    )
+
+    assert trimmed is True
+    assert trimmed_audio.shape == (240000,)
+    assert np.array_equal(trimmed_audio, np.arange(80000, 320000, dtype=np.float32))
+
+
+def test_transcribe_live_mic_chunk_clamps_processed_samples_after_trim(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+
+    class DummyWhisperInference:
+        def transcribe_live_preview(self, audio, *pipeline_params):
+            return "preview transcript"
+
+    app_instance.whisper_inf = DummyWhisperInference()
+    state = {
+        "audio": np.arange(0, 240000, dtype=np.float32),
+        "sample_rate": 16000,
+        "last_processed_samples": 240000,
+        "transcript": "older preview",
+    }
+
+    updated_state, transcript, status = app_instance.transcribe_live_mic_chunk(
+        (16000, np.arange(240000, 272000, dtype=np.float32)),
+        True,
+        state,
+        "large-v3",
+    )
+
+    assert transcript == "older preview"
+    assert updated_state["audio"].shape == (240000,)
+    assert updated_state["last_processed_samples"] == 240000
+    assert "Listening..." in status
+
+
 def test_refresh_record_mic_ready_state_reflects_attached_audio(tmp_path, monkeypatch):
     app_module = load_app_module(monkeypatch)
 
