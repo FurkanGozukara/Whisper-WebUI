@@ -16,6 +16,7 @@ from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
 enable_cuda_runtime_autodiscovery()
 
 import gradio as gr
+import numpy as np
 
 from modules.translation.deepl_api import DeepLAPI
 from modules.runtime.subprocess_client import build_runtime_proxies
@@ -40,6 +41,7 @@ from modules.utils.cli_manager import str2bool
 from modules.utils.files_manager import MEDIA_EXTENSION, is_video, load_yaml
 from modules.utils.i18n import Translate, _
 from modules.utils.logger import get_logger
+from modules.utils.audio_manager import coerce_audio_input_path
 from modules.utils.paths import (
     DEFAULT_PARAMETERS_CONFIG_PATH,
     DIARIZATION_MODELS_DIR,
@@ -70,6 +72,10 @@ BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB = 1.0
 
 
 class App:
+    LIVE_MIC_SAMPLE_RATE = 16000
+    LIVE_MIC_MIN_PREVIEW_SECONDS = 2.0
+    LIVE_MIC_REFRESH_SECONDS = 2.0
+
     def __init__(self, args):
         self.args = args
         self.title = APP_TITLE
@@ -480,6 +486,23 @@ class App:
 
         return gr.update(value=zip_path, visible=True)
 
+    @staticmethod
+    def prepare_files_output(output_paths):
+        if not output_paths:
+            return gr.update(value=None, visible=False)
+
+        valid_paths = []
+        for path in output_paths:
+            if path and os.path.exists(path):
+                normalized = os.path.abspath(str(path))
+                if normalized not in valid_paths:
+                    valid_paths.append(normalized)
+
+        if not valid_paths:
+            return gr.update(value=None, visible=False)
+
+        return gr.update(value=valid_paths, visible=True)
+
     def transcribe_file_with_download(self,
                                       files=None,
                                       batch_mode=False,
@@ -536,6 +559,221 @@ class App:
             progress,
             *pipeline_params,
         )
+
+    def transcribe_mic_with_download(self,
+                                     mic_audio: str,
+                                     file_formats="SRT",
+                                     add_timestamp=True,
+                                     progress=gr.Progress(),
+                                     *pipeline_params):
+        if coerce_audio_input_path(mic_audio) is None:
+            yield (
+                "Recorded microphone audio is not ready yet.",
+                "The microphone recording is still being prepared. Wait until the recorder shows the saved audio player, then click GENERATE SUBTITLE FILE again.",
+                self.prepare_files_output([]),
+            )
+            return
+
+        for live_output, result_str, collected_paths in self.whisper_inf.transcribe_mic_with_live_output(
+            mic_audio,
+            file_formats,
+            add_timestamp,
+            progress,
+            *pipeline_params,
+        ):
+            yield live_output, result_str, self.prepare_files_output(collected_paths)
+
+    @classmethod
+    def create_live_mic_state(cls):
+        return {
+            "audio": np.array([], dtype=np.float32),
+            "sample_rate": cls.LIVE_MIC_SAMPLE_RATE,
+            "last_processed_samples": 0,
+            "transcript": "",
+        }
+
+    @staticmethod
+    def normalize_live_mic_chunk(mic_audio):
+        if mic_audio is None:
+            return None, None
+
+        sample_rate = None
+        audio = None
+
+        if isinstance(mic_audio, (tuple, list)) and len(mic_audio) == 2:
+            sample_rate, audio = mic_audio
+        elif isinstance(mic_audio, dict):
+            sample_rate = mic_audio.get("sample_rate") or mic_audio.get("sr")
+            for key in ("data", "audio", "array"):
+                if key in mic_audio and mic_audio[key] is not None:
+                    audio = mic_audio[key]
+                    break
+        elif isinstance(mic_audio, np.ndarray):
+            audio = mic_audio
+
+        if audio is None:
+            return None, None
+
+        audio = np.asarray(audio)
+        if audio.size == 0:
+            return None, None
+
+        if np.issubdtype(audio.dtype, np.integer):
+            max_value = max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max)
+            audio = audio.astype(np.float32) / float(max_value or 1)
+
+        if audio.ndim > 1:
+            channel_axis = 0 if audio.shape[0] <= audio.shape[-1] else -1
+            audio = audio.mean(axis=channel_axis)
+
+        audio = audio.astype(np.float32)
+
+        return int(sample_rate) if sample_rate else None, np.ascontiguousarray(audio.squeeze(), dtype=np.float32)
+
+    @staticmethod
+    def resample_live_mic_audio(audio: np.ndarray, original_sample_rate: int, target_sample_rate: int):
+        if original_sample_rate <= 0 or original_sample_rate == target_sample_rate or audio.size == 0:
+            return np.ascontiguousarray(audio, dtype=np.float32)
+
+        target_length = max(int(round(audio.shape[0] * float(target_sample_rate) / float(original_sample_rate))), 1)
+        old_positions = np.linspace(0.0, 1.0, num=audio.shape[0], endpoint=False)
+        new_positions = np.linspace(0.0, 1.0, num=target_length, endpoint=False)
+        return np.ascontiguousarray(np.interp(new_positions, old_positions, audio).astype(np.float32))
+
+    @staticmethod
+    def append_live_mic_audio(existing_audio: np.ndarray, incoming_audio: np.ndarray):
+        if existing_audio.size == 0:
+            return np.ascontiguousarray(incoming_audio, dtype=np.float32)
+
+        if incoming_audio.size >= existing_audio.size:
+            try:
+                if np.allclose(incoming_audio[:existing_audio.size], existing_audio, atol=1e-4):
+                    return np.ascontiguousarray(incoming_audio, dtype=np.float32)
+            except Exception:
+                pass
+
+        return np.ascontiguousarray(np.concatenate([existing_audio, incoming_audio]), dtype=np.float32)
+
+    @classmethod
+    def build_live_mic_status(cls, auto_live_enabled: bool, captured_seconds: float = 0.0, suffix: str = ""):
+        if not auto_live_enabled:
+            return "Live auto-transcribe is off. Enable the checkbox to start previewing while recording."
+
+        base = (
+            f"Live auto-transcribe is ON. Recording buffer: {captured_seconds:.1f}s. "
+            f"Preview refresh target: every {cls.LIVE_MIC_REFRESH_SECONDS:.1f}s."
+        )
+        if suffix:
+            return f"{base} {suffix}"
+        return base
+
+    def start_live_mic_recording(self, auto_live_enabled: bool):
+        state = self.create_live_mic_state()
+        if auto_live_enabled:
+            transcript = ""
+            status = self.build_live_mic_status(True, 0.0, "Listening for speech.")
+        else:
+            transcript = ""
+            status = self.build_live_mic_status(False)
+        return state, transcript, status
+
+    def stop_live_mic_recording(self, auto_live_enabled: bool, live_state):
+        state = live_state if isinstance(live_state, dict) else self.create_live_mic_state()
+        audio = state.get("audio")
+        if not isinstance(audio, np.ndarray):
+            audio = np.array([], dtype=np.float32)
+        sample_rate = int(state.get("sample_rate") or self.LIVE_MIC_SAMPLE_RATE)
+        captured_seconds = float(audio.shape[0]) / float(sample_rate) if sample_rate and audio.size else 0.0
+        suffix = "Recording stopped. Preview frozen." if auto_live_enabled else "Recording stopped."
+        return state, state.get("transcript", ""), self.build_live_mic_status(auto_live_enabled, captured_seconds, suffix)
+
+    @staticmethod
+    def begin_record_mic_capture():
+        return (
+            "Recording in progress with the subtitle-generation microphone.",
+            gr.update(interactive=False),
+        )
+
+    @staticmethod
+    def finish_record_mic_capture():
+        return (
+            "Recording stopped. Preparing the recorded audio. Wait for the inline player to appear before generating subtitles.",
+            gr.update(interactive=False),
+        )
+
+    @staticmethod
+    def refresh_record_mic_ready_state(mic_audio):
+        if coerce_audio_input_path(mic_audio) is None:
+            return (
+                "The recorded microphone clip is not ready yet.",
+                gr.update(interactive=False),
+            )
+
+        return (
+            "Recording saved. Click GENERATE SUBTITLE FILE below to create subtitles from it.",
+            gr.update(interactive=True),
+        )
+
+    def transcribe_live_mic_chunk(self, mic_audio, auto_live_enabled: bool, live_state, *pipeline_params):
+        state = live_state if isinstance(live_state, dict) else self.create_live_mic_state()
+
+        if not auto_live_enabled:
+            return state, state.get("transcript", ""), self.build_live_mic_status(False)
+
+        incoming_sample_rate, incoming_audio = self.normalize_live_mic_chunk(mic_audio)
+        if incoming_audio is None:
+            audio = state.get("audio")
+            if not isinstance(audio, np.ndarray):
+                audio = np.array([], dtype=np.float32)
+            captured_seconds = float(audio.shape[0]) / float(state.get("sample_rate") or self.LIVE_MIC_SAMPLE_RATE) if audio.size else 0.0
+            return state, state.get("transcript", ""), self.build_live_mic_status(True, captured_seconds, "Waiting for microphone audio.")
+
+        sample_rate = incoming_sample_rate or self.LIVE_MIC_SAMPLE_RATE
+        if sample_rate != self.LIVE_MIC_SAMPLE_RATE:
+            incoming_audio = self.resample_live_mic_audio(incoming_audio, sample_rate, self.LIVE_MIC_SAMPLE_RATE)
+            sample_rate = self.LIVE_MIC_SAMPLE_RATE
+
+        existing_audio = state.get("audio")
+        if not isinstance(existing_audio, np.ndarray):
+            existing_audio = np.array([], dtype=np.float32)
+
+        combined_audio = self.append_live_mic_audio(existing_audio, incoming_audio)
+        state["audio"] = combined_audio
+        state["sample_rate"] = sample_rate
+
+        total_samples = int(combined_audio.shape[0]) if combined_audio.size else 0
+        captured_seconds = float(total_samples) / float(sample_rate) if sample_rate and total_samples else 0.0
+
+        min_preview_samples = int(sample_rate * self.LIVE_MIC_MIN_PREVIEW_SECONDS)
+        refresh_samples = int(sample_rate * self.LIVE_MIC_REFRESH_SECONDS)
+        last_processed_samples = int(state.get("last_processed_samples") or 0)
+
+        if total_samples < min_preview_samples:
+            return state, state.get("transcript", ""), self.build_live_mic_status(
+                True,
+                captured_seconds,
+                "Collecting enough audio for the first preview.",
+            )
+
+        if state.get("transcript") and total_samples - last_processed_samples < refresh_samples:
+            return state, state.get("transcript", ""), self.build_live_mic_status(
+                True,
+                captured_seconds,
+                "Listening...",
+            )
+
+        try:
+            transcript = self.whisper_inf.transcribe_live_preview(combined_audio, *pipeline_params)
+            state["transcript"] = transcript
+            state["last_processed_samples"] = total_samples
+            suffix = "Preview updated." if transcript else "Speech not detected yet."
+            return state, transcript, self.build_live_mic_status(True, captured_seconds, suffix)
+        except Exception as exc:
+            return state, state.get("transcript", ""), self.build_live_mic_status(
+                True,
+                captured_seconds,
+                f"Live preview error: {type(exc).__name__}: {exc}",
+            )
 
     def cancel_active_generation(self, confirmed: bool):
         if not confirmed:
@@ -1031,24 +1269,79 @@ class App:
                         )
 
                     with gr.TabItem(_("Mic")):
-                        with gr.Row():
-                            mic_input = gr.Microphone(
-                                label=_("Record with Mic"),
-                                type="filepath",
-                                interactive=True,
-                                buttons=["download"],
-                            )
+                        gr.Markdown(
+                            "Use either microphone mode below. "
+                            "The left recorder starts live preview automatically when the checkbox is enabled. "
+                            "The right recorder is for record-then-generate subtitle files."
+                        )
+
+                        live_mic_state = gr.State(self.create_live_mic_state())
+
+                        with gr.Row(equal_height=True):
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Live Mic")
+                                cb_live_auto_transcribe = gr.Checkbox(
+                                    label="Auto transcribe while recording",
+                                    value=True,
+                                    info="When enabled, starting the recorder below begins live preview automatically.",
+                                )
+                                live_mic_input = gr.Microphone(
+                                    label="Live microphone preview",
+                                    type="numpy",
+                                    streaming=True,
+                                    interactive=True,
+                                    elem_id="live-mic-recorder",
+                                    elem_classes=["mic-recorder-frame", "mic-recorder-live"],
+                                    waveform_options=gr.WaveformOptions(
+                                        show_recording_waveform=True,
+                                    ),
+                                )
+                                live_mic_status = gr.Markdown(
+                                    self.build_live_mic_status(
+                                        True,
+                                        0.0,
+                                        "Press Record on the microphone to begin live preview.",
+                                    )
+                                )
+                                live_mic_transcription = gr.Textbox(
+                                    label=_("Live Transcription"),
+                                    lines=10,
+                                    max_lines=10,
+                                    interactive=False,
+                                    buttons=["copy"],
+                                    placeholder="Live preview text will appear here while you record.",
+                                    elem_classes=["live-transcription-box"],
+                                )
+
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Record Then Generate")
+                                record_mic_status = gr.Markdown(
+                                    "Record with the microphone below, stop recording, then click "
+                                    "**GENERATE SUBTITLE FILE** to create subtitle files from that recording."
+                                )
+                                record_mic_input = gr.Microphone(
+                                    label="Record microphone for subtitle generation",
+                                    type="filepath",
+                                    interactive=True,
+                                    buttons=["download"],
+                                    elem_id="record-mic-recorder",
+                                    elem_classes=["mic-recorder-frame", "mic-recorder-generate"],
+                                    waveform_options=gr.WaveformOptions(
+                                        show_recording_waveform=True,
+                                    ),
+                                )
 
                         mic_transcription_ui = self.create_pipeline_inputs(mic_defaults)
+                        mic_transcription_ui["run_button"].interactive = False
 
                         with gr.Row():
-                            gr.Textbox(
-                                label=_("Live Transcription"),
+                            mic_generation_progress = gr.Textbox(
+                                label="Generation Progress",
                                 lines=10,
                                 max_lines=10,
                                 interactive=False,
                                 buttons=["copy"],
-                                placeholder="Transcribed segments will appear here in real-time...",
+                                placeholder="Subtitle generation progress will appear here after you click Generate.",
                                 elem_classes=["live-transcription-box"],
                             )
                         with gr.Row():
@@ -1056,14 +1349,81 @@ class App:
                             mic_outputs = gr.Files(label=_("Downloadable output file"), scale=4)
 
                         mic_inputs = [
-                            mic_input,
+                            record_mic_input,
                             mic_transcription_ui["file_formats"],
                             mic_transcription_ui["add_timestamp"],
                         ]
+                        live_mic_stream_inputs = [
+                            live_mic_input,
+                            cb_live_auto_transcribe,
+                            live_mic_state,
+                        ]
+
+                        live_mic_start_event = live_mic_input.start_recording(
+                            fn=self.start_live_mic_recording,
+                            inputs=[cb_live_auto_transcribe],
+                            outputs=[live_mic_state, live_mic_transcription, live_mic_status],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        live_mic_stream_event = live_mic_input.stream(
+                            fn=self.transcribe_live_mic_chunk,
+                            inputs=live_mic_stream_inputs + mic_transcription_ui["pipeline"],
+                            outputs=[live_mic_state, live_mic_transcription, live_mic_status],
+                            queue=False,
+                            show_progress="hidden",
+                            trigger_mode="always_last",
+                            concurrency_limit=1,
+                            stream_every=1.0,
+                        )
+                        live_mic_input.stop_recording(
+                            fn=self.stop_live_mic_recording,
+                            inputs=[cb_live_auto_transcribe, live_mic_state],
+                            outputs=[live_mic_state, live_mic_transcription, live_mic_status],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+
+                        record_mic_input.start_recording(
+                            fn=self.begin_record_mic_capture,
+                            inputs=None,
+                            outputs=[record_mic_status, mic_transcription_ui["run_button"]],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        record_mic_input.stop_recording(
+                            fn=self.finish_record_mic_capture,
+                            inputs=None,
+                            outputs=[record_mic_status, mic_transcription_ui["run_button"]],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        record_mic_input.change(
+                            fn=self.refresh_record_mic_ready_state,
+                            inputs=[record_mic_input],
+                            outputs=[record_mic_status, mic_transcription_ui["run_button"]],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        record_mic_input.upload(
+                            fn=self.refresh_record_mic_ready_state,
+                            inputs=[record_mic_input],
+                            outputs=[record_mic_status, mic_transcription_ui["run_button"]],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+                        record_mic_input.input(
+                            fn=self.refresh_record_mic_ready_state,
+                            inputs=[record_mic_input],
+                            outputs=[record_mic_status, mic_transcription_ui["run_button"]],
+                            queue=False,
+                            show_progress="hidden",
+                        )
+
                         mic_run_event = mic_transcription_ui["run_button"].click(
-                            fn=self.transcribe_mic_with_progress,
+                            fn=self.transcribe_mic_with_download,
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
-                            outputs=[mic_output, mic_outputs],
+                            outputs=[mic_generation_progress, mic_output, mic_outputs],
                         )
                         mic_transcription_ui["cancel_button"].click(
                             fn=self.cancel_active_generation,

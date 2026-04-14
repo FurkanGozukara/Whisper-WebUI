@@ -135,6 +135,31 @@ def transcribe_file_stream(request: Dict[str, Any]) -> None:
     emit("complete")
 
 
+def transcribe_mic_stream(request: Dict[str, Any]) -> None:
+    import gradio as gr
+
+    args = build_args_namespace(request["args"])
+    whisper_inf = create_whisper_inferencer(args)
+
+    for live_output, result_str, collected_paths in whisper_inf.transcribe_mic_with_live_output(
+        request.get("mic_audio"),
+        request.get("file_format", "SRT"),
+        request.get("add_timestamp", True),
+        gr.Progress(),
+        *request.get("pipeline_params", []),
+    ):
+        emit(
+            "update",
+            {
+                "live_output": live_output,
+                "result_str": result_str,
+                "paths": collected_paths,
+            },
+        )
+
+    emit("complete")
+
+
 def transcribe_youtube_result(request: Dict[str, Any]) -> Any:
     import gradio as gr
 
@@ -206,6 +231,7 @@ def main() -> int:
     parser.add_argument("action", choices=[
         "metadata",
         "transcribe_file",
+        "transcribe_mic_stream",
         "transcribe_youtube",
         "transcribe_mic",
         "separate_bgm",
@@ -222,6 +248,8 @@ def main() -> int:
                 emit("result", query_metadata(request))
             elif parsed.action == "transcribe_file":
                 transcribe_file_stream(request)
+            elif parsed.action == "transcribe_mic_stream":
+                transcribe_mic_stream(request)
             elif parsed.action == "transcribe_youtube":
                 emit("result", transcribe_youtube_result(request))
             elif parsed.action == "transcribe_mic":

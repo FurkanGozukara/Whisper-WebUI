@@ -28,7 +28,7 @@ from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
 from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio
 from modules.utils.files_manager import get_media_files, format_gradio_files, read_file
-from modules.utils.audio_manager import validate_audio
+from modules.utils.audio_manager import coerce_audio_input_path, validate_audio
 from modules.whisper.data_classes import *
 from modules.diarize.diarizer import Diarizer
 from modules.vad.silero_vad import SileroVAD
@@ -542,7 +542,7 @@ class BaseTranscriptionPipeline(ABC):
             raise RuntimeError(f"Error transcribing file: {e}") from e
 
     def transcribe_mic(self,
-                       mic_audio: str,
+                       mic_audio: Union[str, dict, object],
                        file_format: Union[str, List[str]] = "SRT",
                        add_timestamp: bool = True,
                        progress=gr.Progress(),
@@ -553,8 +553,8 @@ class BaseTranscriptionPipeline(ABC):
 
         Parameters
         ----------
-        mic_audio: str
-            Audio file path from gr.Microphone()
+        mic_audio: Union[str, dict, object]
+            Audio input from gr.Microphone(). Accepts filepath-style payloads.
         file_format: str
             Subtitle File format to write from gr.Dropdown(). Supported format: [SRT, WebVTT, txt]
         add_timestamp: bool
@@ -572,6 +572,10 @@ class BaseTranscriptionPipeline(ABC):
             Output file path to return to gr.Files()
         """
         try:
+            mic_audio_path = coerce_audio_input_path(mic_audio)
+            if mic_audio_path is None:
+                raise ValueError("No microphone audio was provided.")
+
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_format)
             writer_options = {
@@ -580,7 +584,7 @@ class BaseTranscriptionPipeline(ABC):
 
             progress(0, desc="Loading Audio..")
             transcribed_segments, time_for_task = self.run(
-                mic_audio,
+                mic_audio_path,
                 progress,
                 file_formats[0],
                 add_timestamp,
@@ -603,6 +607,224 @@ class BaseTranscriptionPipeline(ABC):
             return result_str, result_file_path
         except Exception as e:
             raise RuntimeError(f"Error transcribing mic: {e}") from e
+
+    def transcribe_live_preview(
+                       self,
+                       audio: np.ndarray,
+                       *pipeline_params,
+                       ) -> str:
+        """
+        Generate a lightweight live preview transcript from streaming microphone audio.
+
+        This intentionally disables diarization and background-music separation because
+        those are too expensive and unstable for short streaming chunks.
+        """
+        if audio is None:
+            return ""
+
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.size == 0:
+            return ""
+
+        if audio.ndim > 1:
+            channel_axis = 0 if audio.shape[0] <= audio.shape[-1] else -1
+            audio = audio.mean(axis=channel_axis)
+        audio = np.ascontiguousarray(audio.squeeze(), dtype=np.float32)
+
+        params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+        params = self.validate_gradio_values(params)
+        params.diarization.is_diarize = False
+        params.bgm_separation.is_separate_bgm = False
+        params.whisper.start_as_subprocess = False
+        params.whisper.enable_offload = False
+
+        vad_params = params.vad
+        audio_to_transcribe = audio
+        speech_chunks = None
+
+        if vad_params.vad_filter:
+            vad_options = VadOptions(
+                threshold=vad_params.threshold,
+                min_speech_duration_ms=vad_params.min_speech_duration_ms,
+                max_speech_duration_s=vad_params.max_speech_duration_s,
+                min_silence_duration_ms=vad_params.min_silence_duration_ms,
+                speech_pad_ms=vad_params.speech_pad_ms
+            )
+            vad_processed, speech_chunks = self.vad.run(
+                audio=audio,
+                vad_parameters=vad_options,
+                progress=gr.Progress(),
+            )
+            if vad_processed.size > 0:
+                audio_to_transcribe = vad_processed
+            else:
+                speech_chunks = None
+
+        result, _ = self.transcribe(
+            audio_to_transcribe,
+            gr.Progress(),
+            None,
+            *params.whisper.to_list()
+        )
+
+        if speech_chunks:
+            restored_result = self.vad.restore_speech_timestamps(
+                segments=result,
+                speech_chunks=speech_chunks,
+            )
+            if restored_result:
+                result = restored_result
+
+        preview_lines = []
+        for segment in result:
+            text = (segment.text or "").strip()
+            if not text:
+                continue
+            preview_lines.append(
+                f"[{self.format_timestamp(segment.start)} -> {self.format_timestamp(segment.end)}] {text}"
+            )
+
+        return "\n".join(preview_lines)
+
+    def transcribe_mic_with_live_output(
+                       self,
+                       mic_audio: Union[str, dict, object],
+                       file_format: Union[str, List[str]] = "SRT",
+                       add_timestamp: bool = True,
+                       progress=gr.Progress(),
+                       *pipeline_params,
+                       ):
+        """Transcribe microphone input while streaming segment updates."""
+        try:
+            mic_audio_path = coerce_audio_input_path(mic_audio)
+            if mic_audio_path is None:
+                raise ValueError("No microphone audio was provided.")
+
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            file_formats = self.normalize_file_formats(file_format)
+            writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
+
+            live_output_lines = deque(maxlen=self.LIVE_TRANSCRIPTION_HISTORY_LINES)
+            live_output_lock = Lock()
+            collected_paths: List[str] = []
+
+            def append_live_lines(*lines: str) -> str:
+                normalized_lines = []
+                for line in lines:
+                    if line is None:
+                        continue
+                    normalized_lines.extend(str(line).splitlines() or [""])
+
+                with live_output_lock:
+                    live_output_lines.extend(normalized_lines)
+                    return "\n".join(live_output_lines)
+
+            live_output = append_live_lines("🎤 Processing: Mic", "=" * 60, "")
+            yield live_output, "", collected_paths
+
+            segment_count = [0]
+            live_update_queue: Queue = Queue()
+            worker_result = {}
+            worker_error = {}
+
+            def live_progress_callback(progress_value, segment=None):
+                if segment:
+                    segment_count[0] += 1
+                    start_time = self.format_timestamp(segment.start) if hasattr(segment, "start") else "00:00:00.000"
+                    end_time = self.format_timestamp(segment.end) if hasattr(segment, "end") else "00:00:00.000"
+                    text = segment.text if hasattr(segment, "text") else ""
+                    live_update_queue.put(append_live_lines(f"[{start_time} → {end_time}] {text}"))
+
+            def run_with_live_callback():
+                try:
+                    transcribed_segments, time_for_task = self.run(
+                        mic_audio_path,
+                        progress,
+                        file_formats[0],
+                        add_timestamp,
+                        live_progress_callback,
+                        *pipeline_params,
+                    )
+                    worker_result["segments"] = transcribed_segments
+                    worker_result["time_for_task"] = time_for_task
+                except Exception as e:
+                    worker_error["exception"] = e
+                finally:
+                    live_update_queue.put(None)
+
+            worker_thread = Thread(target=run_with_live_callback, daemon=True)
+            worker_thread.start()
+
+            while True:
+                try:
+                    queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
+                except Empty:
+                    if worker_thread.is_alive():
+                        continue
+                    break
+
+                latest_update = queued_update
+                saw_sentinel = queued_update is None
+
+                while True:
+                    try:
+                        queued_update = live_update_queue.get_nowait()
+                    except Empty:
+                        break
+
+                    if queued_update is None:
+                        saw_sentinel = True
+                        continue
+
+                    latest_update = queued_update
+
+                if latest_update is not None:
+                    yield latest_update, "", collected_paths
+
+                if saw_sentinel and not worker_thread.is_alive():
+                    break
+
+            worker_thread.join()
+
+            if "exception" in worker_error:
+                raise worker_error["exception"]
+
+            transcribed_segments = worker_result["segments"]
+            time_for_task = worker_result["time_for_task"]
+
+            if transcribed_segments:
+                last_segment = transcribed_segments[-1]
+                audio_duration = last_segment.end if hasattr(last_segment, "end") and last_segment.end else 0
+                if audio_duration > 0 and time_for_task > 0:
+                    speed_ratio = audio_duration / time_for_task
+                    append_live_lines(
+                        "",
+                        f"⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})",
+                    )
+
+            output_specs = self._build_output_specs("Mic", file_formats, writer_options)
+            _, generated_paths = self._write_output_files(
+                output_specs=output_specs,
+                output_dir=self.output_dir,
+                result=transcribed_segments,
+                add_timestamp=add_timestamp,
+            )
+
+            collected_paths.extend(generated_paths)
+            live_output = append_live_lines(
+                f"✅ Completed in {self.format_time(time_for_task)}",
+                "",
+            )
+            result_str = (
+                f"Done! {segment_count[0]} segments in {self.format_time(time_for_task)}. "
+                f"Subtitle files saved to {self.output_dir}"
+            )
+
+            yield live_output, result_str, collected_paths
+
+        except Exception as e:
+            error_msg = f"❌ Error: {str(e)}"
+            yield error_msg, error_msg, []
 
     def transcribe_youtube(self,
                            youtube_link: str,

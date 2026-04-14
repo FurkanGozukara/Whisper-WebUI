@@ -257,8 +257,8 @@ class SubprocessWhisperProxy:
         self._client.terminate_worker(handle)
         return True
 
-    def _stream_transcription_worker(self, action_payload: Dict[str, Any]):
-        handle = self._client.start_worker("transcribe_file", action_payload)
+    def _stream_transcription_worker(self, action: str, action_payload: Dict[str, Any]):
+        handle = self._client.start_worker(action, action_payload)
         last_live_output = ""
         last_result = ""
         last_paths = []
@@ -323,6 +323,7 @@ class SubprocessWhisperProxy:
             return
 
         yield from self._stream_transcription_worker(
+            "transcribe_file",
             {
                 "files": files,
                 "batch_mode": batch_mode,
@@ -394,6 +395,40 @@ class SubprocessWhisperProxy:
                 "add_timestamp": add_timestamp,
                 "pipeline_params": list(pipeline_params),
             },
+        )
+
+    def transcribe_mic_with_live_output(
+        self,
+        mic_audio,
+        file_format="SRT",
+        add_timestamp=True,
+        *extra_args,
+    ):
+        progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
+        if not self._use_subprocess(pipeline_params):
+            yield from self._get_local_inferencer().transcribe_mic_with_live_output(
+                mic_audio,
+                file_format,
+                add_timestamp,
+                progress,
+                *pipeline_params,
+            )
+            return
+
+        yield from self._stream_transcription_worker(
+            "transcribe_mic_stream",
+            {
+                "mic_audio": mic_audio,
+                "file_format": file_format,
+                "add_timestamp": add_timestamp,
+                "pipeline_params": list(pipeline_params),
+            },
+        )
+
+    def transcribe_live_preview(self, audio, *pipeline_params):
+        return self._get_local_inferencer().transcribe_live_preview(
+            audio,
+            *pipeline_params,
         )
 
 

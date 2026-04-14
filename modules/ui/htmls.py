@@ -282,12 +282,170 @@ CSS = """
     overflow-y: auto !important;
     resize: none !important;
 }
+
+.mic-recorder-frame {
+    position: relative;
+    overflow: hidden;
+    min-height: 320px;
+    padding: 18px !important;
+    border: 2px solid var(--border-color-accent) !important;
+    border-radius: 28px !important;
+    background:
+        radial-gradient(circle at top right, var(--color-accent-soft), transparent 38%),
+        linear-gradient(180deg, var(--block-background-fill), var(--background-fill-secondary)) !important;
+    box-shadow: var(--shadow-drop-lg);
+}
+
+.mic-recorder-frame::after {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 2;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color-accent);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    box-shadow: var(--shadow-drop);
+}
+
+#live-mic-recorder::after {
+    content: "LIVE MIC";
+}
+
+#record-mic-recorder::after {
+    content: "RECORD THEN GENERATE";
+}
+
+.mic-recorder-frame > .wrap,
+.mic-recorder-frame .full-container,
+.mic-recorder-frame .input-container,
+.mic-recorder-frame .input-wrapper,
+.mic-recorder-frame .component-wrapper {
+    min-height: 250px !important;
+}
+
+.mic-recorder-frame .input-wrapper,
+.mic-recorder-frame .recording-overlay {
+    border-radius: 22px !important;
+    background: var(--block-background-fill) !important;
+}
+
+.mic-recorder-frame .recording-content,
+.mic-recorder-frame .minimal-audio-recorder,
+.mic-recorder-frame .minimal-audio-player {
+    min-height: 180px !important;
+}
+
+.mic-recorder-frame [data-testid="microphone-waveform"],
+.mic-recorder-frame [data-testid="recording-waveform"],
+.mic-recorder-frame .microphone,
+.mic-recorder-frame .waveform-wrapper {
+    min-height: 140px !important;
+}
+
+.mic-recorder-frame .waveform-wrapper {
+    border-radius: 18px !important;
+    background: var(--background-fill-secondary) !important;
+    padding: 10px !important;
+    border: 1px solid var(--border-color-primary) !important;
+}
+
+.mic-recorder-frame .record-button,
+.mic-recorder-frame .stop-button,
+.mic-recorder-frame .stop-button-paused,
+.mic-recorder-frame .pause-button,
+.mic-recorder-frame .resume-button,
+.mic-recorder-frame .duration,
+.mic-recorder-frame .timestamp,
+.mic-recorder-frame .mic-select,
+.mic-recorder-frame .device-select-large {
+    min-height: 72px !important;
+    font-size: 18px !important;
+    font-weight: 700 !important;
+}
+
+.mic-recorder-frame .record-button,
+.mic-recorder-frame .stop-button,
+.mic-recorder-frame .stop-button-paused,
+.mic-recorder-frame .pause-button,
+.mic-recorder-frame .resume-button {
+    min-width: 160px !important;
+    padding: 0 20px !important;
+    border-radius: 18px !important;
+}
+
+.mic-recorder-frame .record-button {
+    border: 2px solid var(--border-color-accent) !important;
+    background: var(--block-background-fill) !important;
+}
+
+.mic-recorder-frame .record-button::before,
+.mic-recorder-frame .stop-button::before,
+.mic-recorder-frame .stop-button-paused::before {
+    height: 18px !important;
+    width: 18px !important;
+    margin-right: 14px !important;
+}
+
+.mic-recorder-frame .stop-button,
+.mic-recorder-frame .stop-button-paused {
+    border: 2px solid var(--border-color-primary) !important;
+    background: var(--button-secondary-background-fill) !important;
+}
+
+.mic-recorder-frame .pause-button,
+.mic-recorder-frame .resume-button,
+.mic-recorder-frame .duration,
+.mic-recorder-frame .timestamp,
+.mic-recorder-frame .mic-select,
+.mic-recorder-frame .device-select-large {
+    border: 1px solid var(--border-color-primary) !important;
+    background: var(--background-fill-secondary) !important;
+    color: var(--body-text-color) !important;
+}
+
+.mic-recorder-frame .mic-select,
+.mic-recorder-frame .device-select-large {
+    min-width: 240px !important;
+    max-width: min(100%, 420px) !important;
+}
+
+.mic-recorder-frame .recording-overlay {
+    border: 2px solid var(--border-color-accent) !important;
+}
+
+@media (max-width: 900px) {
+    .mic-recorder-frame {
+        min-height: 280px;
+    }
+
+    .mic-recorder-frame .record-button,
+    .mic-recorder-frame .stop-button,
+    .mic-recorder-frame .stop-button-paused,
+    .mic-recorder-frame .pause-button,
+    .mic-recorder-frame .resume-button,
+    .mic-recorder-frame .duration,
+    .mic-recorder-frame .timestamp,
+    .mic-recorder-frame .mic-select,
+    .mic-recorder-frame .device-select-large {
+        min-height: 64px !important;
+        min-width: 132px !important;
+        font-size: 16px !important;
+    }
+}
 """
 
 HEAD = """
 <script>
 (() => {
-  const selector = ".live-transcription-box textarea";
+  const transcriptionSelector = ".live-transcription-box textarea";
+  const micSelectSelector = '.mic-recorder-frame select[aria-label="Select input device"]';
+  let syncingMicDevices = false;
+  let patchedGetUserMedia = false;
 
   const scrollToBottom = (textarea) => {
     if (!textarea) return;
@@ -295,12 +453,181 @@ HEAD = """
   };
 
   const syncAll = () => {
-    document.querySelectorAll(selector).forEach(scrollToBottom);
+    document.querySelectorAll(transcriptionSelector).forEach(scrollToBottom);
+  };
+
+  const getMicLabel = (device, index) => {
+    const label = (device?.label || "").trim();
+    if (label) return label;
+    return index === 0 ? "Browser default microphone" : `Microphone ${index + 1}`;
+  };
+
+  const syncMicDeviceSelects = async () => {
+    if (syncingMicDevices) return;
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return;
+
+    syncingMicDevices = true;
+
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter((device) => device.kind === "audioinput" && device.deviceId);
+
+      if (!devices.length) return;
+
+      document.querySelectorAll(micSelectSelector).forEach((select) => {
+        const currentValue = select.value;
+        const currentText = select.options[select.selectedIndex]?.textContent || "";
+        const existingOptions = Array.from(select.options);
+        const needsRefresh =
+          existingOptions.length !== devices.length ||
+          /no microphone/i.test(currentText) ||
+          existingOptions.some((option, index) => {
+            const device = devices[index];
+            return !device || option.value !== device.deviceId || option.textContent !== getMicLabel(device, index);
+          });
+
+        if (!needsRefresh) return;
+
+        select.innerHTML = "";
+
+        devices.forEach((device, index) => {
+          const option = document.createElement("option");
+          option.value = device.deviceId;
+          option.textContent = getMicLabel(device, index);
+          select.appendChild(option);
+        });
+
+        const nextValue = devices.some((device) => device.deviceId === currentValue)
+          ? currentValue
+          : devices[0].deviceId;
+
+        if (nextValue) {
+          select.value = nextValue;
+        }
+
+        select.disabled = false;
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    } catch (error) {
+      // Keep the built-in fallback text if device enumeration still fails.
+    } finally {
+      syncingMicDevices = false;
+    }
+  };
+
+  const scheduleMicRefresh = () => {
+    window.setTimeout(syncMicDeviceSelects, 150);
+    window.setTimeout(syncMicDeviceSelects, 1000);
+    window.setTimeout(syncMicDeviceSelects, 2500);
+  };
+
+  const isVisibleElement = (element) => {
+    if (!(element instanceof Element)) return false;
+    return !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+  };
+
+  const readPreferredMicDeviceId = (root) => {
+    if (root instanceof Element) {
+      const scopedSelect = root.querySelector(micSelectSelector);
+      if (scopedSelect instanceof HTMLSelectElement && scopedSelect.value) {
+        return scopedSelect.value;
+      }
+    }
+
+    const visibleSelects = Array.from(document.querySelectorAll(micSelectSelector))
+      .filter((select) => isVisibleElement(select));
+
+    for (const select of visibleSelects) {
+      if (select instanceof HTMLSelectElement && select.value) {
+        return select.value;
+      }
+    }
+
+    return "";
+  };
+
+  const setPreferredMicDeviceId = (deviceId) => {
+    window.__preferredMicDeviceId = deviceId || "";
+  };
+
+  const buildMicConstraints = (constraints, preferredDeviceId) => {
+    if (!preferredDeviceId) return constraints;
+
+    const original = constraints && typeof constraints === "object" ? constraints : {};
+    const next = { ...original };
+    const originalAudio = next.audio;
+
+    if (originalAudio && typeof originalAudio === "object" && !Array.isArray(originalAudio)) {
+      next.audio = {
+        ...originalAudio,
+        deviceId: { exact: preferredDeviceId },
+      };
+    } else if (originalAudio) {
+      next.audio = { deviceId: { exact: preferredDeviceId } };
+    } else {
+      next.audio = { deviceId: { exact: preferredDeviceId } };
+    }
+
+    return next;
+  };
+
+  const ensurePreferredMicPatch = () => {
+    if (patchedGetUserMedia) return;
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") return;
+
+    const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      const preferredDeviceId = window.__preferredMicDeviceId || readPreferredMicDeviceId();
+      const nextConstraints = buildMicConstraints(constraints, preferredDeviceId);
+      window.__lastPreferredMicDeviceId = preferredDeviceId || "";
+      window.__lastPreferredMicConstraints = nextConstraints;
+
+      try {
+        return await originalGetUserMedia(nextConstraints);
+      } catch (error) {
+        if (
+          preferredDeviceId &&
+          nextConstraints !== constraints &&
+          error &&
+          (error.name === "OverconstrainedError" || error.name === "NotFoundError")
+        ) {
+          return originalGetUserMedia(constraints);
+        }
+        throw error;
+      }
+    };
+
+    patchedGetUserMedia = true;
   };
 
   const init = () => {
+    ensurePreferredMicPatch();
     syncAll();
+    syncMicDeviceSelects();
     window.setInterval(syncAll, 200);
+    window.setInterval(syncMicDeviceSelects, 2000);
+
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(".mic-recorder-frame .record-button")) {
+        setPreferredMicDeviceId(readPreferredMicDeviceId(target.closest(".mic-recorder-frame")));
+        scheduleMicRefresh();
+      }
+    });
+
+    document.addEventListener("change", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLSelectElement && target.matches(micSelectSelector)) {
+        setPreferredMicDeviceId(target.value);
+      }
+    });
+
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function") {
+      navigator.mediaDevices.addEventListener("devicechange", syncMicDeviceSelects);
+    }
   };
 
   if (document.readyState === "loading") {
