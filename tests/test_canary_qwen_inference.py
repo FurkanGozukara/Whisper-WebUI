@@ -1,6 +1,7 @@
 import gradio as gr
 import numpy as np
 import torch
+from pathlib import Path
 
 from modules.whisper.canary_qwen_inference import CanaryQwenInference
 from modules.whisper.data_classes import WhisperImpl, WhisperParams
@@ -118,6 +119,54 @@ def test_canary_disables_word_timestamp_writer_options(tmp_path):
 
     assert inferencer.supports_word_timestamps() is False
     assert inferencer.get_writer_options(WhisperParams(word_timestamps=True)) == {"highlight_words": False}
+
+
+def test_canary_downloads_remote_model_to_visible_model_dir(tmp_path, monkeypatch):
+    inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
+    calls = []
+
+    def fake_snapshot_download(repo_id, local_dir, cache_dir, token):
+        calls.append(
+            {
+                "repo_id": repo_id,
+                "local_dir": local_dir,
+                "cache_dir": cache_dir,
+                "token": token,
+            }
+        )
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        Path(local_dir, "config.json").write_text("{}", encoding="utf-8")
+        return local_dir
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+
+    target = inferencer.resolve_model_target(CanaryQwenInference.DEFAULT_MODEL_ID)
+
+    expected_dir = tmp_path / "canary" / "nvidia--canary-qwen-2.5b"
+    assert target == str(expected_dir)
+    assert expected_dir.is_dir()
+    assert calls == [
+        {
+            "repo_id": CanaryQwenInference.DEFAULT_MODEL_ID,
+            "local_dir": str(expected_dir),
+            "cache_dir": str(tmp_path / "canary" / "hub"),
+            "token": None,
+        }
+    ]
+
+
+def test_canary_uses_visible_model_dir_without_redownloading(tmp_path, monkeypatch):
+    inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
+    local_model_dir = tmp_path / "canary" / "nvidia--canary-qwen-2.5b"
+    local_model_dir.mkdir(parents=True)
+    (local_model_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    def fail_snapshot_download(*args, **kwargs):
+        raise AssertionError("Should not download when the visible model folder exists.")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fail_snapshot_download)
+
+    assert inferencer.resolve_model_target(CanaryQwenInference.DEFAULT_MODEL_ID) == str(local_model_dir)
 
 
 def test_canary_rejects_unsupported_translation(tmp_path):

@@ -17,7 +17,7 @@ from modules.utils.whisper_languages import normalize_lang_choice as normalize_w
 UI_PRESET_VERSION = "1.0"
 UI_PRESET_FORMAT = "whisper_webui_ui"
 LAST_USED_UI_PRESET_FILENAME = "last_used_ui_preset.txt"
-DEFAULT_STARTUP_UI_PRESET = "best_quality"
+DEFAULT_STARTUP_UI_PRESET = "canary_best_quality"
 
 
 def sanitize_preset_name(name: str) -> str:

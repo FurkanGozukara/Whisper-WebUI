@@ -2,7 +2,6 @@ from typing import Optional, Union, Any
 import soundfile as sf
 import os
 import numpy as np
-from faster_whisper.audio import decode_audio
 
 from modules.utils.files_manager import is_video
 from modules.utils.logger import get_logger
@@ -56,6 +55,8 @@ def validate_audio(audio: Optional[Union[str, Any]] = None):
         return False
 
     try:
+        from faster_whisper.audio import decode_audio
+
         decode_audio(audio_path)
         return True
     except Exception as e:

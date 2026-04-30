@@ -101,6 +101,13 @@ class RuntimeWorkerClient:
                 handle.process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
+        for pipe in (handle.process.stdout, handle.process.stderr):
+            if pipe is None:
+                continue
+            try:
+                pipe.close()
+            except OSError:
+                pass
         handle.stderr_thread.join(timeout=1)
         self._cleanup_request_file(handle.request_path)
 
@@ -116,6 +123,17 @@ class RuntimeWorkerClient:
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
             return
 
         try:
@@ -124,6 +142,10 @@ class RuntimeWorkerClient:
         except Exception:
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=2)
             except Exception:
                 pass
 
@@ -272,12 +294,85 @@ class SubprocessWhisperProxy:
     def cancel_active_generation(self) -> bool:
         with self._active_lock:
             handle = self._active_handle
-            if handle is None or handle.process.poll() is not None:
+            if handle is None:
+                return False
+            if handle.process.poll() is not None:
+                self._active_handle = None
                 return False
             self._cancelled_pids.add(handle.process.pid)
 
         self._client.terminate_worker(handle)
         return True
+
+    def _set_active_handle(self, handle: WorkerHandle) -> None:
+        with self._active_lock:
+            self._active_handle = handle
+
+    def _clear_active_handle(self, handle: WorkerHandle) -> None:
+        with self._active_lock:
+            if self._active_handle is handle:
+                self._active_handle = None
+
+    def _terminate_unfinished_worker(self, handle: WorkerHandle) -> None:
+        if handle.process.poll() is not None:
+            return
+
+        with self._active_lock:
+            self._cancelled_pids.add(handle.process.pid)
+
+        self._client.terminate_worker(handle)
+
+    def _wait_and_finalize_worker(self, handle: WorkerHandle) -> int:
+        try:
+            return_code = handle.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._terminate_unfinished_worker(handle)
+            try:
+                return_code = handle.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                return_code = handle.process.poll()
+                if return_code is None:
+                    return_code = -1
+        finally:
+            self._clear_active_handle(handle)
+            self._client.finalize_worker(handle)
+
+        return return_code
+
+    def _was_cancelled(self, handle: WorkerHandle) -> bool:
+        with self._active_lock:
+            if handle.process.pid in self._cancelled_pids:
+                self._cancelled_pids.discard(handle.process.pid)
+                return True
+        return False
+
+    def _call_transcription_worker(self, action: str, action_payload: Dict[str, Any]) -> Any:
+        handle = self._client.start_worker(action, action_payload)
+        result_payload = None
+        error_payload = None
+        stream_exhausted = False
+
+        self._set_active_handle(handle)
+
+        try:
+            for event in self._client.iter_events(handle):
+                if event["event"] == "result":
+                    result_payload = event.get("payload")
+                elif event["event"] == "error":
+                    error_payload = event.get("payload") or {}
+            stream_exhausted = True
+        finally:
+            if not stream_exhausted:
+                self._terminate_unfinished_worker(handle)
+            return_code = self._wait_and_finalize_worker(handle)
+
+        if self._was_cancelled(handle):
+            raise RuntimeError("Cancelled. Running subprocess was terminated.")
+        if error_payload:
+            raise RuntimeError(self._client._format_error(error_payload, handle.stderr_lines))
+        if return_code != 0:
+            raise RuntimeError(self._client._format_error({}, handle.stderr_lines))
+        return repair_mojibake_obj(result_payload)
 
     def _stream_transcription_worker(self, action: str, action_payload: Dict[str, Any]):
         handle = self._client.start_worker(action, action_payload)
@@ -285,9 +380,9 @@ class SubprocessWhisperProxy:
         last_result = ""
         last_paths = []
         worker_error = None
+        stream_exhausted = False
 
-        with self._active_lock:
-            self._active_handle = handle
+        self._set_active_handle(handle)
 
         try:
             for event in self._client.iter_events(handle):
@@ -299,15 +394,13 @@ class SubprocessWhisperProxy:
                     yield last_live_output, last_result, last_paths
                 elif event["event"] == "error":
                     worker_error = event.get("payload") or {}
+            stream_exhausted = True
         finally:
-            return_code = handle.process.wait()
-            with self._active_lock:
-                if self._active_handle is handle:
-                    self._active_handle = None
-            self._client.finalize_worker(handle)
+            if not stream_exhausted:
+                self._terminate_unfinished_worker(handle)
+            return_code = self._wait_and_finalize_worker(handle)
 
-        if handle.process.pid in self._cancelled_pids:
-            self._cancelled_pids.discard(handle.process.pid)
+        if self._was_cancelled(handle):
             yield last_live_output, "Cancelled. Running subprocess was terminated.", last_paths
             return
 
@@ -383,7 +476,7 @@ class SubprocessWhisperProxy:
                 *pipeline_params,
             )
 
-        return self._client.call(
+        return self._call_transcription_worker(
             "transcribe_youtube",
             {
                 "youtube_link": youtube_link,
@@ -414,7 +507,7 @@ class SubprocessWhisperProxy:
                 *pipeline_params,
             )
 
-        return self._client.call(
+        return self._call_transcription_worker(
             "transcribe_mic",
             {
                 "mic_audio": mic_audio,

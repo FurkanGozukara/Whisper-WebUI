@@ -2534,7 +2534,7 @@ class App:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--whisper_type", type=str, default=WhisperImpl.FASTER_WHISPER.value, choices=[item.value for item in WhisperImpl])
+parser.add_argument("--whisper_type", type=str, default=WhisperImpl.CANARY_QWEN.value, choices=[item.value for item in WhisperImpl])
 parser.add_argument("--share", type=str2bool, default=False, nargs="?", const=True)
 parser.add_argument("--server_name", type=str, default=None)
 parser.add_argument("--server_port", type=int, default=None)

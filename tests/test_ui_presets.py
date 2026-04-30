@@ -24,6 +24,7 @@ from modules.whisper.data_classes import (
     DiarizationParams,
     TranscriptionPipelineParams,
     VadParams,
+    WhisperImpl,
     WhisperParams,
 )
 
@@ -88,8 +89,10 @@ def test_merge_ui_config_restores_missing_sections():
 def test_whisper_lang_is_normalized_for_ui_and_runtime():
     defaults = build_default_ui_config()
 
+    assert defaults["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.CANARY_QWEN.value
+    assert defaults["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
-    assert defaults["file_tab"]["whisper"]["word_timestamps"] is True
+    assert defaults["file_tab"]["whisper"]["word_timestamps"] is False
     assert defaults["file_tab"]["whisper"]["use_batched_inference"] is False
     assert WhisperParams(lang="English").lang == "en"
     assert WhisperParams(lang="english").lang == "en"
@@ -154,23 +157,23 @@ def test_locked_system_presets_are_listed_loaded_and_protected(tmp_path, monkeyp
     assert delete_ui_preset("best_quality") is False
 
 
-def test_default_startup_ui_preset_falls_back_to_best_quality_without_persisting_it(tmp_path, monkeypatch):
+def test_default_startup_ui_preset_falls_back_to_canary_without_persisting_it(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     system_dir = tmp_path / "system"
     system_dir.mkdir(parents=True)
     monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(user_dir))
     monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(system_dir))
 
-    (system_dir / "best_quality.json").write_text("{}", encoding="utf-8")
+    (system_dir / "canary_best_quality.json").write_text("{}", encoding="utf-8")
 
     startup_preset = get_default_startup_ui_preset()
 
-    assert startup_preset == "best_quality"
+    assert startup_preset == "canary_best_quality"
     assert get_last_used_ui_preset() is None
     assert not last_used_ui_preset_path().exists()
 
 
-def test_default_startup_ui_preset_returns_none_when_best_quality_is_missing(tmp_path, monkeypatch):
+def test_default_startup_ui_preset_returns_none_when_canary_is_missing(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     system_dir = tmp_path / "system"
     system_dir.mkdir(parents=True)

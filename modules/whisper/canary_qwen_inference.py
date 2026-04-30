@@ -157,10 +157,9 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     ):
         progress(0.02, desc="Initializing Canary-Qwen model..")
         self.configure_hf_cache()
-        salm_cls = self.import_salm()
-
         dtype = self.torch_dtype_for_compute_type(compute_type)
-        model_target = self.resolve_model_target(model_size)
+        model_target = self.resolve_model_target(model_size, progress=progress)
+        salm_cls = self.import_salm()
         logger.info("Loading Canary-Qwen model '%s' into %s with %s.", model_target, self.device, compute_type)
 
         model = salm_cls.from_pretrained(
@@ -329,18 +328,52 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             return combined
         return combined[-max_chars:]
 
-    def resolve_model_target(self, model_size: str) -> str:
+    @staticmethod
+    def safe_model_dir_name(model_size: str) -> str:
+        return str(model_size or "").replace("/", "--")
+
+    @staticmethod
+    def has_downloaded_model_files(path: str) -> bool:
+        if not os.path.isdir(path):
+            return False
+        try:
+            return any(os.scandir(path))
+        except OSError:
+            return False
+
+    def download_model_snapshot(self, model_size: str, target_dir: str, progress: gr.Progress = None) -> str:
+        if progress is not None:
+            progress(0.02, desc=f"Downloading Canary-Qwen model to {target_dir}..")
+
+        logger.info("Downloading Canary-Qwen model '%s' to '%s'.", model_size, target_dir)
+
+        from huggingface_hub import snapshot_download
+
+        os.makedirs(target_dir, exist_ok=True)
+        return snapshot_download(
+            repo_id=model_size,
+            local_dir=target_dir,
+            cache_dir=self.get_hf_hub_cache_dir(),
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+
+    def resolve_model_target(self, model_size: str, progress: gr.Progress = None) -> str:
         model_size = model_size or self.DEFAULT_MODEL_ID
         if os.path.isabs(model_size) and os.path.exists(model_size):
             return model_size
 
         candidate = os.path.join(self.model_dir, model_size)
-        if os.path.isdir(candidate):
+        if self.has_downloaded_model_files(candidate):
             return candidate
 
-        safe_name = model_size.replace("/", "--")
+        safe_name = self.safe_model_dir_name(model_size)
         candidate = os.path.join(self.model_dir, safe_name)
-        if os.path.isdir(candidate):
+        if self.has_downloaded_model_files(candidate):
+            return candidate
+
+        if "/" in model_size:
+            self.download_model_snapshot(model_size, candidate, progress=progress)
+            self.available_models = self.get_model_paths()
             return candidate
 
         return model_size

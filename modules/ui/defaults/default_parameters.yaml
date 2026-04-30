@@ -1,14 +1,14 @@
 whisper:
-  model_size: large-v3
+  model_size: nvidia/canary-qwen-2.5b
   lang: english
   is_translate: false
-  beam_size: 8
+  beam_size: 1
   log_prob_threshold: -1.0
   no_speech_threshold: 0.6
   compute_type: bfloat16
   best_of: 5
   patience: 1.5
-  condition_on_previous_text: true
+  condition_on_previous_text: false
   start_as_subprocess: true
   prompt_reset_on_temperature: 0.5
   initial_prompt: null
@@ -22,11 +22,11 @@ whisper:
   suppress_blank: true
   suppress_tokens: '[-1]'
   max_initial_timestamp: 1.0
-  word_timestamps: true
+  word_timestamps: false
   prepend_punctuations: '"''([{-'
   append_punctuations: '"''.,!?:)]}'
-  max_new_tokens: null
-  chunk_length: 20
+  max_new_tokens: 256
+  chunk_length: 40
   hallucination_silence_threshold: null
   hotwords: null
   language_detection_threshold: 0.5
@@ -36,7 +36,7 @@ whisper:
   enable_offload: false
   canary_generation_kwargs: null
   canary_enable_thinking: false
-  whisper_type: faster-whisper
+  whisper_type: canary-qwen
   add_timestamp: false
   file_format: SRT
 vad:
