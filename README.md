@@ -4,6 +4,35 @@
 
 > https://www.patreon.com/posts/145395299
 
+## 30 April 2026 - Version 9.0
+
+- This is a quite big upgrade to our application
+
+- We now fully support NVIDIA NeMo Canary-Qwen-2.5B is an English speech recognition model : https://huggingface.co/nvidia/canary-qwen-2.5b
+
+- This model is currently State Of The Art (SOTA) Speech to Text model for English language
+
+- I have done extensive research and testing and it is set to best default parameters
+
+- Fully supporting all of the features our Whisper app were already supporting
+
+- Get the zip file, overwrite all previous files and run installer for update / upgrade
+
+- The model will be auto downloaded when you first time run
+
+<img width="3567" height="602" alt="image" src="https://github.com/user-attachments/assets/583647bc-9120-4c6e-ad67-1f5ad1ee24ab" />
+
+- I also have compared with Whisper best configurations are here the comparison results - best results of Whisper taken
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/9baabf10-6511-4b63-a4bb-60b4b3c998fc" />
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/0a45ac6b-4898-4e15-a629-41381a9d6169" />
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/65d60c04-06f1-404f-957d-420420fc664d" />
+
+- As you can see NVIDIA NeMo Canary-Qwen-2.5B is not only significantly better but also faster 
+
+
 ## 15 April 2026 - Version 8.0
 
 - Diarization had some error and this is fixed
