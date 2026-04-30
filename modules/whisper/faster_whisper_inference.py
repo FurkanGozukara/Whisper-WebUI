@@ -1,4 +1,5 @@
 import logging
+import inspect
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ from types import MethodType
 import huggingface_hub
 import numpy as np
 import torch
-from typing import BinaryIO, Union, Tuple, List, Callable, Optional
+from typing import BinaryIO, Union, Tuple, List, Callable, Optional, Dict
 import faster_whisper
 from faster_whisper.audio import decode_audio, pad_or_trim
 from faster_whisper.transcribe import Segment as FasterWhisperSegment, Word as FasterWhisperWord
@@ -221,12 +222,16 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 params=params,
                 log_console=log_model_banner,
             )
-            segments, info = self._transcribe_with_standard_pipeline(
-                audio=standard_audio,
-                params=standard_params,
-                progress=progress,
-                log_console=log_console,
-                log_model_banner=log_model_banner,
+            standard_pipeline_kwargs = {
+                "audio": standard_audio,
+                "params": standard_params,
+                "progress": progress,
+                "log_console": log_console,
+                "log_model_banner": log_model_banner,
+            }
+            segments, info = self._call_with_supported_kwargs(
+                self._transcribe_with_standard_pipeline,
+                standard_pipeline_kwargs,
             )
 
         segments_result = []
@@ -1315,6 +1320,22 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         chunk_samples = max(1, int(chunk_length * sampling_rate))
         return max(1, math.ceil(total_samples / chunk_samples))
+
+    @staticmethod
+    def _call_with_supported_kwargs(func: Callable, kwargs: Dict):
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return func(**kwargs)
+
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            return func(**kwargs)
+
+        supported_kwargs = {
+            key: value for key, value in kwargs.items()
+            if key in signature.parameters
+        }
+        return func(**supported_kwargs)
 
     @staticmethod
     def emit_progress_callback(

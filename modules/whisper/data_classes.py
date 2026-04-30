@@ -19,6 +19,7 @@ class WhisperImpl(Enum):
     WHISPER = "whisper"
     FASTER_WHISPER = "faster-whisper"
     INSANELY_FAST_WHISPER = "insanely_fast_whisper"
+    CANARY_QWEN = "canary-qwen"
 
 
 class Segment(BaseModel):
@@ -382,6 +383,18 @@ class WhisperParams(BaseParams):
         default=True,
         description="Offload Whisper model after transcription"
     )
+    canary_generation_kwargs: Optional[str] = Field(
+        default=None,
+        description="Canary-Qwen raw generation keyword arguments as a JSON object"
+    )
+    canary_enable_thinking: bool = Field(
+        default=False,
+        description="Forward Canary-Qwen enable_thinking to NeMo SALM generation"
+    )
+    whisper_type: str = Field(
+        default=WhisperImpl.FASTER_WHISPER.value,
+        description="Primary transcription model family"
+    )
 
     @staticmethod
     def normalize_lang_value(v):
@@ -423,11 +436,28 @@ class WhisperParams(BaseParams):
         except Exception as e:
             raise ValueError(f"Invalid Suppress Tokens. The value must be type of List[int]: {e}")
 
+    @field_validator('whisper_type')
+    def validate_whisper_type(cls, v):
+        if not isinstance(v, str) or not v.strip():
+            return WhisperImpl.FASTER_WHISPER.value
+
+        normalized = v.strip().lower()
+        aliases = {
+            "whisper": WhisperImpl.FASTER_WHISPER.value,
+            "faster_whisper": WhisperImpl.FASTER_WHISPER.value,
+            "faster-whisper": WhisperImpl.FASTER_WHISPER.value,
+            "canary": WhisperImpl.CANARY_QWEN.value,
+            "canary-qwen": WhisperImpl.CANARY_QWEN.value,
+            "canary_qwen": WhisperImpl.CANARY_QWEN.value,
+            "nvidia/canary-qwen-2.5b": WhisperImpl.CANARY_QWEN.value,
+        }
+        return aliases.get(normalized, normalized)
+
     @classmethod
     def advanced_input_field_names(cls) -> List[str]:
         return [
             field_name for field_name in cls.model_fields.keys()
-            if field_name not in {"model_size", "lang", "is_translate"}
+            if field_name not in {"model_size", "lang", "is_translate", "whisper_type"}
         ]
 
     @staticmethod
@@ -436,6 +466,7 @@ class WhisperParams(BaseParams):
         return whisper_type in {
             WhisperImpl.FASTER_WHISPER.value,
             WhisperImpl.INSANELY_FAST_WHISPER.value,
+            WhisperImpl.CANARY_QWEN.value,
         }
 
     @classmethod
@@ -445,18 +476,26 @@ class WhisperParams(BaseParams):
         defaults = defaults or {}
         batch_size_value = int(defaults.get("batch_size", cls.__fields__["batch_size"].default))
 
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            batch_info = (
+                "Number of Canary-Qwen audio chunks to send to NeMo SALM generation at once. "
+                "Higher values can improve throughput on large GPUs but use more VRAM."
+            )
+        else:
+            batch_info = (
+                "When Use Batched Inference is disabled, this controls the standard faster-whisper encoder "
+                "prefetch batch size on a single model instance. Higher values can improve throughput with much "
+                "lower quality risk than the batched decoder path, but the gain depends on your audio and GPU. "
+                "When Use Batched Inference is enabled, it controls the faster-whisper batched decoder path instead."
+            )
+
         batch_size_input = gr.Slider(
             minimum=1,
             maximum=max(32, batch_size_value),
             step=1,
             label="Batch Size",
             value=batch_size_value,
-            info=(
-                "When Use Batched Inference is disabled, this controls the standard faster-whisper encoder "
-                "prefetch batch size on a single model instance. Higher values can improve throughput with much "
-                "lower quality risk than the batched decoder path, but the gain depends on your audio and GPU. "
-                "When Use Batched Inference is enabled, it controls the faster-whisper batched decoder path instead."
-            ),
+            info=batch_info,
         )
 
         if not cls.supports_batch_size(whisper_type):
@@ -755,7 +794,35 @@ class WhisperParams(BaseParams):
             ))
         
 
-        if whisper_type != WhisperImpl.FASTER_WHISPER.value:
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            canary_visible_fields = {
+                "repetition_penalty",
+                "no_repeat_ngram_size",
+                "max_new_tokens",
+                "chunk_length",
+            }
+            faster_whisper_field_names = [
+                "repetition_penalty",
+                "no_repeat_ngram_size",
+                "prefix",
+                "suppress_blank",
+                "suppress_tokens",
+                "max_initial_timestamp",
+                "word_timestamps",
+                "prepend_punctuations",
+                "append_punctuations",
+                "max_new_tokens",
+                "chunk_length",
+                "hallucination_silence_threshold",
+                "hotwords",
+                "language_detection_threshold",
+                "language_detection_segments",
+            ]
+            for field_name, input_component in zip(faster_whisper_field_names, faster_whisper_inputs):
+                input_component.visible = field_name in canary_visible_fields
+            faster_whisper_inputs[9].info = "Maximum generated text tokens per Canary-Qwen chunk."
+            faster_whisper_inputs[10].info = "Canary-Qwen ASR window size in seconds. Values above 40 are capped."
+        elif whisper_type != WhisperImpl.FASTER_WHISPER.value:
             for input_component in faster_whisper_inputs:
                 input_component.visible = False
 
@@ -775,6 +842,43 @@ class WhisperParams(BaseParams):
                 value=defaults.get("enable_offload", cls.__fields__["enable_offload"].default),
                 info="Unload the model from VRAM after transcription."
             ))
+
+        with gr.Row():
+            inputs.append(gr.Textbox(
+                label="Canary Generation Kwargs (JSON)",
+                value=defaults.get("canary_generation_kwargs", GRADIO_NONE_STR),
+                visible=whisper_type == WhisperImpl.CANARY_QWEN.value,
+                lines=3,
+                info=(
+                    "Advanced Canary-Qwen/Qwen generation overrides as JSON. "
+                    "Example: {\"top_p\": 0.9, \"top_k\": 50, \"do_sample\": true}."
+                )
+            ))
+            inputs.append(gr.Checkbox(
+                label="Canary Enable Thinking",
+                value=defaults.get("canary_enable_thinking", cls.__fields__["canary_enable_thinking"].default),
+                visible=whisper_type == WhisperImpl.CANARY_QWEN.value,
+                info="Forward enable_thinking to NeMo SALM. Leave disabled for normal ASR transcription."
+            ))
+
+        if whisper_type == WhisperImpl.CANARY_QWEN.value and only_advanced:
+            canary_advanced_fields = {
+                "beam_size",
+                "compute_type",
+                "start_as_subprocess",
+                "temperature",
+                "length_penalty",
+                "repetition_penalty",
+                "no_repeat_ngram_size",
+                "max_new_tokens",
+                "chunk_length",
+                "batch_size",
+                "enable_offload",
+                "canary_generation_kwargs",
+                "canary_enable_thinking",
+            }
+            for field_name, input_component in zip(cls.advanced_input_field_names(), inputs):
+                input_component.visible = field_name in canary_advanced_fields
 
         return [repair_component_text(component) for component in inputs]
     
@@ -883,4 +987,3 @@ class TranscriptionPipelineParams(BaseModel):
             diarization=DiarizationParams.from_list(diarization_list),
             bgm_separation=BGMSeparationParams.from_list(bgm_sep_list)
         )
-

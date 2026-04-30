@@ -163,7 +163,7 @@ def _normalize_ui_lang(value: Any) -> str:
 def _normalize_whisper_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
     whisper = deepcopy(defaults)
     whisper["lang"] = _normalize_ui_lang(whisper.get("lang"))
-    for key in ("initial_prompt", "prefix", "hotwords"):
+    for key in ("initial_prompt", "prefix", "hotwords", "canary_generation_kwargs"):
         whisper[key] = _as_ui_optional_text(whisper.get(key))
     for key in ("max_new_tokens", "hallucination_silence_threshold", "language_detection_threshold"):
         whisper[key] = _as_ui_optional_number(whisper.get(key))

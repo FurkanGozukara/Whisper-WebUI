@@ -90,6 +90,15 @@ class BaseTranscriptionPipeline(ABC):
         """Initialize whisper model"""
         pass
 
+    @staticmethod
+    def supports_word_timestamps() -> bool:
+        return True
+
+    def get_writer_options(self, whisper_params: WhisperParams) -> dict:
+        return {
+            "highlight_words": bool(whisper_params.word_timestamps and self.supports_word_timestamps())
+        }
+
     def run(self,
             audio: Union[str, BinaryIO, np.ndarray],
             progress: gr.Progress = gr.Progress(),
@@ -263,7 +272,7 @@ class BaseTranscriptionPipeline(ABC):
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_formats)
-            writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
+            writer_options = self.get_writer_options(params.whisper)
 
             if batch_mode and not input_folder_path:
                 raise ValueError("Input folder path is required when batch processing is enabled.")
@@ -463,9 +472,7 @@ class BaseTranscriptionPipeline(ABC):
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_formats)
-            writer_options = {
-                "highlight_words": True if params.whisper.word_timestamps else False
-            }
+            writer_options = self.get_writer_options(params.whisper)
 
             if batch_mode and not input_folder_path:
                 raise ValueError("Input folder path is required when batch processing is enabled.")
@@ -580,9 +587,7 @@ class BaseTranscriptionPipeline(ABC):
 
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_format)
-            writer_options = {
-                "highlight_words": True if params.whisper.word_timestamps else False
-            }
+            writer_options = self.get_writer_options(params.whisper)
 
             progress(0, desc="Loading Audio..")
             transcribed_segments, time_for_task = self.run(
@@ -706,7 +711,7 @@ class BaseTranscriptionPipeline(ABC):
 
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_format)
-            writer_options = {"highlight_words": True if params.whisper.word_timestamps else False}
+            writer_options = self.get_writer_options(params.whisper)
 
             live_output_lines = deque(maxlen=self.LIVE_TRANSCRIPTION_HISTORY_LINES)
             live_output_lock = Lock()
@@ -866,9 +871,7 @@ class BaseTranscriptionPipeline(ABC):
         try:
             params = TranscriptionPipelineParams.from_list(list(pipeline_params))
             file_formats = self.normalize_file_formats(file_format)
-            writer_options = {
-                "highlight_words": True if params.whisper.word_timestamps else False
-            }
+            writer_options = self.get_writer_options(params.whisper)
 
             if mass_transcribe_channel:
                 requested_count = max(1, min(9999, int(latest_video_count or 100)))

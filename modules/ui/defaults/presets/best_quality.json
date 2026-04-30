@@ -8,24 +8,33 @@
   },
   "file_tab": {
     "whisper": {
+      "whisper_type": "faster-whisper",
       "condition_on_previous_text": true,
       "repetition_penalty": 1.0,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false,
       "use_batched_inference": false,
       "batch_size": 1
     }
   },
   "youtube_tab": {
     "whisper": {
+      "whisper_type": "faster-whisper",
       "condition_on_previous_text": true,
       "repetition_penalty": 1.0,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false,
       "use_batched_inference": false,
       "batch_size": 1
     }
   },
   "mic_tab": {
     "whisper": {
+      "whisper_type": "faster-whisper",
       "condition_on_previous_text": true,
       "repetition_penalty": 1.0,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false,
       "use_batched_inference": false,
       "batch_size": 1
     }

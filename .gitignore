@@ -20,4 +20,6 @@ test2_correct.srt
 *.srt
 jhj0517-whisper/
 presets/
+!modules/ui/defaults/presets/
+!modules/ui/defaults/presets/*.json
 *.log

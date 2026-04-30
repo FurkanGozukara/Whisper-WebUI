@@ -15,7 +15,7 @@ from threading import Lock, Thread
 from typing import Any, Deque, Dict, Generator, Optional, Tuple
 
 from modules.utils.text import repair_mojibake_obj
-from modules.whisper.data_classes import TranscriptionPipelineParams
+from modules.whisper.data_classes import TranscriptionPipelineParams, WhisperImpl
 
 
 @dataclass
@@ -209,8 +209,11 @@ class SubprocessWhisperProxy:
         self._active_lock = Lock()
         self._active_handle: Optional[WorkerHandle] = None
         self._cancelled_pids: set[int] = set()
-        self._local_inferencer = None
+        self._local_inferencers: Dict[str, Any] = {}
 
+        self.implementation_metadata = metadata.get("implementations") or {
+            getattr(args, "whisper_type", WhisperImpl.FASTER_WHISPER.value): metadata
+        }
         self.device = metadata["device"]
         self.available_models = metadata["available_models"]
         self.available_langs = metadata["available_langs"]
@@ -221,25 +224,44 @@ class SubprocessWhisperProxy:
         self.music_separator = _MusicSeparatorProxy(self._client, metadata["music_separator"])
         self.diarizer = _DiarizerProxy(metadata["diarizer"])
 
-    def _get_local_inferencer(self):
-        if self._local_inferencer is None:
+    def _get_local_inferencer(self, whisper_type: Optional[str] = None):
+        whisper_type = whisper_type or getattr(self._args, "whisper_type", WhisperImpl.FASTER_WHISPER.value)
+        if whisper_type not in self._local_inferencers:
             from modules.whisper.whisper_factory import WhisperFactory
+            from modules.utils.paths import CANARY_QWEN_MODELS_DIR
 
-            self._local_inferencer = WhisperFactory.create_whisper_inference(
-                whisper_type=self._args.whisper_type,
+            self._local_inferencers[whisper_type] = WhisperFactory.create_whisper_inference(
+                whisper_type=whisper_type,
                 whisper_model_dir=self._args.whisper_model_dir,
                 faster_whisper_model_dir=self._args.faster_whisper_model_dir,
                 insanely_fast_whisper_model_dir=self._args.insanely_fast_whisper_model_dir,
+                canary_qwen_model_dir=getattr(self._args, "canary_qwen_model_dir", None) or CANARY_QWEN_MODELS_DIR,
                 diarization_model_dir=self._args.diarization_model_dir,
                 uvr_model_dir=self._args.uvr_model_dir,
                 output_dir=self._args.output_dir,
             )
-        return self._local_inferencer
+        return self._local_inferencers[whisper_type]
+
+    def _local_inferencer_for(self, whisper_type: Optional[str] = None):
+        try:
+            return self._get_local_inferencer(whisper_type)
+        except TypeError:
+            return self._get_local_inferencer()
 
     @staticmethod
     def _use_subprocess(pipeline_params) -> bool:
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
         return bool(getattr(params.whisper, "start_as_subprocess", True))
+
+    def _selected_whisper_type(self, pipeline_params) -> str:
+        try:
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            whisper_type = getattr(params.whisper, "whisper_type", None)
+            if whisper_type:
+                return whisper_type
+        except Exception:
+            pass
+        return getattr(self._args, "whisper_type", WhisperImpl.FASTER_WHISPER.value)
 
     @staticmethod
     def _split_progress_and_pipeline_args(extra_args):
@@ -307,8 +329,9 @@ class SubprocessWhisperProxy:
         progress=None,
         *pipeline_params,
     ):
+        whisper_type = self._selected_whisper_type(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            yield from self._get_local_inferencer().transcribe_file_with_live_output(
+            yield from self._local_inferencer_for(whisper_type).transcribe_file_with_live_output(
                 files,
                 batch_mode,
                 input_folder_path,
@@ -333,6 +356,7 @@ class SubprocessWhisperProxy:
                 "output_dir": output_dir,
                 "file_formats": file_formats,
                 "add_timestamp": add_timestamp,
+                "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             }
         )
@@ -347,8 +371,9 @@ class SubprocessWhisperProxy:
         *extra_args,
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
+        whisper_type = self._selected_whisper_type(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            return self._get_local_inferencer().transcribe_youtube(
+            return self._local_inferencer_for(whisper_type).transcribe_youtube(
                 youtube_link,
                 file_format,
                 add_timestamp,
@@ -366,6 +391,7 @@ class SubprocessWhisperProxy:
                 "add_timestamp": add_timestamp,
                 "mass_transcribe_channel": mass_transcribe_channel,
                 "latest_video_count": latest_video_count,
+                "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
         )
@@ -378,8 +404,9 @@ class SubprocessWhisperProxy:
         *extra_args,
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
+        whisper_type = self._selected_whisper_type(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            return self._get_local_inferencer().transcribe_mic(
+            return self._local_inferencer_for(whisper_type).transcribe_mic(
                 mic_audio,
                 file_format,
                 add_timestamp,
@@ -393,6 +420,7 @@ class SubprocessWhisperProxy:
                 "mic_audio": mic_audio,
                 "file_format": file_format,
                 "add_timestamp": add_timestamp,
+                "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
         )
@@ -405,8 +433,9 @@ class SubprocessWhisperProxy:
         *extra_args,
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
+        whisper_type = self._selected_whisper_type(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            yield from self._get_local_inferencer().transcribe_mic_with_live_output(
+            yield from self._local_inferencer_for(whisper_type).transcribe_mic_with_live_output(
                 mic_audio,
                 file_format,
                 add_timestamp,
@@ -421,12 +450,14 @@ class SubprocessWhisperProxy:
                 "mic_audio": mic_audio,
                 "file_format": file_format,
                 "add_timestamp": add_timestamp,
+                "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
         )
 
     def transcribe_live_preview(self, audio, *pipeline_params):
-        return self._get_local_inferencer().transcribe_live_preview(
+        whisper_type = self._selected_whisper_type(pipeline_params)
+        return self._local_inferencer_for(whisper_type).transcribe_live_preview(
             audio,
             *pipeline_params,
         )

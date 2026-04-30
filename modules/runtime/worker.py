@@ -32,21 +32,67 @@ def build_args_namespace(raw_args: Dict[str, Any]) -> Namespace:
 
 def create_whisper_inferencer(args: Namespace):
     from modules.whisper.whisper_factory import WhisperFactory
+    from modules.utils.paths import CANARY_QWEN_MODELS_DIR
 
     return WhisperFactory.create_whisper_inference(
         whisper_type=args.whisper_type,
         whisper_model_dir=args.whisper_model_dir,
         faster_whisper_model_dir=args.faster_whisper_model_dir,
         insanely_fast_whisper_model_dir=args.insanely_fast_whisper_model_dir,
+        canary_qwen_model_dir=getattr(args, "canary_qwen_model_dir", None) or CANARY_QWEN_MODELS_DIR,
         diarization_model_dir=args.diarization_model_dir,
         uvr_model_dir=args.uvr_model_dir,
         output_dir=args.output_dir,
     )
 
 
+def selected_whisper_type(request: Dict[str, Any]) -> str:
+    from modules.whisper.data_classes import TranscriptionPipelineParams, WhisperImpl
+
+    explicit_type = request.get("whisper_type")
+    if explicit_type:
+        return str(explicit_type)
+
+    pipeline_params = request.get("pipeline_params")
+    if pipeline_params:
+        try:
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            return params.whisper.whisper_type
+        except Exception:
+            pass
+
+    return str(request.get("args", {}).get("whisper_type") or WhisperImpl.FASTER_WHISPER.value)
+
+
+def args_for_request(request: Dict[str, Any]) -> Namespace:
+    args = build_args_namespace(request["args"])
+    args.whisper_type = selected_whisper_type(request)
+    return args
+
+
+def whisper_metadata_payload(whisper_inf, gpu_total_memory_gb=None, gpu_name=None) -> Dict[str, Any]:
+    return {
+        "device": whisper_inf.device,
+        "available_models": list(whisper_inf.available_models),
+        "available_langs": list(whisper_inf.available_langs),
+        "available_compute_types": list(whisper_inf.available_compute_types),
+        "current_compute_type": whisper_inf.current_compute_type,
+        "gpu_total_memory_gb": gpu_total_memory_gb,
+        "gpu_name": gpu_name,
+        "music_separator": {
+            "device": whisper_inf.music_separator.device,
+            "available_devices": list(whisper_inf.music_separator.available_devices),
+            "available_models": list(whisper_inf.music_separator.available_models),
+        },
+        "diarizer": {
+            "device": whisper_inf.diarizer.device,
+            "available_device": list(whisper_inf.diarizer.available_device),
+        },
+    }
+
+
 def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     args = build_args_namespace(request["args"])
-    whisper_inf = create_whisper_inferencer(args)
 
     gpu_total_memory_gb = None
     gpu_name = None
@@ -71,6 +117,22 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
         gpu_total_memory_gb = None
         gpu_name = None
 
+    from modules.whisper.data_classes import WhisperImpl
+
+    implementation_metadata = {}
+    for whisper_type in (WhisperImpl.FASTER_WHISPER.value, WhisperImpl.CANARY_QWEN.value):
+        typed_args = Namespace(**vars(args))
+        typed_args.whisper_type = whisper_type
+        implementation_metadata[whisper_type] = whisper_metadata_payload(
+            create_whisper_inferencer(typed_args),
+            gpu_total_memory_gb=gpu_total_memory_gb,
+            gpu_name=gpu_name,
+        )
+
+    selected_type = args.whisper_type if args.whisper_type in implementation_metadata else WhisperImpl.FASTER_WHISPER.value
+    whisper_payload = dict(implementation_metadata[selected_type])
+    whisper_payload["implementations"] = implementation_metadata
+
     from modules.translation.nllb_inference import NLLBInference
 
     nllb_inf = NLLBInference(
@@ -79,24 +141,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     return {
-        "whisper": {
-            "device": whisper_inf.device,
-            "available_models": list(whisper_inf.available_models),
-            "available_langs": list(whisper_inf.available_langs),
-            "available_compute_types": list(whisper_inf.available_compute_types),
-            "current_compute_type": whisper_inf.current_compute_type,
-            "gpu_total_memory_gb": gpu_total_memory_gb,
-            "gpu_name": gpu_name,
-            "music_separator": {
-                "device": whisper_inf.music_separator.device,
-                "available_devices": list(whisper_inf.music_separator.available_devices),
-                "available_models": list(whisper_inf.music_separator.available_models),
-            },
-            "diarizer": {
-                "device": whisper_inf.diarizer.device,
-                "available_device": list(whisper_inf.diarizer.available_device),
-            },
-        },
+        "whisper": whisper_payload,
         "nllb": {
             "available_models": list(nllb_inf.available_models),
             "available_source_langs": list(nllb_inf.available_source_langs),
@@ -108,7 +153,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
 def transcribe_file_stream(request: Dict[str, Any]) -> None:
     import gradio as gr
 
-    args = build_args_namespace(request["args"])
+    args = args_for_request(request)
     whisper_inf = create_whisper_inferencer(args)
 
     for live_output, result_str, collected_paths in whisper_inf.transcribe_file_with_live_output(
@@ -138,7 +183,7 @@ def transcribe_file_stream(request: Dict[str, Any]) -> None:
 def transcribe_mic_stream(request: Dict[str, Any]) -> None:
     import gradio as gr
 
-    args = build_args_namespace(request["args"])
+    args = args_for_request(request)
     whisper_inf = create_whisper_inferencer(args)
 
     for live_output, result_str, collected_paths in whisper_inf.transcribe_mic_with_live_output(
@@ -163,7 +208,7 @@ def transcribe_mic_stream(request: Dict[str, Any]) -> None:
 def transcribe_youtube_result(request: Dict[str, Any]) -> Any:
     import gradio as gr
 
-    args = build_args_namespace(request["args"])
+    args = args_for_request(request)
     whisper_inf = create_whisper_inferencer(args)
     return whisper_inf.transcribe_youtube(
         request["youtube_link"],
@@ -179,7 +224,7 @@ def transcribe_youtube_result(request: Dict[str, Any]) -> Any:
 def transcribe_mic_result(request: Dict[str, Any]) -> Any:
     import gradio as gr
 
-    args = build_args_namespace(request["args"])
+    args = args_for_request(request)
     whisper_inf = create_whisper_inferencer(args)
     return whisper_inf.transcribe_mic(
         request["mic_audio"],

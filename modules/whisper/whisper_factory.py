@@ -3,7 +3,9 @@ import os
 import torch
 
 from modules.utils.paths import (FASTER_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR,
-                                 INSANELY_FAST_WHISPER_MODELS_DIR, WHISPER_MODELS_DIR, UVR_MODELS_DIR)
+                                 INSANELY_FAST_WHISPER_MODELS_DIR, WHISPER_MODELS_DIR, UVR_MODELS_DIR,
+                                 CANARY_QWEN_MODELS_DIR)
+from modules.whisper.canary_qwen_inference import CanaryQwenInference
 from modules.whisper.faster_whisper_inference import FasterWhisperInference
 from modules.whisper.whisper_Inference import WhisperInference
 from modules.whisper.insanely_fast_whisper_inference import InsanelyFastWhisperInference
@@ -22,6 +24,7 @@ class WhisperFactory:
         whisper_model_dir: str = WHISPER_MODELS_DIR,
         faster_whisper_model_dir: str = FASTER_WHISPER_MODELS_DIR,
         insanely_fast_whisper_model_dir: str = INSANELY_FAST_WHISPER_MODELS_DIR,
+        canary_qwen_model_dir: str = CANARY_QWEN_MODELS_DIR,
         diarization_model_dir: str = DIARIZATION_MODELS_DIR,
         uvr_model_dir: str = UVR_MODELS_DIR,
         output_dir: str = OUTPUT_DIR,
@@ -42,6 +45,8 @@ class WhisperFactory:
             Directory path for the Faster Whisper model.
         insanely_fast_whisper_model_dir : str
             Directory path for the Insanely Fast Whisper model.
+        canary_qwen_model_dir : str
+            Directory path for the Canary-Qwen model and Hugging Face cache.
         diarization_model_dir : str
             Directory path for the diarization model.
         uvr_model_dir : str
@@ -58,6 +63,7 @@ class WhisperFactory:
         os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
         whisper_type = whisper_type.strip().lower()
+        canary_qwen_model_dir = canary_qwen_model_dir or CANARY_QWEN_MODELS_DIR
 
         if whisper_type == WhisperImpl.FASTER_WHISPER.value:
             if torch.xpu.is_available():
@@ -86,6 +92,13 @@ class WhisperFactory:
         elif whisper_type == WhisperImpl.INSANELY_FAST_WHISPER.value:
             return InsanelyFastWhisperInference(
                 model_dir=insanely_fast_whisper_model_dir,
+                output_dir=output_dir,
+                diarization_model_dir=diarization_model_dir,
+                uvr_model_dir=uvr_model_dir
+            )
+        elif whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return CanaryQwenInference(
+                model_dir=canary_qwen_model_dir,
                 output_dir=output_dir,
                 diarization_model_dir=diarization_model_dir,
                 uvr_model_dir=uvr_model_dir

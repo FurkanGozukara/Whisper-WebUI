@@ -34,6 +34,9 @@ whisper:
   use_batched_inference: false
   batch_size: 1
   enable_offload: false
+  canary_generation_kwargs: null
+  canary_enable_thinking: false
+  whisper_type: faster-whisper
   add_timestamp: false
   file_format: SRT
 vad:

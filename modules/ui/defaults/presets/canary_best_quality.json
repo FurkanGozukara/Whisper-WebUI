@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "format": "whisper_webui_ui",
+    "locked": true,
+    "display_name": "Canary Best Quality",
+    "description": "Best overall Canary-Qwen ASR preset using English-only chunked generation."
+  },
+  "file_tab": {
+    "whisper": {
+      "whisper_type": "canary-qwen",
+      "model_size": "nvidia/canary-qwen-2.5b",
+      "lang": "english",
+      "is_translate": false,
+      "beam_size": 1,
+      "temperature": 0.0,
+      "length_penalty": 1.0,
+      "repetition_penalty": 1.0,
+      "no_repeat_ngram_size": 0,
+      "word_timestamps": false,
+      "max_new_tokens": 256,
+      "chunk_length": 40,
+      "use_batched_inference": false,
+      "batch_size": 1,
+      "condition_on_previous_text": false,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false
+    }
+  },
+  "youtube_tab": {
+    "whisper": {
+      "whisper_type": "canary-qwen",
+      "model_size": "nvidia/canary-qwen-2.5b",
+      "lang": "english",
+      "is_translate": false,
+      "beam_size": 1,
+      "temperature": 0.0,
+      "length_penalty": 1.0,
+      "repetition_penalty": 1.0,
+      "no_repeat_ngram_size": 0,
+      "word_timestamps": false,
+      "max_new_tokens": 256,
+      "chunk_length": 40,
+      "use_batched_inference": false,
+      "batch_size": 1,
+      "condition_on_previous_text": false,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false
+    }
+  },
+  "mic_tab": {
+    "whisper": {
+      "whisper_type": "canary-qwen",
+      "model_size": "nvidia/canary-qwen-2.5b",
+      "lang": "english",
+      "is_translate": false,
+      "beam_size": 1,
+      "temperature": 0.0,
+      "length_penalty": 1.0,
+      "repetition_penalty": 1.0,
+      "no_repeat_ngram_size": 0,
+      "word_timestamps": false,
+      "max_new_tokens": 256,
+      "chunk_length": 40,
+      "use_batched_inference": false,
+      "batch_size": 1,
+      "condition_on_previous_text": false,
+      "canary_generation_kwargs": null,
+      "canary_enable_thinking": false
+    }
+  }
+}

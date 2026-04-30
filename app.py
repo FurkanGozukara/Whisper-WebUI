@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -46,6 +47,7 @@ from modules.utils.logger import get_logger
 from modules.utils.audio_manager import coerce_audio_input_path
 from modules.utils.paths import (
     DEFAULT_PARAMETERS_CONFIG_PATH,
+    CANARY_QWEN_MODELS_DIR,
     DIARIZATION_MODELS_DIR,
     FASTER_WHISPER_MODELS_DIR,
     I18N_YAML_PATH,
@@ -63,7 +65,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V8.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V9.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -74,6 +76,30 @@ BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB = 1.0
 
 
 class App:
+    PRIMARY_MODEL_CHOICES = [
+        ("Whisper", WhisperImpl.FASTER_WHISPER.value),
+        ("Canary", WhisperImpl.CANARY_QWEN.value),
+    ]
+    CANARY_DEFAULT_MODEL = "nvidia/canary-qwen-2.5b"
+    CANARY_DEFAULTS = {
+        "model_size": CANARY_DEFAULT_MODEL,
+        "lang": "english",
+        "is_translate": False,
+        "beam_size": 1,
+        "temperature": 0.0,
+        "length_penalty": 1.0,
+        "repetition_penalty": 1.0,
+        "no_repeat_ngram_size": 0,
+        "word_timestamps": False,
+        "max_new_tokens": 256,
+        "chunk_length": 40,
+        "use_batched_inference": False,
+        "batch_size": 1,
+        "condition_on_previous_text": False,
+        "canary_generation_kwargs": None,
+        "canary_enable_thinking": False,
+    }
+
     LIVE_MIC_SAMPLE_RATE = 16000
     LIVE_MIC_MIN_PREVIEW_SECONDS = 2.0
     LIVE_MIC_REFRESH_SECONDS = 2.0
@@ -97,6 +123,7 @@ class App:
         self.default_params = self.apply_dynamic_batch_size_defaults(
             load_yaml(DEFAULT_PARAMETERS_CONFIG_PATH)
         )
+        self.default_params = self.apply_implementation_defaults(self.default_params)
         self.ui_default_config = build_default_ui_config(default_params=self.default_params)
 
         user_allowed = []
@@ -220,6 +247,121 @@ class App:
             )
 
         return default_params
+
+    def apply_implementation_defaults(self, default_params):
+        whisper_defaults = default_params.get("whisper", {})
+        if not isinstance(whisper_defaults, dict):
+            return default_params
+
+        whisper_type = self.normalize_primary_whisper_type(
+            whisper_defaults.get("whisper_type") or self.args.whisper_type
+        )
+        whisper_defaults["whisper_type"] = whisper_type
+
+        metadata = self.get_whisper_metadata(whisper_type)
+        available_models = list(metadata.get("available_models", []) or [])
+        current_model = whisper_defaults.get("model_size")
+        if available_models and current_model not in available_models:
+            whisper_defaults["model_size"] = self.default_model_for_whisper_type(whisper_type)
+
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            for key, value in self.CANARY_DEFAULTS.items():
+                whisper_defaults[key] = value
+
+        return default_params
+
+    @staticmethod
+    def normalize_primary_whisper_type(whisper_type):
+        return WhisperParams(whisper_type=whisper_type).whisper_type
+
+    @staticmethod
+    def is_canary_whisper_type(whisper_type) -> bool:
+        return App.normalize_primary_whisper_type(whisper_type) == WhisperImpl.CANARY_QWEN.value
+
+    def get_whisper_metadata(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        implementations = getattr(self.whisper_inf, "implementation_metadata", {}) or {}
+        metadata = implementations.get(whisper_type)
+        if metadata:
+            return metadata
+        return {
+            "available_models": list(getattr(self.whisper_inf, "available_models", []) or []),
+            "available_langs": list(getattr(self.whisper_inf, "available_langs", []) or []),
+            "available_compute_types": list(getattr(self.whisper_inf, "available_compute_types", []) or []),
+            "current_compute_type": getattr(self.whisper_inf, "current_compute_type", None),
+        }
+
+    def default_model_for_whisper_type(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        metadata = self.get_whisper_metadata(whisper_type)
+        models = list(metadata.get("available_models", []) or [])
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return self.CANARY_DEFAULT_MODEL if self.CANARY_DEFAULT_MODEL in models or not models else models[0]
+
+        configured_default = (
+            self.default_params.get("whisper", {}).get("model_size")
+            if hasattr(self, "default_params")
+            else None
+        )
+        if configured_default in models:
+            return configured_default
+        return "large-v3" if "large-v3" in models else (models[0] if models else configured_default)
+
+    def language_choices_for_whisper_type(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        metadata = self.get_whisper_metadata(whisper_type)
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return list(metadata.get("available_langs", ["english"]) or ["english"])
+        return WhisperParams.get_language_choices(metadata.get("available_langs", []))
+
+    def compute_choices_for_whisper_type(self, whisper_type):
+        metadata = self.get_whisper_metadata(whisper_type)
+        return list(metadata.get("available_compute_types", []) or ["float32"])
+
+    def current_compute_type_for_whisper_type(self, whisper_type):
+        metadata = self.get_whisper_metadata(whisper_type)
+        choices = self.compute_choices_for_whisper_type(whisper_type)
+        current = metadata.get("current_compute_type")
+        return current if current in choices else choices[0]
+
+    def batch_help_for_whisper_type(self, whisper_type):
+        if self.is_canary_whisper_type(whisper_type):
+            return (
+                "Controls how many 40-second-or-shorter Canary-Qwen chunks are generated in one "
+                "NeMo batch. Higher values can improve throughput on large GPUs but use more VRAM."
+            )
+        return (
+            "When Use Batched Inference is disabled, this controls the standard faster-whisper "
+            "encoder prefetch batch size on a single model instance. Higher values can improve "
+            "throughput with much lower quality risk than the batched decoder path, but the gain "
+            "depends on your audio and GPU. When Use Batched Inference is enabled, it controls "
+            "the faster-whisper batched decoder path instead."
+        )
+
+    @staticmethod
+    def canary_advanced_visible_fields():
+        return {
+            "beam_size",
+            "compute_type",
+            "start_as_subprocess",
+            "temperature",
+            "length_penalty",
+            "repetition_penalty",
+            "no_repeat_ngram_size",
+            "max_new_tokens",
+            "chunk_length",
+            "batch_size",
+            "enable_offload",
+            "canary_generation_kwargs",
+            "canary_enable_thinking",
+        }
+
+    @staticmethod
+    def advanced_field_visible_for_whisper_type(field_name, whisper_type):
+        whisper_type = App.normalize_primary_whisper_type(whisper_type)
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return field_name in App.canary_advanced_visible_fields()
+        return field_name not in {"canary_generation_kwargs", "canary_enable_thinking"}
 
     @staticmethod
     def format_media_duration(seconds):
@@ -1174,6 +1316,83 @@ class App:
 
         return [repair_component_text(component) for component in inputs]
 
+    @staticmethod
+    def ui_value_for_whisper_field(field_name, value):
+        if field_name in {"initial_prompt", "prefix", "hotwords", "canary_generation_kwargs"}:
+            return GRADIO_NONE_STR if value is None else value
+        if field_name in {"max_new_tokens", "hallucination_silence_threshold", "language_detection_threshold"}:
+            return GRADIO_NONE_NUMBER_MIN if value is None else value
+        if field_name == "suppress_tokens" and isinstance(value, list):
+            return str(value)
+        return value
+
+    def defaults_for_primary_whisper_type(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        defaults = deepcopy(self.default_params.get("whisper", {}))
+        defaults["whisper_type"] = whisper_type
+
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            defaults.update(self.CANARY_DEFAULTS)
+            defaults["compute_type"] = self.current_compute_type_for_whisper_type(whisper_type)
+            return defaults
+
+        defaults["model_size"] = self.default_model_for_whisper_type(whisper_type)
+        defaults["lang"] = WhisperParams.normalize_lang_choice(defaults.get("lang"))
+        defaults["is_translate"] = bool(defaults.get("is_translate", False))
+        defaults["compute_type"] = self.current_compute_type_for_whisper_type(whisper_type)
+        defaults["word_timestamps"] = bool(defaults.get("word_timestamps", True))
+        defaults["condition_on_previous_text"] = bool(defaults.get("condition_on_previous_text", True))
+        defaults["canary_generation_kwargs"] = None
+        defaults["canary_enable_thinking"] = False
+        return defaults
+
+    def update_primary_model_ui(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        defaults = self.defaults_for_primary_whisper_type(whisper_type)
+        metadata = self.get_whisper_metadata(whisper_type)
+        model_choices = list(metadata.get("available_models", []) or [])
+        language_choices = self.language_choices_for_whisper_type(whisper_type)
+        compute_choices = self.compute_choices_for_whisper_type(whisper_type)
+        is_canary = whisper_type == WhisperImpl.CANARY_QWEN.value
+
+        updates = [
+            gr.update(choices=model_choices, value=defaults["model_size"]),
+            gr.update(
+                choices=language_choices,
+                value="english" if is_canary else WhisperParams.normalize_lang_choice(defaults.get("lang")),
+                interactive=not is_canary,
+            ),
+            gr.update(
+                value=False if is_canary else bool(defaults.get("is_translate", False)),
+                interactive=not is_canary,
+                info=(
+                    "Canary-Qwen is English ASR only. Use the translation tab after transcription."
+                    if is_canary
+                    else (
+                        "When enabled, Whisper outputs English text directly from the speech. "
+                        "When disabled, subtitles stay in the original spoken language. "
+                        "This uses Whisper's built-in translation, not DeepL or NLLB."
+                    )
+                ),
+            ),
+            gr.update(visible=WhisperParams.supports_batch_size(whisper_type)),
+            gr.update(value=self.batch_help_for_whisper_type(whisper_type)),
+        ]
+
+        for field_name in WhisperParams.advanced_input_field_names():
+            value = self.ui_value_for_whisper_field(field_name, defaults.get(field_name))
+            visible = self.advanced_field_visible_for_whisper_type(field_name, whisper_type)
+            if field_name == "compute_type":
+                updates.append(gr.update(choices=compute_choices, value=defaults.get("compute_type"), visible=visible))
+            elif field_name == "condition_on_previous_text":
+                updates.append(gr.update(value=bool(defaults.get(field_name, False)), visible=visible and not is_canary))
+            elif field_name == "batch_size":
+                updates.append(gr.update(value=int(defaults.get(field_name) or 1), visible=visible))
+            else:
+                updates.append(gr.update(value=value, visible=visible))
+
+        return updates
+
     def create_pipeline_inputs(self,
                                defaults=None,
                                open_outputs_button=None,
@@ -1184,38 +1403,60 @@ class App:
         diarization_params = transcription_defaults["diarization"]
         uvr_params = transcription_defaults["bgm_separation"]
 
-        with gr.Row():
-            with gr.Column(scale=2):
-                lang_value = WhisperParams.normalize_lang_choice(whisper_params["lang"])
+        selected_whisper_type = self.normalize_primary_whisper_type(
+            whisper_params.get("whisper_type") or self.args.whisper_type
+        )
+        is_canary_qwen = selected_whisper_type == WhisperImpl.CANARY_QWEN.value
+        model_metadata = self.get_whisper_metadata(selected_whisper_type)
+        model_choices = list(model_metadata.get("available_models", []) or [])
+        model_value = whisper_params.get("model_size")
+        if is_canary_qwen or (model_choices and model_value not in model_choices):
+            model_value = self.default_model_for_whisper_type(selected_whisper_type)
+        language_choices = self.language_choices_for_whisper_type(selected_whisper_type)
+        lang_value = "english" if is_canary_qwen else WhisperParams.normalize_lang_choice(whisper_params["lang"])
+
+        with gr.Group():
+            with gr.Row():
+                model_type_radio = gr.Radio(
+                    choices=self.PRIMARY_MODEL_CHOICES,
+                    value=selected_whisper_type,
+                    label=_("Base Model"),
+                    interactive=True,
+                )
+            with gr.Row():
                 dd_model = gr.Dropdown(
-                    choices=self.whisper_inf.available_models,
-                    value=whisper_params["model_size"],
+                    choices=model_choices,
+                    value=model_value,
                     label=_("Model"),
                     allow_custom_value=True,
                 )
                 dd_lang = gr.Dropdown(
-                    choices=WhisperParams.get_language_choices(self.whisper_inf.available_langs),
+                    choices=language_choices,
                     value=lang_value,
                     label=_("Language"),
+                    interactive=not is_canary_qwen,
                 )
-            with gr.Column(scale=2):
+                cb_translate = gr.Checkbox(
+                    value=False if is_canary_qwen else whisper_params["is_translate"],
+                    label=_("Translate to English?"),
+                    info=(
+                        "Canary-Qwen is English ASR only. Use the translation tab after transcription."
+                        if is_canary_qwen
+                        else (
+                            "When enabled, Whisper outputs English text directly from the speech. "
+                            "When disabled, subtitles stay in the original spoken language. "
+                            "This uses Whisper's built-in translation, not DeepL or NLLB."
+                        )
+                    ),
+                    interactive=not is_canary_qwen,
+                )
+            with gr.Row():
                 cg_file_formats = gr.CheckboxGroup(
                     choices=["SRT", "WebVTT", "txt", "LRC", "JSON", "TSV"],
                     value=transcription_defaults.get("file_formats", ["SRT"]) or ["SRT"],
                     label=_("File Formats"),
                     info=_("Select one or more output formats."),
                 )
-                cb_translate = gr.Checkbox(
-                    value=whisper_params["is_translate"],
-                    label=_("Translate to English?"),
-                    info=(
-                        "When enabled, Whisper outputs English text directly from the speech. "
-                        "When disabled, subtitles stay in the original spoken language. "
-                        "This uses Whisper's built-in translation, not DeepL or NLLB."
-                    ),
-                    interactive=True,
-                )
-            with gr.Column(scale=1):
                 cb_timestamp = gr.Checkbox(
                     value=transcription_defaults.get("add_timestamp", False),
                     label=_("Add a timestamp to the end of the filename"),
@@ -1244,22 +1485,16 @@ class App:
                     )
 
         with gr.Row(equal_height=True):
-            with gr.Column(scale=3, visible=WhisperParams.supports_batch_size(self.args.whisper_type)):
+            with gr.Column(scale=3, visible=WhisperParams.supports_batch_size(selected_whisper_type)) as batch_size_column:
                 with gr.Group():
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=4):
                             gr.Markdown("**Batch Size**")
-                            gr.Markdown(
-                                "When Use Batched Inference is disabled, this controls the standard faster-whisper "
-                                "encoder prefetch batch size on a single model instance. Higher values can improve "
-                                "throughput with much lower quality risk than the batched decoder path, but the gain "
-                                "depends on your audio and GPU. When Use Batched Inference is enabled, it controls "
-                                "the faster-whisper batched decoder path instead."
-                            )
+                            batch_size_help = gr.Markdown(self.batch_help_for_whisper_type(selected_whisper_type))
                         with gr.Column(scale=2, min_width=220):
                             batch_size_input = WhisperParams.to_batch_size_input(
                                 defaults=whisper_params,
-                                whisper_type=self.args.whisper_type,
+                                whisper_type=selected_whisper_type,
                             )
                             batch_size_input.show_label = False
                             batch_size_input.info = None
@@ -1276,9 +1511,9 @@ class App:
             whisper_inputs = WhisperParams.to_gradio_inputs(
                 defaults=whisper_params,
                 only_advanced=True,
-                whisper_type=self.args.whisper_type,
-                available_compute_types=self.whisper_inf.available_compute_types,
-                compute_type=self.whisper_inf.current_compute_type,
+                whisper_type=selected_whisper_type,
+                available_compute_types=self.compute_choices_for_whisper_type(selected_whisper_type),
+                compute_type=self.current_compute_type_for_whisper_type(selected_whisper_type),
             )
 
         whisper_advanced_fields = WhisperParams.advanced_input_field_names()
@@ -1292,6 +1527,8 @@ class App:
         whisper_inputs[start_as_subprocess_index] = start_as_subprocess_input
         whisper_inputs[batch_size_index].visible = False
         whisper_inputs[batch_size_index] = batch_size_input
+        if selected_whisper_type == WhisperImpl.CANARY_QWEN.value:
+            condition_on_previous_text_input.visible = False
 
         with gr.Accordion(_("Background Music Remover Filter"), open=False):
             uvr_inputs = BGMSeparationParams.to_gradio_input(
@@ -1311,8 +1548,16 @@ class App:
                 device=self.whisper_inf.diarizer.device,
             )
 
+        model_type_radio.change(
+            fn=self.update_primary_model_ui,
+            inputs=[model_type_radio],
+            outputs=[dd_model, dd_lang, cb_translate, batch_size_column, batch_size_help] + whisper_inputs,
+            queue=False,
+            show_progress="hidden",
+        )
+
         return {
-            "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + vad_inputs + diarization_inputs + uvr_inputs,
+            "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + [model_type_radio] + vad_inputs + diarization_inputs + uvr_inputs,
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
             "run_button": run_btn,
@@ -2027,12 +2272,6 @@ class App:
                 )
 
                 dropdown_choice_specs = {
-                    ("file_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
-                    ("youtube_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
-                    ("mic_tab", "whisper", "lang"): WhisperParams.get_language_choices(self.whisper_inf.available_langs),
-                    ("file_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
-                    ("youtube_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
-                    ("mic_tab", "whisper", "compute_type"): self.whisper_inf.available_compute_types,
                     ("file_tab", "diarization", "diarization_device"): self.whisper_inf.diarizer.available_device,
                     ("youtube_tab", "diarization", "diarization_device"): self.whisper_inf.diarizer.available_device,
                     ("mic_tab", "diarization", "diarization_device"): self.whisper_inf.diarizer.available_device,
@@ -2096,6 +2335,71 @@ class App:
                     values = []
                     for path in config_keys:
                         value = get_nested_value(merged, path)
+                        if len(path) == 3 and path[1] == "whisper":
+                            section_key, _, field_name = path
+                            section_whisper = get_nested_value(
+                                merged,
+                                (section_key, "whisper", "whisper_type"),
+                                WhisperImpl.FASTER_WHISPER.value,
+                            )
+                            section_whisper = self.normalize_primary_whisper_type(section_whisper)
+                            is_canary = section_whisper == WhisperImpl.CANARY_QWEN.value
+
+                            if field_name == "model_size":
+                                choices = list(self.get_whisper_metadata(section_whisper).get("available_models", []) or [])
+                                default_model = self.default_model_for_whisper_type(section_whisper)
+                                selected_model = value or default_model
+                                if is_canary and selected_model not in choices:
+                                    selected_model = default_model
+                                values.append(gr.update(choices=choices, value=selected_model))
+                                continue
+
+                            if field_name == "lang":
+                                choices = self.language_choices_for_whisper_type(section_whisper)
+                                default_lang = "english" if is_canary else AUTOMATIC_DETECTION.unwrap()
+                                selected_lang = "english" if is_canary else _match_dropdown_value(value, choices, default_lang, path=path)
+                                values.append(gr.update(choices=choices, value=selected_lang, interactive=not is_canary))
+                                continue
+
+                            if field_name == "is_translate":
+                                values.append(gr.update(
+                                    value=False if is_canary else bool(value),
+                                    interactive=not is_canary,
+                                    info=(
+                                        "Canary-Qwen is English ASR only. Use the translation tab after transcription."
+                                        if is_canary
+                                        else (
+                                            "When enabled, Whisper outputs English text directly from the speech. "
+                                            "When disabled, subtitles stay in the original spoken language. "
+                                            "This uses Whisper's built-in translation, not DeepL or NLLB."
+                                        )
+                                    ),
+                                ))
+                                continue
+
+                            if field_name == "compute_type":
+                                choices = self.compute_choices_for_whisper_type(section_whisper)
+                                default_compute = self.current_compute_type_for_whisper_type(section_whisper)
+                                selected_compute = value if value in choices else default_compute
+                                values.append(gr.update(
+                                    choices=choices,
+                                    value=selected_compute,
+                                    visible=self.advanced_field_visible_for_whisper_type(field_name, section_whisper),
+                                ))
+                                continue
+
+                            if field_name == "whisper_type":
+                                values.append(gr.update(value=section_whisper))
+                                continue
+
+                            if field_name in WhisperParams.advanced_input_field_names():
+                                selected_value = self.ui_value_for_whisper_field(field_name, value)
+                                visible = self.advanced_field_visible_for_whisper_type(field_name, section_whisper)
+                                if field_name == "condition_on_previous_text":
+                                    visible = visible and not is_canary
+                                values.append(gr.update(value=selected_value, visible=visible))
+                                continue
+
                         if path in dropdown_choice_specs:
                             default_value = get_nested_value(defaults, path)
                             value = _match_dropdown_value(value, dropdown_choice_specs[path], default_value, path=path)
@@ -2249,6 +2553,7 @@ parser.add_argument("--ssl_certfile", type=str, default=None)
 parser.add_argument("--whisper_model_dir", type=str, default=WHISPER_MODELS_DIR)
 parser.add_argument("--faster_whisper_model_dir", type=str, default=FASTER_WHISPER_MODELS_DIR)
 parser.add_argument("--insanely_fast_whisper_model_dir", type=str, default=INSANELY_FAST_WHISPER_MODELS_DIR)
+parser.add_argument("--canary_qwen_model_dir", type=str, default=CANARY_QWEN_MODELS_DIR)
 parser.add_argument("--diarization_model_dir", type=str, default=DIARIZATION_MODELS_DIR)
 parser.add_argument("--nllb_model_dir", type=str, default=NLLB_MODELS_DIR)
 parser.add_argument("--uvr_model_dir", type=str, default=UVR_MODELS_DIR)
