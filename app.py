@@ -65,7 +65,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V9.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V10.0 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
