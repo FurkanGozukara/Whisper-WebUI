@@ -73,7 +73,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             or self.model is None
             or self.current_compute_type != params.compute_type
         ):
-            self.update_model(params.model_size, params.compute_type, progress)
+            self.update_model(params.model_size, params.compute_type, progress, progress_callback=progress_callback)
 
         if log_model_banner:
             logger.info(
@@ -81,6 +81,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 "The model is English ASR only and returns chunk-level timestamps."
             )
 
+        self.emit_status_callback(progress_callback, "Preparing audio for Canary-Qwen transcription..")
         progress(0.05, desc="Loading audio..")
         audio_array = self.prepare_audio_array(audio)
         chunks = self.build_audio_chunks(audio_array, params.chunk_length)
@@ -154,11 +155,17 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         model_size: str,
         compute_type: str,
         progress: gr.Progress = gr.Progress(),
+        progress_callback: Optional[Callable] = None,
     ):
         progress(0.02, desc="Initializing Canary-Qwen model..")
+        self.emit_status_callback(progress_callback, "Initializing Canary-Qwen model..")
         self.configure_hf_cache()
         dtype = self.torch_dtype_for_compute_type(compute_type)
-        model_target = self.resolve_model_target(model_size, progress=progress)
+        model_target = self.resolve_model_target(model_size, progress=progress, progress_callback=progress_callback)
+        self.emit_status_callback(
+            progress_callback,
+            f"Loading Canary-Qwen model from {model_target}. This can take a while..",
+        )
         salm_cls = self.import_salm()
         logger.info("Loading Canary-Qwen model '%s' into %s with %s.", model_target, self.device, compute_type)
 
@@ -176,6 +183,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         self.model = model
         self.current_model_size = model_size
         self.current_compute_type = compute_type
+        self.emit_status_callback(progress_callback, "Canary-Qwen model loaded. Starting transcription..")
         progress(0.1, desc="Canary-Qwen model loaded.")
 
     def validate_supported_params(self, params: WhisperParams) -> None:
@@ -336,28 +344,94 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     def has_downloaded_model_files(path: str) -> bool:
         if not os.path.isdir(path):
             return False
+        has_config = False
+        has_weight = False
         try:
-            return any(os.scandir(path))
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [directory for directory in dirs if directory not in {".cache", ".git"}]
+                file_names = set(files)
+                if "config.json" in file_names:
+                    has_config = True
+                if any(
+                    file_name.endswith((".safetensors", ".bin", ".pt", ".ckpt", ".nemo"))
+                    for file_name in file_names
+                ):
+                    has_weight = True
+                if has_config and has_weight:
+                    return True
         except OSError:
             return False
+        return False
 
-    def download_model_snapshot(self, model_size: str, target_dir: str, progress: gr.Progress = None) -> str:
+    @classmethod
+    def make_download_tqdm_class(cls, progress_callback: Optional[Callable]):
+        from tqdm.auto import tqdm
+
+        class CanaryDownloadTqdm(tqdm):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._last_status_emit = 0.0
+
+            def update(self, n=1):
+                result = super().update(n)
+                self._emit_status()
+                return result
+
+            def close(self):
+                self._emit_status(force=True)
+                return super().close()
+
+            def _emit_status(self, force: bool = False):
+                if progress_callback is None:
+                    return
+
+                now = time.time()
+                if not force and now - self._last_status_emit < 1.0:
+                    return
+                self._last_status_emit = now
+
+                unit = self.unit or "files"
+                if self.total:
+                    percent = min(100.0, max(0.0, (float(self.n) / float(self.total)) * 100.0))
+                    status = f"Downloading Canary-Qwen model: {percent:.0f}% ({self.n}/{self.total} {unit})"
+                else:
+                    status = f"Downloading Canary-Qwen model: {self.n} {unit}"
+                cls.emit_status_callback(progress_callback, status)
+
+        return CanaryDownloadTqdm
+
+    def download_model_snapshot(
+        self,
+        model_size: str,
+        target_dir: str,
+        progress: gr.Progress = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
         if progress is not None:
             progress(0.02, desc=f"Downloading Canary-Qwen model to {target_dir}..")
+        self.emit_status_callback(progress_callback, f"Downloading Canary-Qwen model to {target_dir}..")
 
         logger.info("Downloading Canary-Qwen model '%s' to '%s'.", model_size, target_dir)
 
         from huggingface_hub import snapshot_download
 
         os.makedirs(target_dir, exist_ok=True)
-        return snapshot_download(
+        snapshot_path = snapshot_download(
             repo_id=model_size,
             local_dir=target_dir,
             cache_dir=self.get_hf_hub_cache_dir(),
             token=os.environ.get("HF_TOKEN") or None,
+            tqdm_class=self.make_download_tqdm_class(progress_callback),
         )
+        self.emit_status_callback(progress_callback, "Canary-Qwen model download finished.")
+        return snapshot_path
 
-    def resolve_model_target(self, model_size: str, progress: gr.Progress = None) -> str:
+    def resolve_model_target(
+        self,
+        model_size: str,
+        progress: gr.Progress = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
         model_size = model_size or self.DEFAULT_MODEL_ID
         if os.path.isabs(model_size) and os.path.exists(model_size):
             return model_size
@@ -372,7 +446,16 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             return candidate
 
         if "/" in model_size:
-            self.download_model_snapshot(model_size, candidate, progress=progress)
+            self.download_model_snapshot(
+                model_size,
+                candidate,
+                progress=progress,
+                progress_callback=progress_callback,
+            )
+            if not self.has_downloaded_model_files(candidate):
+                raise RuntimeError(
+                    f"Canary-Qwen download did not create a complete model folder at {candidate}."
+                )
             self.available_models = self.get_model_paths()
             return candidate
 
@@ -524,3 +607,16 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             progress_callback(progress_value, segment)
         except TypeError:
             progress_callback(progress_value)
+
+    @staticmethod
+    def emit_status_callback(
+        progress_callback: Optional[Callable],
+        status: str,
+    ):
+        if progress_callback is None:
+            return
+
+        try:
+            progress_callback(None, None, status)
+        except TypeError:
+            progress_callback(None)

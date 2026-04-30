@@ -125,17 +125,19 @@ def test_canary_downloads_remote_model_to_visible_model_dir(tmp_path, monkeypatc
     inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
     calls = []
 
-    def fake_snapshot_download(repo_id, local_dir, cache_dir, token):
+    def fake_snapshot_download(repo_id, local_dir, cache_dir, token, tqdm_class):
         calls.append(
             {
                 "repo_id": repo_id,
                 "local_dir": local_dir,
                 "cache_dir": cache_dir,
                 "token": token,
+                "has_tqdm_class": tqdm_class is not None,
             }
         )
         Path(local_dir).mkdir(parents=True, exist_ok=True)
         Path(local_dir, "config.json").write_text("{}", encoding="utf-8")
+        Path(local_dir, "model.safetensors").write_text("", encoding="utf-8")
         return local_dir
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
@@ -151,6 +153,7 @@ def test_canary_downloads_remote_model_to_visible_model_dir(tmp_path, monkeypatc
             "local_dir": str(expected_dir),
             "cache_dir": str(tmp_path / "canary" / "hub"),
             "token": None,
+            "has_tqdm_class": True,
         }
     ]
 
@@ -160,6 +163,7 @@ def test_canary_uses_visible_model_dir_without_redownloading(tmp_path, monkeypat
     local_model_dir = tmp_path / "canary" / "nvidia--canary-qwen-2.5b"
     local_model_dir.mkdir(parents=True)
     (local_model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (local_model_dir / "model.safetensors").write_text("", encoding="utf-8")
 
     def fail_snapshot_download(*args, **kwargs):
         raise AssertionError("Should not download when the visible model folder exists.")
@@ -167,6 +171,90 @@ def test_canary_uses_visible_model_dir_without_redownloading(tmp_path, monkeypat
     monkeypatch.setattr("huggingface_hub.snapshot_download", fail_snapshot_download)
 
     assert inferencer.resolve_model_target(CanaryQwenInference.DEFAULT_MODEL_ID) == str(local_model_dir)
+
+
+def test_canary_redownloads_incomplete_visible_model_dir(tmp_path, monkeypatch):
+    inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
+    local_model_dir = tmp_path / "canary" / "nvidia--canary-qwen-2.5b"
+    local_model_dir.mkdir(parents=True)
+    (local_model_dir / "config.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    def fake_snapshot_download(repo_id, local_dir, cache_dir, token, tqdm_class):
+        calls.append(repo_id)
+        Path(local_dir, "model.safetensors").write_text("", encoding="utf-8")
+        return local_dir
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+
+    assert inferencer.resolve_model_target(CanaryQwenInference.DEFAULT_MODEL_ID) == str(local_model_dir)
+    assert calls == [CanaryQwenInference.DEFAULT_MODEL_ID]
+
+
+def test_canary_raises_when_download_does_not_create_complete_model_dir(tmp_path, monkeypatch):
+    inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
+
+    def fake_snapshot_download(repo_id, local_dir, cache_dir, token, tqdm_class):
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        Path(local_dir, "config.json").write_text("{}", encoding="utf-8")
+        return local_dir
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+
+    try:
+        inferencer.resolve_model_target(CanaryQwenInference.DEFAULT_MODEL_ID)
+    except RuntimeError as exc:
+        assert "complete model folder" in str(exc)
+    else:
+        raise AssertionError("Expected incomplete Canary-Qwen download to fail.")
+
+
+def test_canary_update_model_emits_download_and_load_status(tmp_path, monkeypatch):
+    inferencer = CanaryQwenInference(model_dir=str(tmp_path / "canary"))
+    statuses = []
+
+    class DummyLoadedModel:
+        audio_locator_tag = "<|audio|>"
+
+        def __init__(self):
+            self.tokenizer = DummyTokenizer()
+
+        def eval(self):
+            return self
+
+        def to(self, *args, **kwargs):
+            return self
+
+    class DummySalm:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return DummyLoadedModel()
+
+    def fake_snapshot_download(repo_id, local_dir, cache_dir, token, tqdm_class):
+        bar = tqdm_class(total=2, unit="files")
+        bar.update(1)
+        bar.update(1)
+        bar.close()
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        Path(local_dir, "config.json").write_text("{}", encoding="utf-8")
+        Path(local_dir, "model.safetensors").write_text("", encoding="utf-8")
+        return local_dir
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(inferencer, "import_salm", lambda: DummySalm)
+
+    inferencer.update_model(
+        CanaryQwenInference.DEFAULT_MODEL_ID,
+        "float32",
+        gr.Progress(),
+        progress_callback=lambda _progress, _segment=None, status=None: statuses.append(status) if status else None,
+    )
+
+    assert any("Downloading Canary-Qwen model to" in status for status in statuses)
+    assert any("Downloading Canary-Qwen model:" in status for status in statuses)
+    assert any("Canary-Qwen model download finished." == status for status in statuses)
+    assert any("Loading Canary-Qwen model from" in status for status in statuses)
+    assert statuses[-1] == "Canary-Qwen model loaded. Starting transcription.."
 
 
 def test_canary_rejects_unsupported_translation(tmp_path):

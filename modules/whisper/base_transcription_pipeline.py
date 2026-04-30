@@ -324,8 +324,11 @@ class BaseTranscriptionPipeline(ABC):
                 worker_result = {}
                 worker_error = {}
 
-                def live_progress_callback(progress_value, segment=None):
-                    if segment:
+                def live_progress_callback(progress_value, segment=None, status=None):
+                    del progress_value
+                    if status:
+                        live_update_queue.put(append_live_lines(str(status)))
+                    elif segment:
                         segment_count[0] += 1
                         start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
                         end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
@@ -736,8 +739,11 @@ class BaseTranscriptionPipeline(ABC):
             worker_result = {}
             worker_error = {}
 
-            def live_progress_callback(progress_value, segment=None):
-                if segment:
+            def live_progress_callback(progress_value, segment=None, status=None):
+                del progress_value
+                if status:
+                    live_update_queue.put(append_live_lines(str(status)))
+                elif segment:
                     segment_count[0] += 1
                     start_time = self.format_timestamp(segment.start) if hasattr(segment, "start") else "00:00:00.000"
                     end_time = self.format_timestamp(segment.end) if hasattr(segment, "end") else "00:00:00.000"
