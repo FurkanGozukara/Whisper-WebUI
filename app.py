@@ -92,7 +92,7 @@ class App:
         "no_repeat_ngram_size": 0,
         "word_timestamps": False,
         "max_new_tokens": 256,
-        "chunk_length": 40,
+        "chunk_length": 10,
         "use_batched_inference": False,
         "batch_size": 1,
         "condition_on_previous_text": False,

@@ -93,6 +93,7 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     assert defaults["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
     assert defaults["file_tab"]["whisper"]["word_timestamps"] is False
+    assert defaults["file_tab"]["whisper"]["chunk_length"] == 10
     assert defaults["file_tab"]["whisper"]["use_batched_inference"] is False
     assert WhisperParams(lang="English").lang == "en"
     assert WhisperParams(lang="english").lang == "en"

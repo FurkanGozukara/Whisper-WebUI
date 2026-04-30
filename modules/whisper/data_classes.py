@@ -359,7 +359,7 @@ class WhisperParams(BaseParams):
         description="Punctuations to merge with previous word"
     )
     max_new_tokens: Optional[int] = Field(default=None, description="Maximum number of new tokens per chunk")
-    chunk_length: Optional[int] = Field(default=20, description="Length of audio segments in seconds")
+    chunk_length: Optional[int] = Field(default=10, description="Length of audio segments in seconds")
     hallucination_silence_threshold: Optional[float] = Field(
         default=None,
         description="Threshold for skipping silent periods in hallucination detection"
