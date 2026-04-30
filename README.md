@@ -4,7 +4,7 @@
 
 > https://www.patreon.com/posts/145395299
 
-## 30 April 2026 - Version 9.0
+## 30 April 2026 - Version 10.0
 
 - This is a quite big upgrade to our application
 
