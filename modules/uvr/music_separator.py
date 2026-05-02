@@ -62,8 +62,7 @@ class MusicSeparator:
             device (str): Device to use for the model.
             segment_size (int): Segment size for the prediction.
         """
-        if device is None:
-            device = self.device
+        device = self.resolve_device(device)
 
         self.device = device
         self.model_config = {
@@ -102,6 +101,8 @@ class MusicSeparator:
             np.ndarray: Vocals numpy arrays.
             file_paths: List of file paths where the separated audio is saved. Return empty when save_file is False.
         """
+        device = self.resolve_device(device)
+
         if isinstance(audio, str):
             output_filename, ext = os.path.basename(audio), ".wav"
             output_filename, orig_ext = os.path.splitext(output_filename)
@@ -174,12 +175,37 @@ class MusicSeparator:
     def get_device():
         if torch.cuda.is_available():
             return "cuda"
-        if torch.xpu.is_available():
+        if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
             return "xpu"
-        elif torch.backends.mps.is_available():
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         else:
             return "cpu"
+
+    @classmethod
+    def is_device_available(cls, device: Optional[str]) -> bool:
+        device = str(device or "").strip().lower()
+        if device == "cuda":
+            return torch.cuda.is_available()
+        if device == "xpu":
+            return getattr(torch, "xpu", None) is not None and torch.xpu.is_available()
+        if device == "mps":
+            return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        return device == "cpu"
+
+    def resolve_device(self, device: Optional[str] = None) -> str:
+        requested_device = str(device or self.device or "").strip().lower()
+        if requested_device and self.is_device_available(requested_device):
+            return requested_device
+
+        fallback_device = self.get_device()
+        if requested_device and requested_device != fallback_device:
+            logger.warning(
+                "Requested UVR device '%s' is not available. Falling back to '%s'.",
+                requested_device,
+                fallback_device,
+            )
+        return fallback_device
 
     def offload(self):
         """Offload the model and free up the memory"""

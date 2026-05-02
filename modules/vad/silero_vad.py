@@ -48,6 +48,7 @@ class SileroVAD:
 
         if not isinstance(audio, np.ndarray):
             audio = faster_whisper.decode_audio(audio, sampling_rate=sampling_rate)
+        audio = self.normalize_audio(audio)
 
         duration = audio.shape[0] / sampling_rate
         duration_after_vad = duration
@@ -89,6 +90,8 @@ class SileroVAD:
         if self.model is None:
             self.update_model()
 
+        audio = self.normalize_audio(audio)
+
         if vad_options is None:
             vad_options = VadOptions(**kwargs)
 
@@ -114,7 +117,7 @@ class SileroVAD:
         padded_audio = np.pad(
             audio, (0, window_size_samples - audio.shape[0] % window_size_samples)
         )
-        speech_probs = self.model(padded_audio.reshape(1, -1)).squeeze(0)
+        speech_probs = self._get_speech_probs(padded_audio)
 
         triggered = False
         speeches = []
@@ -223,6 +226,24 @@ class SileroVAD:
             return np.array([], dtype=np.float32)
 
         return np.concatenate([audio[chunk["start"]: chunk["end"]] for chunk in chunks])
+
+    @staticmethod
+    def normalize_audio(audio: np.ndarray) -> np.ndarray:
+        """Return mono float32 audio in the 1D shape expected by current Silero VAD."""
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            channel_axis = 0 if audio.shape[0] <= audio.shape[-1] else -1
+            audio = audio.mean(axis=channel_axis)
+        return np.ascontiguousarray(audio.reshape(-1), dtype=np.float32)
+
+    def _get_speech_probs(self, padded_audio: np.ndarray) -> np.ndarray:
+        try:
+            speech_probs = self.model(padded_audio)
+        except AssertionError as exc:
+            if "multiple of num_samples" in str(exc):
+                raise
+            speech_probs = self.model(padded_audio.reshape(1, -1))
+        return np.asarray(speech_probs, dtype=np.float32).reshape(-1)
 
     @staticmethod
     def format_timestamp(
