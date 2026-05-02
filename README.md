@@ -161,7 +161,8 @@
 
 ### Full Page Screenshot
 
-<img width="3840" height="3382" alt="screencapture-127-0-0-1-7864-2026-04-08-17_22_41" src="https://github.com/user-attachments/assets/b4e49a9e-80fa-48c8-b935-a32d088022fe" />
+<img height="900" alt="screencapture-127-0-0-1-7861-2026-05-02-05_09_06" src="https://github.com/user-attachments/assets/78cffef8-e3d1-42dc-a58b-e346cd74dc7e" />
+
 
 
 
