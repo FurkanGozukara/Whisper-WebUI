@@ -38,8 +38,7 @@ class Diarizer:
         transcribed_result: List[Segment]
             transcribed result through whisper.
         use_auth_token: str
-            Optional Hugging Face token. Only needed when the local offline diarization
-            bundle is missing and gated pyannote dependencies must be downloaded.
+            Optional fallback token for advanced/manual diarization setups.
         device: Optional[str]
             Device for diarization.
 
@@ -98,8 +97,7 @@ class Diarizer:
         Parameters
         ----------
         use_auth_token: str
-            Optional Hugging Face token. Only needed when the local offline diarization
-            bundle is missing and gated pyannote dependencies must be downloaded.
+            Optional fallback token for advanced/manual diarization setups.
         device: str
             Device for diarization.
         """
@@ -125,8 +123,9 @@ class Diarizer:
             print(
                 "\nFailed to initialize diarization pipeline.\n"
                 f"Error: {type(e).__name__}: {e}\n"
-                "Tip: Run DownloadModels.py to populate the offline diarization bundle under "
-                "models/Diarization/Speaker_Diarization_3_1, or provide an HF token for first-time download.\n"
+                "Tip: The installer normally downloads the offline diarization bundle automatically. "
+                "Run DownloadModels.py or the installer again to repair "
+                "models/Diarization/Speaker_Diarization_3_1.\n"
             )
             self.pipe = None
         logger.disabled = False

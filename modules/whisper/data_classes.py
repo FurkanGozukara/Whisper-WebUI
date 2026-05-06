@@ -169,7 +169,7 @@ class DiarizationParams(BaseParams):
     diarization_device: str = Field(default="cuda", description="Device to run Diarization model.")
     hf_token: str = Field(
         default="",
-        description="Hugging Face token for downloading diarization models"
+        description="Optional Hugging Face token fallback for diarization"
     )
     enable_offload: bool = Field(
         default=True,
@@ -183,7 +183,7 @@ class DiarizationParams(BaseParams):
                          device: Optional[str] = None) -> List[gr.components.base.FormComponent]:
         inputs = []
         
-        # Row 1: Enable Diarization, Device, HuggingFace Token
+        # Row 1: Enable Diarization, Device, hidden token fallback
         with gr.Row():
             inputs.append(gr.Checkbox(
                 label=_("Enable Diarization"),
@@ -199,7 +199,8 @@ class DiarizationParams(BaseParams):
             inputs.append(gr.Textbox(
                 label=_("HuggingFace Token"),
                 value=defaults.get("hf_token", cls.__fields__["hf_token"].default),
-                info="Optional HuggingFace token. Usually only needed for download or rate-limit issues."
+                info="Leave blank. The offline diarization bundle is used automatically.",
+                visible=False
             ))
         
         # Row 2: Offload model (single item, but in a row for consistency)
