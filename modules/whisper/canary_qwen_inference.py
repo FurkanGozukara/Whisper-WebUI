@@ -519,6 +519,8 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
 
     @staticmethod
     def patch_nemo_import_compat() -> None:
+        CanaryQwenInference.patch_lightning_neptune_logger_compat()
+
         try:
             import overrides
 
@@ -557,6 +559,42 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 fsdp.fully_shard = lambda *a, **k: a[0] if len(a) == 1 and callable(a[0]) else (lambda f: f)
         except Exception:
             pass
+
+    @staticmethod
+    def patch_lightning_neptune_logger_compat() -> None:
+        """
+        Keep NeMo importable with Lightning releases that removed NeptuneLogger.
+
+        NeMo imports NeptuneLogger at module import time even when Neptune logging
+        is disabled. Canary-Qwen does not use Neptune, so a lazy placeholder is
+        enough to preserve the optional dependency boundary.
+        """
+
+        class NeptuneLogger:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                raise ImportError(
+                    "NeptuneLogger is not available in the installed Lightning "
+                    "package. Disable Neptune logging or install a compatible "
+                    "Neptune/Lightning logger package."
+                )
+
+        for module_name in ("lightning.pytorch.loggers", "pytorch_lightning.loggers"):
+            try:
+                loggers_module = importlib.import_module(module_name)
+            except Exception:
+                continue
+
+            if hasattr(loggers_module, "NeptuneLogger"):
+                continue
+
+            loggers_module.NeptuneLogger = NeptuneLogger
+            exported_names = getattr(loggers_module, "__all__", None)
+            if isinstance(exported_names, list):
+                if "NeptuneLogger" not in exported_names:
+                    exported_names.append("NeptuneLogger")
+            elif isinstance(exported_names, tuple) and "NeptuneLogger" not in exported_names:
+                loggers_module.__all__ = exported_names + ("NeptuneLogger",)
 
     @staticmethod
     def torch_dtype_for_compute_type(compute_type: str):

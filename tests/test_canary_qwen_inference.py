@@ -1,5 +1,9 @@
+import sys
+import types
+
 import gradio as gr
 import numpy as np
+import pytest
 import torch
 from pathlib import Path
 
@@ -255,6 +259,23 @@ def test_canary_update_model_emits_download_and_load_status(tmp_path, monkeypatc
     assert any("Canary-Qwen model download finished." == status for status in statuses)
     assert any("Loading Canary-Qwen model from" in status for status in statuses)
     assert statuses[-1] == "Canary-Qwen model loaded. Starting transcription.."
+
+
+def test_canary_patches_missing_lightning_neptune_logger(monkeypatch):
+    lightning_loggers = types.ModuleType("lightning.pytorch.loggers")
+    lightning_loggers.__all__ = ["TensorBoardLogger"]
+    pytorch_lightning_loggers = types.ModuleType("pytorch_lightning.loggers")
+    pytorch_lightning_loggers.__all__ = ("TensorBoardLogger",)
+
+    monkeypatch.setitem(sys.modules, "lightning.pytorch.loggers", lightning_loggers)
+    monkeypatch.setitem(sys.modules, "pytorch_lightning.loggers", pytorch_lightning_loggers)
+
+    CanaryQwenInference.patch_lightning_neptune_logger_compat()
+
+    for loggers_module in (lightning_loggers, pytorch_lightning_loggers):
+        assert "NeptuneLogger" in loggers_module.__all__
+        with pytest.raises(ImportError, match="NeptuneLogger"):
+            loggers_module.NeptuneLogger()
 
 
 def test_canary_rejects_unsupported_translation(tmp_path):
