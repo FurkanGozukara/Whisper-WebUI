@@ -4,6 +4,73 @@
 
 > https://www.patreon.com/posts/145395299
 
+## Quick Info
+- This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.11 venv, best quality presets fully ready):
+  -   Whisper from OpenAI : [https://github.com/openai/whisper](https://github.com/openai/whisper)
+  -   NVIDIA NeMo Canary-Qwen-2.5B : [https://huggingface.co/nvidia/canary-qwen-2.5b](https://huggingface.co/nvidia/canary-qwen-2.5b)
+-   Full tutorial video (2 May 2026) : [https://www.youtube.com/watch?v=4lAk6sf1qF8](https://www.youtube.com/watch?v=4lAk6sf1qF8)
+
+<img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
+
+### 8 June 2026 - Version 12.2 
+
+-   -   This is a major quality upgrade        
+    -   Both Whisper and Canary models made more robust        
+        -   Thus, if you were getting random errors on random files, it should not happen any more            
+        -   Even though they were rare edge cases we fixed this issue            
+    -   Whisper models seperated into below 2 model selection        
+        -   Whisper (faster-whisper / CTranslate2)            
+        -   Insanely Fast Whisper (Transformers)            
+    -   Process based executing improved and cancel feature improved, now cancel immediately works properly        
+    -   For Whisper models, the displayed messages during processing improved        
+        -   Now you will see all messages on CMD and Gradio accurately            
+    -   Default system presets updated to Fast Whisper Best Quality, Insane Fast Whisper Best Quality, Canary Qwen Best Quality        
+    -   Now default selected preset / model is Fast Whisper Best Quality with Whisper Large-v3        
+        -   Whisper Large-v3 model is the most capable robust model that excels at 100+ languages            
+    -   I have done a very through research and experimentation to remake these presets with improved accuracy        
+        -   Our accuracy is improved over 80% now            
+    -   Now Word Timestamps is automatically selected along with new option Normalize Word Timestamp Output        
+        -   This ensures that you get sentence level accurate subtitles / transcription not just 30 second long speeches            
+    -   You can see newest quality research and new preset results tested on very hard to transcribe audio files as below        
+    
+    <img height="600" alt="image" src="https://github.com/user-attachments/assets/d5a6b565-6262-4633-bc77-9310a7c4d115" />
+
+### Word Error Rate (WER)
+-   -   WER means Word Error Rate.        
+        -   It measures word-level transcription mistakes:            
+    -   WER = (substituted words + deleted words + inserted words) / reference words        
+        -   So if the real subtitle has 100 words and the transcription has 6 total word mistakes, WER is 6%.            
+    -   WER catches:        
+        -   \- missing words            
+        -   \- wrong words            
+        -   \- extra/repeated words            
+
+### CER means Character Error Rate.
+-   -   It is the same idea, but measured at the character level instead of word level:        
+        -   CER = (substituted chars + deleted chars + inserted chars) / reference chars
+                -   CER catches smaller spelling/detail mistakes better.        
+        -   Example:            
+            -   Reference:                
+                -   Wan 2.2 training                    
+                -   Prediction:                    
+                -   One 2.2 trainings                    
+        -   WER may be high because Wan became One and training became trainings.            
+        -   CER may be lower because most letters are still similar.            
+    -   For our use case, WER is the main metric because you care about missing words, wrong words, repeated words, and hallucinated extra words. CER is useful secondary evidence for spelling accuracy.
+        
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/63c1cee0-4d0b-4e80-9fe9-fe364e8a3f00" />
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/c8a05c8a-8f2e-4210-8fd3-ffdfa53bcc75" />
+
+### 26 May 2026 - Version 12.0 
+-   With new zip file below errors fixed    
+    -   Token: not provided Note: pyannote gated files require --token or HF\_TOKEN on first download. \[ERROR\] Dependency source does not expose pytorch\_model.bin: MonsterMMORPG/Wan\_GGUF/pyannote\_segmentation3
+        
+### 2 May 2026 - Version 11.1
+-   Some installer bugs fixed    
+-   Enable Background Music Remover Filter - fixed    
+-   Enable Silero VAD Filter - fixed
+
 ## 30 April 2026 - Version 10.0
 
 - This is a quite big upgrade to our application
