@@ -118,11 +118,113 @@ def test_canary_merges_raw_generation_kwargs(tmp_path):
     assert inferencer.model.calls[0]["kwargs"]["max_new_tokens"] == 7
 
 
+def test_canary_clamps_unsafe_generation_kwargs(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    params = WhisperParams(
+        model_size=CanaryQwenInference.DEFAULT_MODEL_ID,
+        lang="english",
+        compute_type="float32",
+        canary_generation_kwargs=(
+            '{"max_new_tokens": 999999, "num_beams": 999, "top_p": 4, '
+            '"top_k": -5, "temperature": -1, "repetition_penalty": -2, '
+            '"length_penalty": 99, "no_repeat_ngram_size": 100}'
+        ),
+    )
+
+    inferencer.transcribe(
+        np.zeros(CanaryQwenInference.SAMPLE_RATE, dtype=np.float32),
+        gr.Progress(),
+        None,
+        *params.to_list(),
+        log_console=False,
+        log_model_banner=False,
+    )
+
+    kwargs = inferencer.model.calls[0]["kwargs"]
+    assert kwargs["max_new_tokens"] == CanaryQwenInference.MAX_SAFE_MAX_NEW_TOKENS
+    assert kwargs["num_beams"] == CanaryQwenInference.MAX_SAFE_NUM_BEAMS
+    assert kwargs["top_p"] == 1.0
+    assert kwargs["top_k"] == 0
+    assert kwargs["temperature"] == 0.01
+    assert kwargs["repetition_penalty"] == 0.01
+    assert kwargs["length_penalty"] == 10.0
+    assert kwargs["no_repeat_ngram_size"] == 20
+
+
+def test_canary_clamps_nested_generation_config():
+    kwargs = CanaryQwenInference.parse_canary_generation_kwargs(
+        '{"generation_config": {"max_new_tokens": 999999, "num_beams": 999, "top_p": 2}}'
+    )
+
+    sanitized = CanaryQwenInference.sanitize_generation_kwargs(kwargs)
+
+    generation_config = sanitized["generation_config"]
+    assert generation_config.max_new_tokens == CanaryQwenInference.MAX_SAFE_MAX_NEW_TOKENS
+    assert generation_config.num_beams == CanaryQwenInference.MAX_SAFE_NUM_BEAMS
+    assert generation_config.top_p == 1.0
+
+
+def test_canary_merges_tiny_tail_into_previous_chunk(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    audio = np.zeros((CanaryQwenInference.SAMPLE_RATE * 2) + 273, dtype=np.float32)
+
+    chunks = inferencer.build_audio_chunks(audio, chunk_length=1)
+
+    assert [chunk["audio"].shape[-1] for chunk in chunks] == [
+        CanaryQwenInference.SAMPLE_RATE,
+        CanaryQwenInference.SAMPLE_RATE + 273,
+    ]
+    assert chunks[-1]["end_seconds"] == pytest.approx(audio.shape[-1] / CanaryQwenInference.SAMPLE_RATE)
+
+
+def test_canary_skips_audio_shorter_than_safe_feature_window(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    params = WhisperParams(
+        model_size=CanaryQwenInference.DEFAULT_MODEL_ID,
+        lang="english",
+        compute_type="float32",
+    )
+
+    segments, _elapsed = inferencer.transcribe(
+        np.zeros(CanaryQwenInference.MIN_CHUNK_SAMPLES - 1, dtype=np.float32),
+        gr.Progress(),
+        None,
+        *params.to_list(),
+        log_console=False,
+        log_model_banner=False,
+    )
+
+    assert segments == []
+    assert inferencer.model.calls == []
+
+
+def test_canary_enforces_minimum_requested_chunk_length(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    audio = np.zeros(CanaryQwenInference.MIN_CHUNK_SAMPLES * 3, dtype=np.float32)
+
+    chunks = inferencer.build_audio_chunks(audio, chunk_length=0.001)
+
+    assert chunks
+    assert all(chunk["audio"].shape[-1] >= CanaryQwenInference.MIN_CHUNK_SAMPLES for chunk in chunks)
+
+
+def test_canary_prepare_audio_array_replaces_non_finite_samples(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+
+    audio = inferencer.prepare_audio_array(np.array([np.nan, np.inf, -np.inf, 0.5], dtype=np.float32))
+
+    assert np.isfinite(audio).all()
+    assert audio.tolist() == [0.0, 0.0, 0.0, 0.5]
+
+
 def test_canary_disables_word_timestamp_writer_options(tmp_path):
     inferencer = build_inferencer(tmp_path)
 
     assert inferencer.supports_word_timestamps() is False
-    assert inferencer.get_writer_options(WhisperParams(word_timestamps=True)) == {"highlight_words": False}
+    assert inferencer.get_writer_options(WhisperParams(word_timestamps=True)) == {
+        "highlight_words": False,
+        "normalize_word_timestamps": False,
+    }
 
 
 def test_canary_downloads_remote_model_to_visible_model_dir(tmp_path, monkeypatch):

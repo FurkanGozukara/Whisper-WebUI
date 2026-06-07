@@ -9,8 +9,12 @@
   "file_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
+      "beam_size": 2,
       "condition_on_previous_text": true,
-      "repetition_penalty": 1.0,
+      "repetition_penalty": 2.0,
+      "word_timestamps": true,
+      "normalize_word_timestamps": true,
+      "chunk_length": 30,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false,
       "use_batched_inference": false,
@@ -20,8 +24,12 @@
   "youtube_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
+      "beam_size": 2,
       "condition_on_previous_text": true,
-      "repetition_penalty": 1.0,
+      "repetition_penalty": 2.0,
+      "word_timestamps": true,
+      "normalize_word_timestamps": true,
+      "chunk_length": 30,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false,
       "use_batched_inference": false,
@@ -31,8 +39,12 @@
   "mic_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
+      "beam_size": 2,
       "condition_on_previous_text": true,
-      "repetition_penalty": 1.0,
+      "repetition_penalty": 2.0,
+      "word_timestamps": true,
+      "normalize_word_timestamps": true,
+      "chunk_length": 30,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false,
       "use_batched_inference": false,

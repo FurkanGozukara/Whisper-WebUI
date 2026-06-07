@@ -67,6 +67,165 @@ def get_end(segments: List[dict]) -> Optional[float]:
     )
 
 
+SENTENCE_END_RE = re.compile(r"[.!?]+[\"')\]}]*$")
+CLAUSE_END_RE = re.compile(r"[,;:]+[\"')\]}]*$")
+ABBREVIATION_RE = re.compile(
+    r"^(?:[A-Za-z]\.){2,}$|^(?:Mr|Mrs|Ms|Dr|Prof|Sen|Rep|Gov|St|No|Jr|Sr|Inc|Ltd)\.$",
+    re.IGNORECASE,
+)
+NORMALIZED_SUBTITLE_MAX_CHARS = 92
+NORMALIZED_SUBTITLE_MAX_WORDS = 24
+NORMALIZED_SUBTITLE_MAX_DURATION = 8.0
+
+
+def _word_text(word: dict) -> str:
+    return str(word.get("word") or "")
+
+
+def _join_word_text(words: List[dict]) -> str:
+    raw = "".join(_word_text(word) for word in words).strip()
+    if " " not in raw and len(words) > 1:
+        raw = " ".join(_word_text(word).strip() for word in words if _word_text(word).strip())
+    return re.sub(r"\s+", " ", raw).replace("-->", "->").strip()
+
+
+def _is_sentence_end(word_text: str) -> bool:
+    stripped = word_text.strip()
+    if not stripped or ABBREVIATION_RE.match(stripped):
+        return False
+    return bool(SENTENCE_END_RE.search(stripped))
+
+
+def _is_clause_end(word_text: str) -> bool:
+    stripped = word_text.strip()
+    return bool(stripped and CLAUSE_END_RE.search(stripped))
+
+
+def _safe_word_time(word: dict, key: str, fallback: Optional[float]) -> Optional[float]:
+    value = word.get(key)
+    if value is None:
+        return fallback
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _segment_from_words(words: List[dict], fallback_start: Optional[float] = None, fallback_end: Optional[float] = None) -> Optional[dict]:
+    text = _join_word_text(words)
+    if not text:
+        return None
+
+    start = _safe_word_time(words[0], "start", fallback_start)
+    end = _safe_word_time(words[-1], "end", fallback_end)
+    if start is None or end is None:
+        return None
+
+    return {
+        "start": start,
+        "end": max(start, end),
+        "text": text,
+    }
+
+
+def normalize_result_for_segment_subtitles(result: Union[dict, List[Segment]]) -> Union[dict, List[Segment]]:
+    """Convert word-timestamp results into sentence-aware segment subtitles without word-level data."""
+    if isinstance(result, list) and result and isinstance(result[0], Segment):
+        result = {"segments": [seg.model_dump() for seg in result]}
+    if not isinstance(result, dict):
+        return result
+
+    segments = result.get("segments")
+    if not isinstance(segments, list) or not any(segment.get("words") for segment in segments if isinstance(segment, dict)):
+        return result
+
+    normalized_segments: List[dict] = []
+    current_words: List[dict] = []
+    current_fallback_start: Optional[float] = None
+    current_fallback_end: Optional[float] = None
+    last_soft_break_index: Optional[int] = None
+
+    def reset_soft_break() -> None:
+        nonlocal last_soft_break_index
+        last_soft_break_index = None
+        for index, current_word in enumerate(current_words, start=1):
+            if _is_sentence_end(_word_text(current_word)) or _is_clause_end(_word_text(current_word)):
+                last_soft_break_index = index
+
+    def flush(split_at: Optional[int] = None) -> None:
+        nonlocal current_words, current_fallback_start, current_fallback_end, last_soft_break_index
+
+        if not current_words:
+            return
+
+        split_at = split_at or len(current_words)
+        emitting = current_words[:split_at]
+        remaining = current_words[split_at:]
+        segment = _segment_from_words(emitting, current_fallback_start, current_fallback_end)
+        if segment is not None:
+            normalized_segments.append(segment)
+
+        current_words = remaining
+        current_fallback_start = _safe_word_time(current_words[0], "start", None) if current_words else None
+        current_fallback_end = _safe_word_time(current_words[-1], "end", None) if current_words else None
+        reset_soft_break()
+
+    def append_plain_segment(segment: dict) -> None:
+        text = str(segment.get("text") or "").strip().replace("-->", "->")
+        if not text:
+            return
+        normalized_segments.append({
+            "start": segment.get("start", 0.0),
+            "end": segment.get("end", segment.get("start", 0.0)),
+            "text": re.sub(r"\s+", " ", text),
+        })
+
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        words = segment.get("words") or []
+        if not words:
+            flush()
+            append_plain_segment(segment)
+            continue
+
+        for word in words:
+            if not isinstance(word, dict) or not _word_text(word).strip():
+                continue
+            if not current_words:
+                current_fallback_start = segment.get("start")
+            current_words.append(word)
+            current_fallback_end = segment.get("end")
+
+            if _is_sentence_end(_word_text(word)):
+                flush()
+                continue
+
+            if _is_clause_end(_word_text(word)):
+                last_soft_break_index = len(current_words)
+
+            text = _join_word_text(current_words)
+            duration = (
+                (_safe_word_time(current_words[-1], "end", current_fallback_end) or 0.0)
+                - (_safe_word_time(current_words[0], "start", current_fallback_start) or 0.0)
+            )
+            too_long = (
+                len(text) >= NORMALIZED_SUBTITLE_MAX_CHARS
+                or len(current_words) >= NORMALIZED_SUBTITLE_MAX_WORDS
+                or duration >= NORMALIZED_SUBTITLE_MAX_DURATION
+            )
+            if too_long:
+                split_at = last_soft_break_index if last_soft_break_index and last_soft_break_index >= 4 else len(current_words)
+                flush(split_at)
+
+    flush()
+
+    normalized = dict(result)
+    normalized["segments"] = normalized_segments
+    normalized["text"] = " ".join(segment["text"] for segment in normalized_segments)
+    return normalized
+
+
 class ResultWriter:
     extension: str
 
@@ -437,6 +596,10 @@ def generate_file(
 
     if isinstance(file_writer, WriteLRC) and kwargs.get("highlight_words", False):
         kwargs["highlight_words"], kwargs["align_lrc_words"] = False, True
+
+    normalize_word_timestamps = bool(kwargs.pop("normalize_word_timestamps", False))
+    if normalize_word_timestamps:
+        result = normalize_result_for_segment_subtitles(result)
 
     file_writer(result=result, output_file_name=output_file_name, **kwargs)
     content = read_file(file_path)

@@ -232,6 +232,55 @@ def test_standard_pipeline_enables_encoder_batching_without_conditioning():
     assert captured["generate_segments_patched"] is True
 
 
+def test_prompt_safe_params_clear_fixed_max_new_tokens_when_conditioning():
+    params = WhisperParams(
+        condition_on_previous_text=True,
+        max_new_tokens=256,
+    )
+
+    resolved = FasterWhisperInference.resolve_prompt_safe_params(params, log_console=False)
+
+    assert resolved.condition_on_previous_text is True
+    assert resolved.max_new_tokens is None
+    assert params.max_new_tokens == 256
+
+
+def test_prompt_safe_params_keep_fixed_max_new_tokens_without_conditioning():
+    params = WhisperParams(
+        condition_on_previous_text=False,
+        max_new_tokens=256,
+    )
+
+    resolved = FasterWhisperInference.resolve_prompt_safe_params(params, log_console=False)
+
+    assert resolved is params
+    assert resolved.max_new_tokens == 256
+
+
+def test_prompt_safe_params_clear_fixed_max_new_tokens_for_prompt_sources():
+    params = WhisperParams(
+        condition_on_previous_text=False,
+        initial_prompt="domain words",
+        max_new_tokens=256,
+    )
+
+    resolved = FasterWhisperInference.resolve_prompt_safe_params(params, log_console=False)
+
+    assert resolved.max_new_tokens is None
+    assert resolved.initial_prompt == "domain words"
+
+
+def test_prompt_safe_params_clamps_oversized_fixed_max_new_tokens():
+    params = WhisperParams(
+        condition_on_previous_text=False,
+        max_new_tokens=999,
+    )
+
+    resolved = FasterWhisperInference.resolve_prompt_safe_params(params, log_console=False)
+
+    assert resolved.max_new_tokens == 432
+
+
 def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch):
     captured = {}
     callback_events = []

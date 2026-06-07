@@ -111,8 +111,10 @@ if "modules.utils.audio_manager" not in sys.modules:
 
 if "modules.utils.files_manager" not in sys.modules:
     fake_files_manager = types.ModuleType("modules.utils.files_manager")
+    fake_files_manager.MEDIA_EXTENSION = [".wav", ".mp3", ".mp4"]
     fake_files_manager.get_media_files = lambda *args, **kwargs: []
     fake_files_manager.format_gradio_files = lambda files: files
+    fake_files_manager.is_video = lambda file_path: str(file_path).lower().endswith(".mp4")
     fake_files_manager.read_file = lambda file_path: Path(file_path).read_text(encoding="utf-8")
     fake_files_manager.load_yaml = lambda *args, **kwargs: {}
     sys.modules["modules.utils.files_manager"] = fake_files_manager
@@ -138,6 +140,9 @@ if "gradio_i18n" not in sys.modules:
             obj.add_values = []
             return obj
 
+        def unwrap(self):
+            return str(self)
+
     class _TranslateContext:
         dictionary = {}
 
@@ -146,7 +151,7 @@ if "gradio_i18n" not in sys.modules:
             return "en"
 
     fake_gradio_i18n.Translate = _Translate
-    fake_gradio_i18n.gettext = lambda value: value
+    fake_gradio_i18n.gettext = lambda value: _I18nString(value)
     fake_gradio_i18n_i18n.I18nString = _I18nString
     fake_gradio_i18n_i18n.TranslateContext = _TranslateContext
     sys.modules["gradio_i18n"] = fake_gradio_i18n
@@ -185,6 +190,17 @@ class DummyLivePipeline(BaseTranscriptionPipeline):
                 progress_callback((index + 1) / 35.0, segment)
             time.sleep(0.005)
         return segments, 1.0
+
+
+class BlockingLivePipeline(DummyLivePipeline):
+    LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC = 0.01
+
+    def run(self, audio, progress=None, file_format="SRT", add_timestamp=True, progress_callback=None, *pipeline_params):
+        time.sleep(0.25)
+        segment = Segment(start=0.0, end=1.0, text="late line")
+        if progress_callback is not None:
+            progress_callback(1.0, segment)
+        return [segment], 0.25
 
 
 def test_live_transcription_streams_recent_segment_history(monkeypatch, tmp_path):
@@ -233,7 +249,93 @@ def test_live_transcription_streams_recent_segment_history(monkeypatch, tmp_path
     assert len(final_live_output.splitlines()) <= BaseTranscriptionPipeline.LIVE_TRANSCRIPTION_HISTORY_LINES
 
 
-def test_build_output_specs_adds_plain_srt_companion_when_word_timestamps_enabled(tmp_path):
+def test_live_transcription_emits_heartbeat_before_first_segment(monkeypatch, tmp_path):
+    media_file = tmp_path / "clip.wav"
+    media_file.write_bytes(b"fake")
+
+    output_file = tmp_path / "clip.txt"
+    output_file.write_text("subtitle", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.generate_file",
+        lambda **kwargs: ("subtitle", str(output_file)),
+    )
+
+    pipeline = BlockingLivePipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(
+        whisper=WhisperParams(word_timestamps=False),
+    ).to_list()
+
+    updates = list(
+        pipeline.transcribe_file_with_live_output(
+            [str(media_file)],
+            False,
+            None,
+            False,
+            False,
+            str(tmp_path),
+            ["txt"],
+            False,
+            None,
+            *pipeline_params,
+        )
+    )
+
+    live_outputs = [update[0] for update in updates]
+    assert any("Still transcribing... waiting for the first segment" in output for output in live_outputs)
+    assert "late line" in updates[-1][0]
+    assert updates[-1][2] == [str(output_file)]
+
+
+def test_mic_live_transcription_emits_heartbeat_before_first_segment(monkeypatch, tmp_path):
+    media_file = tmp_path / "mic.wav"
+    media_file.write_bytes(b"fake")
+
+    output_file = tmp_path / "mic.txt"
+    output_file.write_text("subtitle", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.generate_file",
+        lambda **kwargs: ("subtitle", str(output_file)),
+    )
+
+    pipeline = BlockingLivePipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(
+        whisper=WhisperParams(word_timestamps=False),
+    ).to_list()
+
+    updates = list(
+        pipeline.transcribe_mic_with_live_output(
+            str(media_file),
+            ["txt"],
+            False,
+            None,
+            *pipeline_params,
+        )
+    )
+
+    live_outputs = [update[0] for update in updates]
+    assert any("Still transcribing... waiting for the first segment" in output for output in live_outputs)
+    assert "late line" in updates[-1][0]
+    assert updates[-1][2] == [str(output_file)]
+
+
+def test_writer_options_normalize_word_timestamp_output_by_default(tmp_path):
+    pipeline = DummyLivePipeline(output_dir=tmp_path)
+
+    assert pipeline.get_writer_options(WhisperParams(word_timestamps=True)) == {
+        "highlight_words": False,
+        "normalize_word_timestamps": True,
+    }
+    assert pipeline.get_writer_options(
+        WhisperParams(word_timestamps=True, normalize_word_timestamps=False)
+    ) == {
+        "highlight_words": True,
+        "normalize_word_timestamps": False,
+    }
+
+
+def test_build_output_specs_adds_plain_srt_companion_when_highlighted_word_output_requested(tmp_path):
     pipeline = DummyLivePipeline(output_dir=tmp_path)
 
     output_specs = pipeline._build_output_specs(
@@ -304,7 +406,7 @@ def test_transcribe_live_preview_disables_console_logging(tmp_path):
     assert pipeline.last_log_model_banner is False
 
 
-def test_live_transcription_writes_plain_srt_companion_when_word_timestamps_enabled(monkeypatch, tmp_path):
+def test_live_transcription_writes_requested_srt_as_plain_when_normalize_enabled(monkeypatch, tmp_path):
     media_file = tmp_path / "clip.wav"
     media_file.write_bytes(b"fake")
 
@@ -343,11 +445,57 @@ def test_live_transcription_writes_plain_srt_companion_when_word_timestamps_enab
 
     _, _, final_paths = updates[-1]
 
+    assert [call["output_file_name"] for call in generate_calls] == ["clip"]
+    assert [call["highlight_words"] for call in generate_calls] == [False]
+    assert [call["normalize_word_timestamps"] for call in generate_calls] == [True]
+    assert final_paths == [str(tmp_path / "clip.srt")]
+
+
+def test_live_transcription_writes_plain_srt_companion_when_word_timestamp_normalize_disabled(monkeypatch, tmp_path):
+    media_file = tmp_path / "clip.wav"
+    media_file.write_bytes(b"fake")
+
+    generate_calls = []
+
+    def fake_generate_file(**kwargs):
+        output_path = Path(kwargs["output_dir"]) / f"{kwargs['output_file_name']}.{kwargs['output_format'].lower()}"
+        output_path.write_text(kwargs["output_file_name"], encoding="utf-8")
+        generate_calls.append(kwargs)
+        return kwargs["output_file_name"], str(output_path)
+
+    monkeypatch.setattr(
+        "modules.whisper.base_transcription_pipeline.generate_file",
+        fake_generate_file,
+    )
+
+    pipeline = DummyLivePipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(
+        whisper=WhisperParams(word_timestamps=True, normalize_word_timestamps=False),
+    ).to_list()
+
+    updates = list(
+        pipeline.transcribe_file_with_live_output(
+            [str(media_file)],
+            False,
+            None,
+            False,
+            False,
+            str(tmp_path),
+            ["SRT"],
+            False,
+            None,
+            *pipeline_params,
+        )
+    )
+
+    _, _, final_paths = updates[-1]
+
     assert [call["output_file_name"] for call in generate_calls] == [
         "clip",
         "clip_noword_timestaps",
     ]
     assert [call["highlight_words"] for call in generate_calls] == [True, False]
+    assert [call["normalize_word_timestamps"] for call in generate_calls] == [False, False]
     assert final_paths == [
         str(tmp_path / "clip.srt"),
         str(tmp_path / "clip_noword_timestaps.srt"),

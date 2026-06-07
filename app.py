@@ -73,12 +73,18 @@ TIMESTAMP_INFO = (
 )
 BATCH_SIZE_CALIBRATION_FILENAME = "batch_size_calibration.json"
 BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB = 1.0
+CANCEL_CONFIRM_JS = """
+() => {
+    return [window.confirm("Terminate the running transcription subprocess?")];
+}
+"""
 
 
 class App:
     PRIMARY_MODEL_CHOICES = [
-        ("Whisper", WhisperImpl.FASTER_WHISPER.value),
-        ("Canary", WhisperImpl.CANARY_QWEN.value),
+        ("Whisper (faster-whisper / CTranslate2)", WhisperImpl.FASTER_WHISPER.value),
+        ("Insanely Fast Whisper (Transformers)", WhisperImpl.INSANELY_FAST_WHISPER.value),
+        ("Canary-Qwen (NVIDIA NeMo)", WhisperImpl.CANARY_QWEN.value),
     ]
     CANARY_DEFAULT_MODEL = "nvidia/canary-qwen-2.5b"
     CANARY_DEFAULTS = {
@@ -91,6 +97,7 @@ class App:
         "repetition_penalty": 1.0,
         "no_repeat_ngram_size": 0,
         "word_timestamps": False,
+        "normalize_word_timestamps": True,
         "max_new_tokens": 256,
         "chunk_length": 10,
         "use_batched_inference": False,
@@ -142,7 +149,8 @@ class App:
                 seen.add(path)
 
         logger.info(
-            f'Use "{self.args.whisper_type}" implementation\n'
+            f'Default/startup implementation is "{self.args.whisper_type}". '
+            f'The Base Model UI selection can override this per job.\n'
             f'Device "{self.whisper_inf.device}" is detected'
         )
 
@@ -284,12 +292,19 @@ class App:
         metadata = implementations.get(whisper_type)
         if metadata:
             return metadata
-        return {
+        fallback_metadata = {
             "available_models": list(getattr(self.whisper_inf, "available_models", []) or []),
             "available_langs": list(getattr(self.whisper_inf, "available_langs", []) or []),
             "available_compute_types": list(getattr(self.whisper_inf, "available_compute_types", []) or []),
             "current_compute_type": getattr(self.whisper_inf, "current_compute_type", None),
         }
+        if whisper_type != WhisperImpl.CANARY_QWEN.value:
+            fallback_metadata["available_models"] = [
+                model
+                for model in fallback_metadata["available_models"]
+                if not self.is_canary_model_id(model)
+            ] or ["large-v3"]
+        return fallback_metadata
 
     def default_model_for_whisper_type(self, whisper_type):
         whisper_type = self.normalize_primary_whisper_type(whisper_type)
@@ -298,14 +313,26 @@ class App:
         if whisper_type == WhisperImpl.CANARY_QWEN.value:
             return self.CANARY_DEFAULT_MODEL if self.CANARY_DEFAULT_MODEL in models or not models else models[0]
 
+        models = [model for model in models if not self.is_canary_model_id(model)]
+
         configured_default = (
             self.default_params.get("whisper", {}).get("model_size")
             if hasattr(self, "default_params")
             else None
         )
-        if configured_default in models:
+        if configured_default in models and not self.is_canary_model_id(configured_default):
             return configured_default
-        return "large-v3" if "large-v3" in models else (models[0] if models else configured_default)
+        if "large-v3" in models or whisper_type in {
+            WhisperImpl.FASTER_WHISPER.value,
+            WhisperImpl.INSANELY_FAST_WHISPER.value,
+        }:
+            return "large-v3"
+        return models[0] if models else configured_default
+
+    @staticmethod
+    def is_canary_model_id(model_id) -> bool:
+        normalized = str(model_id or "").strip().lower().replace("_", "-")
+        return "canary-qwen" in normalized or normalized.startswith("nvidia/canary")
 
     def language_choices_for_whisper_type(self, whisper_type):
         whisper_type = self.normalize_primary_whisper_type(whisper_type)
@@ -330,6 +357,12 @@ class App:
                 "Controls how many 40-second-or-shorter Canary-Qwen chunks are generated in one "
                 "NeMo batch. Higher values can improve throughput on large GPUs but use more VRAM."
             )
+        if self.normalize_primary_whisper_type(whisper_type) == WhisperImpl.INSANELY_FAST_WHISPER.value:
+            return (
+                "Controls the Hugging Face Transformers ASR pipeline batch size. It can improve throughput "
+                "when Transformers has multiple chunks to process, but the faster-whisper backend is still "
+                "the recommended path for regular subtitle quality."
+            )
         return (
             "When Use Batched Inference is disabled, this controls the standard faster-whisper "
             "encoder prefetch batch size on a single model instance. Higher values can improve "
@@ -339,29 +372,40 @@ class App:
         )
 
     @staticmethod
+    def model_type_details_for_whisper_type(whisper_type):
+        whisper_type = App.normalize_primary_whisper_type(whisper_type)
+        if whisper_type == WhisperImpl.INSANELY_FAST_WHISPER.value:
+            return (
+                "**Insanely Fast Whisper**\n\n"
+                "Uses the Hugging Face Transformers Whisper pipeline. It can be useful for testing the "
+                "Transformers backend or GPU setups where faster-whisper is not the right fit. Advanced "
+                "parameters are limited to the controls this implementation actually consumes. It uses "
+                "Transformers-format model folders, not faster-whisper CTranslate2 folders."
+            )
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return (
+                "**Canary-Qwen**\n\n"
+                "Uses NVIDIA Canary-Qwen through NeMo SALM. It is English ASR only and returns chunk-level "
+                "timestamps. Use this when you specifically want Canary-Qwen output rather than Whisper-family "
+                "transcription."
+            )
+        return (
+            "**Whisper (faster-whisper)**\n\n"
+            "Uses faster-whisper with CTranslate2. This is the recommended default for regular subtitle work "
+            "because it is stable, efficient, and well integrated with long-form transcription, batching, VAD, "
+            "and output generation."
+        )
+
+    @staticmethod
     def canary_advanced_visible_fields():
-        return {
-            "beam_size",
-            "compute_type",
-            "start_as_subprocess",
-            "temperature",
-            "length_penalty",
-            "repetition_penalty",
-            "no_repeat_ngram_size",
-            "max_new_tokens",
-            "chunk_length",
-            "batch_size",
-            "enable_offload",
-            "canary_generation_kwargs",
-            "canary_enable_thinking",
-        }
+        return WhisperParams.advanced_visible_fields_for_whisper_type(WhisperImpl.CANARY_QWEN.value)
 
     @staticmethod
     def advanced_field_visible_for_whisper_type(field_name, whisper_type):
-        whisper_type = App.normalize_primary_whisper_type(whisper_type)
-        if whisper_type == WhisperImpl.CANARY_QWEN.value:
-            return field_name in App.canary_advanced_visible_fields()
-        return field_name not in {"canary_generation_kwargs", "canary_enable_thinking"}
+        return WhisperParams.advanced_field_visible_for_whisper_type(
+            field_name,
+            App.normalize_primary_whisper_type(whisper_type),
+        )
 
     @staticmethod
     def format_media_duration(seconds):
@@ -651,6 +695,21 @@ class App:
 
         return gr.update(value=valid_paths, visible=True)
 
+    @staticmethod
+    def format_persistent_error(context: str, exc: Exception) -> str:
+        return (
+            f"Error: {context} failed.\n"
+            f"{type(exc).__name__}: {exc}\n\n"
+            "Full traceback was printed to the CMD/terminal."
+        )
+
+    @staticmethod
+    def log_persistent_error(context: str, exc: Exception) -> None:
+        if exc.__traceback__ is not None:
+            logger.error("%s failed", context, exc_info=(type(exc), exc, exc.__traceback__))
+            return
+        logger.error("%s failed: %s: %s", context, type(exc).__name__, exc)
+
     def transcribe_file_with_download(self,
                                       files=None,
                                       batch_mode=False,
@@ -662,19 +721,25 @@ class App:
                                       add_timestamp=True,
                                       progress=gr.Progress(),
                                       *pipeline_params):
-        for live_output, result_str, collected_paths in self.whisper_inf.transcribe_file_with_live_output(
-            files,
-            batch_mode,
-            input_folder_path,
-            include_subdirectory,
-            overwrite_existing,
-            output_dir,
-            file_formats,
-            add_timestamp,
-            progress,
-            *pipeline_params,
-        ):
-            yield live_output, result_str, self.prepare_download_output(collected_paths)
+        last_live_output = ""
+        try:
+            for live_output, result_str, collected_paths in self.whisper_inf.transcribe_file_with_live_output(
+                files,
+                batch_mode,
+                input_folder_path,
+                include_subdirectory,
+                overwrite_existing,
+                output_dir,
+                file_formats,
+                add_timestamp,
+                progress,
+                *pipeline_params,
+            ):
+                last_live_output = live_output
+                yield live_output, result_str, self.prepare_download_output(collected_paths)
+        except Exception as exc:
+            self.log_persistent_error("File transcription", exc)
+            yield last_live_output, self.format_persistent_error("File transcription", exc), self.prepare_download_output([])
 
     def transcribe_youtube_with_progress(self,
                                          youtube_link: str,
@@ -684,15 +749,19 @@ class App:
                                          latest_video_count=100,
                                          progress=gr.Progress(),
                                          *pipeline_params):
-        return self.whisper_inf.transcribe_youtube(
-            youtube_link,
-            file_formats,
-            add_timestamp,
-            mass_transcribe_channel,
-            latest_video_count,
-            progress,
-            *pipeline_params,
-        )
+        try:
+            return self.whisper_inf.transcribe_youtube(
+                youtube_link,
+                file_formats,
+                add_timestamp,
+                mass_transcribe_channel,
+                latest_video_count,
+                progress,
+                *pipeline_params,
+            )
+        except Exception as exc:
+            self.log_persistent_error("YouTube transcription", exc)
+            return self.format_persistent_error("YouTube transcription", exc), self.prepare_files_output([])
 
     def transcribe_mic_with_progress(self,
                                      mic_audio: str,
@@ -702,16 +771,22 @@ class App:
                                      *pipeline_params):
         staged_path = self.stage_recorded_mic_audio(mic_audio, "mic_record")
         if staged_path is None:
-            raise RuntimeError("No microphone audio was provided.")
+            exc = RuntimeError("No microphone audio was provided.")
+            self.log_persistent_error("Microphone transcription", exc)
+            return self.format_persistent_error("Microphone transcription", exc), self.prepare_files_output([])
 
         try:
-            return self.whisper_inf.transcribe_mic(
-                staged_path,
-                file_formats,
-                add_timestamp,
-                progress,
-                *pipeline_params,
-            )
+            try:
+                return self.whisper_inf.transcribe_mic(
+                    staged_path,
+                    file_formats,
+                    add_timestamp,
+                    progress,
+                    *pipeline_params,
+                )
+            except Exception as exc:
+                self.log_persistent_error("Microphone transcription", exc)
+                return self.format_persistent_error("Microphone transcription", exc), self.prepare_files_output([])
         finally:
             self.cleanup_staged_mic_audio(staged_path)
 
@@ -1000,17 +1075,28 @@ class App:
         persisted_audio_path = self.persist_staged_mic_audio_output(staged_path)
 
         try:
-            for live_output, result_str, collected_paths in self.whisper_inf.transcribe_mic_with_live_output(
-                staged_path,
-                file_formats,
-                add_timestamp,
-                progress,
-                *pipeline_params,
-            ):
-                downloadable_paths = list(collected_paths)
-                if result_str and persisted_audio_path and persisted_audio_path not in downloadable_paths:
-                    downloadable_paths.append(persisted_audio_path)
-                yield live_output, result_str, self.prepare_files_output(downloadable_paths)
+            last_live_output = ""
+            try:
+                for live_output, result_str, collected_paths in self.whisper_inf.transcribe_mic_with_live_output(
+                    staged_path,
+                    file_formats,
+                    add_timestamp,
+                    progress,
+                    *pipeline_params,
+                ):
+                    last_live_output = live_output
+                    downloadable_paths = list(collected_paths)
+                    if result_str and persisted_audio_path and persisted_audio_path not in downloadable_paths:
+                        downloadable_paths.append(persisted_audio_path)
+                    yield live_output, result_str, self.prepare_files_output(downloadable_paths)
+            except Exception as exc:
+                self.log_persistent_error("Microphone transcription", exc)
+                downloadable_paths = [persisted_audio_path] if persisted_audio_path else []
+                yield (
+                    last_live_output,
+                    self.format_persistent_error("Microphone transcription", exc),
+                    self.prepare_files_output(downloadable_paths),
+                )
         finally:
             self.cleanup_staged_mic_audio(staged_path)
 
@@ -1082,21 +1168,27 @@ class App:
             gr.update(interactive=False),
         )
 
-    def cancel_mic_generation(self, confirmed: bool):
+    def cancel_mic_generation(self, confirmed: bool = True):
         if not confirmed:
+            logger.info("Cancellation prompt dismissed by user.")
             return (
                 gr.update(),
                 gr.update(),
                 gr.update(),
-                gr.update(),
+                "Cancellation dismissed. Generation is still running.",
             )
 
-        self.cancel_active_generation(True)
+        terminated = self.cancel_active_generation(True)
+        progress_message = (
+            "Generation cancelled. Ready for a new recording."
+            if terminated
+            else "No running subprocess was found. If Start as subprocess is disabled, wait for the current in-process job to finish or restart Gradio."
+        )
         return (
             gr.update(value=None),
             self.build_record_mic_idle_status(),
             gr.update(interactive=False),
-            "Generation cancelled. Ready for a new recording.",
+            progress_message,
         )
 
     @staticmethod
@@ -1196,6 +1288,7 @@ class App:
             suffix = "Preview updated." if transcript else "Speech not detected yet."
             return state, transcript, self.build_live_mic_status(True, captured_seconds, suffix)
         except Exception as exc:
+            self.log_persistent_error("Live microphone preview", exc)
             return state, state.get("transcript", ""), self.build_live_mic_status(
                 True,
                 captured_seconds,
@@ -1225,14 +1318,22 @@ class App:
             *pipeline_params,
         )
 
-    def cancel_active_generation(self, confirmed: bool):
-        if not confirmed:
-            return
+    def cancel_active_generation(self, confirmed: bool = True):
+        if confirmed is False:
+            logger.info("Cancellation prompt dismissed by user.")
+            return False
 
         if self.whisper_inf.cancel_active_generation():
+            logger.info("Cancellation requested from UI. Active subprocess termination was triggered.")
             gr.Info("Cancellation requested. Terminating the running subprocess.")
+            return True
         else:
-            gr.Info("No running subprocess was found.")
+            logger.warning(
+                "Cancellation requested from UI, but no active subprocess was found. "
+                "If Start as subprocess is disabled, the current in-process job cannot be force-killed without stopping Gradio."
+            )
+            gr.Info("No running subprocess was found. If Start as subprocess is disabled, hard cancellation is unavailable.")
+            return False
 
     def create_whisper_inputs_3col(self, whisper_params):
         inputs = []
@@ -1341,9 +1442,14 @@ class App:
         defaults["is_translate"] = bool(defaults.get("is_translate", False))
         defaults["compute_type"] = self.current_compute_type_for_whisper_type(whisper_type)
         defaults["word_timestamps"] = bool(defaults.get("word_timestamps", True))
+        defaults["normalize_word_timestamps"] = bool(defaults.get("normalize_word_timestamps", True))
         defaults["condition_on_previous_text"] = bool(defaults.get("condition_on_previous_text", True))
         defaults["canary_generation_kwargs"] = None
         defaults["canary_enable_thinking"] = False
+        if whisper_type == WhisperImpl.INSANELY_FAST_WHISPER.value:
+            defaults["chunk_length"] = None
+            defaults["max_new_tokens"] = None
+            defaults["word_timestamps"] = False
         return defaults
 
     def update_primary_model_ui(self, whisper_type):
@@ -1416,13 +1522,18 @@ class App:
         lang_value = "english" if is_canary_qwen else WhisperParams.normalize_lang_choice(whisper_params["lang"])
 
         with gr.Group():
-            with gr.Row():
-                model_type_radio = gr.Radio(
-                    choices=self.PRIMARY_MODEL_CHOICES,
-                    value=selected_whisper_type,
-                    label=_("Base Model"),
-                    interactive=True,
-                )
+            with gr.Row(equal_height=True):
+                with gr.Column(scale=1, min_width=260):
+                    model_type_radio = gr.Radio(
+                        choices=self.PRIMARY_MODEL_CHOICES,
+                        value=selected_whisper_type,
+                        label=_("Base Model"),
+                        interactive=True,
+                    )
+                with gr.Column(scale=2, min_width=360):
+                    model_type_info = gr.Markdown(
+                        self.model_type_details_for_whisper_type(selected_whisper_type)
+                    )
             with gr.Row():
                 dd_model = gr.Dropdown(
                     choices=model_choices,
@@ -1555,6 +1666,13 @@ class App:
             queue=False,
             show_progress="hidden",
         )
+        model_type_radio.change(
+            fn=self.model_type_details_for_whisper_type,
+            inputs=[model_type_radio],
+            outputs=[model_type_info],
+            queue=False,
+            show_progress="hidden",
+        )
 
         return {
             "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + [model_type_radio] + vad_inputs + diarization_inputs + uvr_inputs,
@@ -1598,7 +1716,7 @@ class App:
                 interactive=True,
                 visible=False,
             )
-            cancel_confirmed = gr.State(False)
+            cancel_confirmed = gr.Checkbox(value=False, visible=False)
             with Translate(self.i18n):
                 with gr.Row():
                     with gr.Column():
@@ -1734,8 +1852,7 @@ class App:
                             fn=self.cancel_active_generation,
                             inputs=[cancel_confirmed],
                             outputs=None,
-                            js="() => [confirm('Terminate the running subprocess?')]",
-                            cancels=[file_run_event],
+                            js=CANCEL_CONFIRM_JS,
                             queue=False,
                             show_progress="hidden",
                         )
@@ -1807,8 +1924,7 @@ class App:
                             fn=self.cancel_active_generation,
                             inputs=[cancel_confirmed],
                             outputs=None,
-                            js="() => [confirm('Terminate the running subprocess?')]",
-                            cancels=[youtube_run_event],
+                            js=CANCEL_CONFIRM_JS,
                             queue=False,
                             show_progress="hidden",
                         )
@@ -2016,8 +2132,7 @@ class App:
                                 mic_transcription_ui["run_button"],
                                 mic_generation_progress,
                             ],
-                            js="() => [confirm('Terminate the running subprocess?')]",
-                            cancels=[mic_run_event, live_mic_generate_event],
+                            js=CANCEL_CONFIRM_JS,
                             queue=False,
                             show_progress="hidden",
                         )

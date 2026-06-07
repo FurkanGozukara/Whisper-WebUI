@@ -11,7 +11,10 @@ from modules.utils.paths import (WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, OUT
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.whisper.data_classes import *
 from modules.whisper.data_classes import Segment, Word
+from modules.utils.logger import get_logger
 from modules.utils.torch_compat import torch_load_safe_globals
+
+logger = get_logger()
 
 
 class WhisperInference(BaseTranscriptionPipeline):
@@ -59,12 +62,22 @@ class WhisperInference(BaseTranscriptionPipeline):
         """
         start_time = time.time()
         params = WhisperParams.from_list(list(whisper_params))
+        audio = self.prepare_audio_input(audio)
+        if isinstance(audio, np.ndarray) and audio.size <= 0:
+            logger.info("Whisper skipped empty audio input.")
+            return [], time.time() - start_time
 
         if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
             self.update_model(params.model_size, params.compute_type, progress)
 
-        def progress_callback(progress_value):
+        def progress_hook(progress_value):
             progress(progress_value, desc="Transcribing..")
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(progress_value, None)
+            except TypeError:
+                progress_callback(progress_value)
 
         result = self.model.transcribe(audio=audio,
                                        language=params.lang,
@@ -79,7 +92,12 @@ class WhisperInference(BaseTranscriptionPipeline):
                                        temperature=params.temperature,
                                        compression_ratio_threshold=params.compression_ratio_threshold,
                                        word_timestamps=params.word_timestamps,
-                                       progress_callback=progress_callback,)["segments"]
+                                       initial_prompt=params.initial_prompt,
+                                       condition_on_previous_text=params.condition_on_previous_text,
+                                       prepend_punctuations=params.prepend_punctuations,
+                                       append_punctuations=params.append_punctuations,
+                                       hallucination_silence_threshold=params.hallucination_silence_threshold,
+                                       progress_callback=progress_hook,)["segments"]
         segments_result = []
         for segment in result:
             # Extract word-level timestamps if available
@@ -103,6 +121,29 @@ class WhisperInference(BaseTranscriptionPipeline):
 
         elapsed_time = time.time() - start_time
         return segments_result, elapsed_time
+
+    @staticmethod
+    def prepare_audio_input(audio: Union[str, np.ndarray, torch.Tensor]):
+        if isinstance(audio, torch.Tensor):
+            audio_array = audio.detach().cpu().float().numpy()
+        elif isinstance(audio, np.ndarray):
+            audio_array = np.asarray(audio, dtype=np.float32)
+        else:
+            return audio
+
+        if audio_array.ndim > 1:
+            channel_axis = 0 if audio_array.shape[0] <= audio_array.shape[-1] else -1
+            audio_array = audio_array.mean(axis=channel_axis)
+
+        audio_array = np.ascontiguousarray(audio_array.reshape(-1), dtype=np.float32)
+        if audio_array.size and not np.isfinite(audio_array).all():
+            invalid_samples = int(audio_array.size - np.isfinite(audio_array).sum())
+            logger.warning(
+                "Whisper audio contains %d non-finite sample(s); replacing them with silence.",
+                invalid_samples,
+            )
+            audio_array = np.nan_to_num(audio_array, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+        return audio_array
 
     def update_model(self,
                      model_size: str,

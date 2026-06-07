@@ -7,6 +7,7 @@ import sys
 import tempfile
 from threading import Thread
 import time
+import types
 
 import pytest
 
@@ -137,6 +138,66 @@ def wait_for_active_handle(proxy: SubprocessWhisperProxy, timeout: float = 5.0):
             return handle
         time.sleep(0.05)
     raise AssertionError("Timed out waiting for an active worker handle.")
+
+
+def test_worker_metadata_includes_insanely_fast_whisper(monkeypatch, tmp_path):
+    import modules.runtime.worker as worker
+
+    class DummyMusicSeparator:
+        device = "cpu"
+        available_devices = ["cpu"]
+        available_models = ["UVR"]
+
+    class DummyDiarizer:
+        device = "cpu"
+        available_device = ["cpu"]
+
+    class DummyInferencer:
+        def __init__(self, whisper_type):
+            self.device = "cpu"
+            self.available_models = [f"{whisper_type}-model"]
+            self.available_langs = ["english"]
+            self.available_compute_types = ["float32"]
+            self.current_compute_type = "float32"
+            self.music_separator = DummyMusicSeparator()
+            self.diarizer = DummyDiarizer()
+
+    class DummyNLLBInference:
+        available_models = ["nllb"]
+        available_source_langs = ["English"]
+        available_target_langs = ["English"]
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_nllb_module = types.ModuleType("modules.translation.nllb_inference")
+    fake_nllb_module.NLLBInference = DummyNLLBInference
+
+    monkeypatch.setattr(worker, "create_whisper_inferencer", lambda args: DummyInferencer(args.whisper_type))
+    monkeypatch.setitem(sys.modules, "modules.translation.nllb_inference", fake_nllb_module)
+
+    result = worker.query_metadata(
+        {
+            "args": {
+                "whisper_type": WhisperImpl.INSANELY_FAST_WHISPER.value,
+                "nllb_model_dir": str(tmp_path / "nllb"),
+                "output_dir": str(tmp_path / "outputs"),
+            }
+        }
+    )
+
+    implementations = result["whisper"]["implementations"]
+    assert set(implementations) >= {
+        WhisperImpl.FASTER_WHISPER.value,
+        WhisperImpl.INSANELY_FAST_WHISPER.value,
+        WhisperImpl.CANARY_QWEN.value,
+    }
+    assert implementations[WhisperImpl.INSANELY_FAST_WHISPER.value]["available_models"] == [
+        f"{WhisperImpl.INSANELY_FAST_WHISPER.value}-model"
+    ]
+    assert result["whisper"]["available_models"] == [
+        f"{WhisperImpl.INSANELY_FAST_WHISPER.value}-model"
+    ]
 
 
 def test_transcribe_youtube_keeps_pipeline_params_aligned_without_explicit_progress(monkeypatch):
@@ -285,6 +346,82 @@ def test_explicit_cancel_terminates_real_worker_and_next_generation_starts(monke
 
     assert restarted == [(f"{whisper_type}:transcribe_file:1 live", "", [])]
     assert handles[1].process.poll() == 0
+
+
+def test_explicit_cancel_terminates_every_registered_active_worker():
+    proxy = build_proxy()
+    handles = [
+        start_test_worker("sleep", "first"),
+        start_test_worker("sleep", "second"),
+    ]
+
+    try:
+        for handle in handles:
+            proxy._set_active_handle(handle)
+
+        assert proxy.cancel_active_generation() is True
+
+        for handle in handles:
+            assert handle.process.poll() is not None
+    finally:
+        for handle in handles:
+            proxy._client.finalize_worker(handle)
+
+
+def test_worker_termination_kills_child_process_tree():
+    psutil = pytest.importorskip("psutil")
+    proxy = build_proxy()
+
+    request_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="whisper_webui_tree_worker_",
+        suffix=".json",
+        delete=False,
+        encoding="utf-8",
+    )
+    request_file.close()
+
+    script = r"""
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(child.pid, flush=True)
+time.sleep(60)
+"""
+    popen_kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "bufsize": 0,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["preexec_fn"] = os.setsid
+
+    process = subprocess.Popen([sys.executable, "-u", "-c", script], **popen_kwargs)
+    assert process.stdout is not None
+    child_pid = int(process.stdout.readline().decode("utf-8").strip())
+    handle = WorkerHandle(
+        process=process,
+        request_path=request_file.name,
+        stderr_lines=deque(maxlen=20),
+        stderr_thread=Thread(target=lambda: None, daemon=True),
+    )
+    handle.stderr_thread.start()
+
+    try:
+        assert psutil.pid_exists(child_pid)
+        proxy._client.terminate_worker(handle)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and psutil.pid_exists(child_pid):
+            time.sleep(0.05)
+
+        assert process.poll() is not None
+        assert not psutil.pid_exists(child_pid)
+    finally:
+        proxy._client.finalize_worker(handle)
 
 
 @pytest.mark.parametrize("whisper_type", [WhisperImpl.FASTER_WHISPER.value, WhisperImpl.CANARY_QWEN.value])

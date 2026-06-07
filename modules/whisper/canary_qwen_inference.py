@@ -25,7 +25,11 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     DEFAULT_MODEL_ID = "nvidia/canary-qwen-2.5b"
     SAMPLE_RATE = 16000
     MAX_CHUNK_SECONDS = 40.0
+    MIN_CHUNK_SECONDS = 0.1
+    MIN_CHUNK_SAMPLES = int(SAMPLE_RATE * MIN_CHUNK_SECONDS)
     DEFAULT_MAX_NEW_TOKENS = 256
+    MAX_SAFE_MAX_NEW_TOKENS = 512
+    MAX_SAFE_NUM_BEAMS = 8
     TRANSCRIPTION_PROGRESS_START = 0.15
     TRANSCRIPTION_PROGRESS_END = 0.98
 
@@ -221,7 +225,103 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
 
         kwargs["enable_thinking"] = bool(params.canary_enable_thinking)
         kwargs.update(self.parse_canary_generation_kwargs(params.canary_generation_kwargs))
-        return kwargs
+        return self.sanitize_generation_kwargs(kwargs)
+
+    @classmethod
+    def sanitize_generation_kwargs(cls, kwargs: dict) -> dict:
+        sanitized = dict(kwargs)
+        sanitized["max_new_tokens"] = cls.clamp_int(
+            sanitized.get("max_new_tokens"),
+            default=cls.DEFAULT_MAX_NEW_TOKENS,
+            minimum=1,
+            maximum=cls.MAX_SAFE_MAX_NEW_TOKENS,
+        )
+        sanitized["num_beams"] = cls.clamp_int(
+            sanitized.get("num_beams"),
+            default=1,
+            minimum=1,
+            maximum=cls.MAX_SAFE_NUM_BEAMS,
+        )
+        if sanitized.get("temperature") is not None:
+            sanitized["temperature"] = cls.clamp_float(
+                sanitized.get("temperature"),
+                default=1.0,
+                minimum=0.01,
+                maximum=5.0,
+            )
+        if sanitized.get("top_p") is not None:
+            sanitized["top_p"] = cls.clamp_float(
+                sanitized.get("top_p"),
+                default=1.0,
+                minimum=0.01,
+                maximum=1.0,
+            )
+        if sanitized.get("top_k") is not None:
+            sanitized["top_k"] = cls.clamp_int(
+                sanitized.get("top_k"),
+                default=0,
+                minimum=0,
+                maximum=1000,
+            )
+        if sanitized.get("repetition_penalty") is not None:
+            sanitized["repetition_penalty"] = cls.clamp_float(
+                sanitized.get("repetition_penalty"),
+                default=1.0,
+                minimum=0.01,
+                maximum=10.0,
+            )
+        if sanitized.get("length_penalty") is not None:
+            sanitized["length_penalty"] = cls.clamp_float(
+                sanitized.get("length_penalty"),
+                default=1.0,
+                minimum=0.01,
+                maximum=10.0,
+            )
+        if sanitized.get("no_repeat_ngram_size") is not None:
+            sanitized["no_repeat_ngram_size"] = cls.clamp_int(
+                sanitized.get("no_repeat_ngram_size"),
+                default=0,
+                minimum=0,
+                maximum=20,
+            )
+        generation_config = sanitized.get("generation_config")
+        if generation_config is not None:
+            cls.clamp_generation_config(generation_config)
+        return sanitized
+
+    @classmethod
+    def clamp_generation_config(cls, generation_config) -> None:
+        attribute_specs = {
+            "max_new_tokens": (cls.DEFAULT_MAX_NEW_TOKENS, 1, cls.MAX_SAFE_MAX_NEW_TOKENS, cls.clamp_int),
+            "num_beams": (1, 1, cls.MAX_SAFE_NUM_BEAMS, cls.clamp_int),
+            "temperature": (1.0, 0.01, 5.0, cls.clamp_float),
+            "top_p": (1.0, 0.01, 1.0, cls.clamp_float),
+            "top_k": (0, 0, 1000, cls.clamp_int),
+            "repetition_penalty": (1.0, 0.01, 10.0, cls.clamp_float),
+            "length_penalty": (1.0, 0.01, 10.0, cls.clamp_float),
+            "no_repeat_ngram_size": (0, 0, 20, cls.clamp_int),
+        }
+        for attribute, (default, minimum, maximum, clamp_fn) in attribute_specs.items():
+            value = getattr(generation_config, attribute, None)
+            if value is None:
+                continue
+            setattr(generation_config, attribute, clamp_fn(value, default, minimum, maximum))
+
+    @staticmethod
+    def clamp_int(value, default: int, minimum: int, maximum: int) -> int:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError):
+            coerced = default
+        return min(max(coerced, minimum), maximum)
+
+    @staticmethod
+    def clamp_float(value, default: float, minimum: float, maximum: float) -> float:
+        try:
+            coerced = float(value)
+        except (TypeError, ValueError):
+            coerced = default
+        return min(max(coerced, minimum), maximum)
 
     @staticmethod
     def parse_canary_generation_kwargs(raw_kwargs) -> dict:
@@ -270,17 +370,40 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             channel_axis = 0 if audio_array.shape[0] <= audio_array.shape[-1] else -1
             audio_array = audio_array.mean(axis=channel_axis)
 
-        return np.ascontiguousarray(audio_array.squeeze(), dtype=np.float32)
+        audio_array = np.ascontiguousarray(audio_array.reshape(-1), dtype=np.float32)
+        if audio_array.size and not np.isfinite(audio_array).all():
+            invalid_samples = int(audio_array.size - np.isfinite(audio_array).sum())
+            logger.warning(
+                "Canary-Qwen audio contains %d non-finite sample(s); replacing them with silence.",
+                invalid_samples,
+            )
+            audio_array = np.nan_to_num(audio_array, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        return audio_array
 
     def build_audio_chunks(self, audio: np.ndarray, chunk_length: Optional[int]) -> List[dict]:
+        audio = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1), dtype=np.float32)
         total_samples = int(audio.shape[-1]) if audio.size else 0
         if total_samples <= 0:
+            return []
+        if total_samples < self.MIN_CHUNK_SAMPLES:
+            logger.info(
+                "Canary-Qwen skipped %.3fs of audio because it is shorter than the %.3fs minimum safe window.",
+                total_samples / float(self.SAMPLE_RATE),
+                self.MIN_CHUNK_SECONDS,
+            )
             return []
 
         requested_chunk_seconds = float(chunk_length or self.MAX_CHUNK_SECONDS)
         if requested_chunk_seconds <= 0:
             requested_chunk_seconds = self.MAX_CHUNK_SECONDS
-        chunk_seconds = min(requested_chunk_seconds, self.MAX_CHUNK_SECONDS)
+        if requested_chunk_seconds < self.MIN_CHUNK_SECONDS:
+            logger.info(
+                "Canary-Qwen chunk length %.3fs is too short; using %.3fs to avoid invalid audio features.",
+                requested_chunk_seconds,
+                self.MIN_CHUNK_SECONDS,
+            )
+        chunk_seconds = min(max(requested_chunk_seconds, self.MIN_CHUNK_SECONDS), self.MAX_CHUNK_SECONDS)
         if requested_chunk_seconds > self.MAX_CHUNK_SECONDS:
             logger.info(
                 "Canary-Qwen was trained with audio windows up to %.0fs; capping requested chunk length %.1fs to %.0fs.",
@@ -289,9 +412,25 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 self.MAX_CHUNK_SECONDS,
             )
 
-        chunk_samples = max(1, int(round(chunk_seconds * self.SAMPLE_RATE)))
+        chunk_samples = max(self.MIN_CHUNK_SAMPLES, int(round(chunk_seconds * self.SAMPLE_RATE)))
+        max_chunk_samples = int(round(self.MAX_CHUNK_SECONDS * self.SAMPLE_RATE))
         chunks = []
-        for start_sample in range(0, total_samples, chunk_samples):
+        start_sample = 0
+        while start_sample < total_samples:
+            remaining_samples = total_samples - start_sample
+            if remaining_samples < self.MIN_CHUNK_SAMPLES:
+                if chunks and chunks[-1]["audio"].shape[-1] + remaining_samples <= max_chunk_samples:
+                    previous_length = int(chunks[-1]["audio"].shape[-1])
+                    previous_start = start_sample - previous_length
+                    chunks[-1]["audio"] = audio[previous_start:total_samples]
+                    chunks[-1]["end_seconds"] = total_samples / float(self.SAMPLE_RATE)
+                else:
+                    logger.info(
+                        "Canary-Qwen skipped %.3fs trailing audio that is too short to transcribe safely.",
+                        remaining_samples / float(self.SAMPLE_RATE),
+                    )
+                break
+
             end_sample = min(start_sample + chunk_samples, total_samples)
             chunks.append(
                 {
@@ -300,11 +439,22 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                     "end_seconds": end_sample / float(self.SAMPLE_RATE),
                 }
             )
+            start_sample = end_sample
         return chunks
 
     @staticmethod
     def collate_audio_batch(chunks: List[dict]) -> Tuple[torch.Tensor, torch.Tensor]:
         lengths = [int(chunk["audio"].shape[-1]) for chunk in chunks]
+        too_short_lengths = [
+            length
+            for length in lengths
+            if 0 < length < CanaryQwenInference.MIN_CHUNK_SAMPLES
+        ]
+        if too_short_lengths:
+            raise ValueError(
+                "Canary-Qwen received an audio chunk shorter than the minimum safe "
+                f"window ({min(too_short_lengths)} samples). Re-run with a larger chunk length."
+            )
         max_length = max(lengths) if lengths else 0
         batch = np.zeros((len(chunks), max_length), dtype=np.float32)
         for index, chunk in enumerate(chunks):

@@ -142,6 +142,8 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     TRANSCRIPTION_PROGRESS_START = 0.3
     TRANSCRIPTION_PROGRESS_END = 0.98
     LONG_FORM_CONDITIONING_WINDOW_THRESHOLD = 60
+    WHISPER_TOKEN_LIMIT_FALLBACK = 448
+    PROMPT_TOKEN_RESERVE = 16
 
     def __init__(self,
                  model_dir: str = FASTER_WHISPER_MODELS_DIR,
@@ -194,6 +196,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         start_time = time.time()
 
         params = WhisperParams.from_list(list(whisper_params))
+        params = self.resolve_prompt_safe_params(params, log_console=log_model_banner)
 
         if (
             not self.should_use_parallel_slice_batching(params)
@@ -260,6 +263,64 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     @staticmethod
     def should_use_parallel_slice_batching(params: WhisperParams) -> bool:
         return False
+
+    @staticmethod
+    def resolve_prompt_safe_params(
+        params: WhisperParams,
+        log_console: bool = True,
+    ) -> WhisperParams:
+        if params.max_new_tokens is None:
+            return params
+
+        try:
+            requested_max_new_tokens = int(params.max_new_tokens)
+        except (TypeError, ValueError):
+            requested_max_new_tokens = 0
+
+        if requested_max_new_tokens <= 0:
+            return params.model_copy(update={"max_new_tokens": None})
+
+        has_prompt_source = (
+            bool(params.condition_on_previous_text)
+            or FasterWhisperInference.has_nonempty_prompt(params.initial_prompt)
+            or FasterWhisperInference.has_nonempty_prompt(params.prefix)
+            or FasterWhisperInference.has_nonempty_prompt(params.hotwords)
+        )
+        if has_prompt_source:
+            if log_console:
+                logger.info(
+                    "Auto-clearing max_new_tokens because prompt context is enabled. "
+                    "faster-whisper will use Whisper's decoder max_length dynamically so "
+                    "prompts, prefixes, hotwords, and previous text cannot overflow the "
+                    "token budget."
+                )
+            return params.model_copy(update={"max_new_tokens": None})
+
+        safe_max_new_tokens = max(
+            1,
+            FasterWhisperInference.WHISPER_TOKEN_LIMIT_FALLBACK - FasterWhisperInference.PROMPT_TOKEN_RESERVE,
+        )
+        if requested_max_new_tokens <= safe_max_new_tokens:
+            return params
+
+        if log_console:
+            logger.info(
+                "Auto-clamping max_new_tokens from %d to %d to fit Whisper's decoder token budget.",
+                requested_max_new_tokens,
+                safe_max_new_tokens,
+            )
+        return params.model_copy(update={"max_new_tokens": safe_max_new_tokens})
+
+    @staticmethod
+    def has_nonempty_prompt(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        try:
+            return len(value) > 0
+        except TypeError:
+            return True
 
     def resolve_standard_audio_and_params(
         self,

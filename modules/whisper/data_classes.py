@@ -351,6 +351,10 @@ class WhisperParams(BaseParams):
         description="Maximum initial timestamp"
     )
     word_timestamps: bool = Field(default=True, description="Extract word-level timestamps")
+    normalize_word_timestamps: bool = Field(
+        default=True,
+        description="Write normal segment-level subtitles even when word timestamps are extracted"
+    )
     prepend_punctuations: Optional[str] = Field(
         default="\"'([{-",
         description="Punctuations to merge with next word"
@@ -455,11 +459,85 @@ class WhisperParams(BaseParams):
         return aliases.get(normalized, normalized)
 
     @classmethod
+    def from_list(cls, data_list: List) -> 'WhisperParams':
+        """Convert positional Gradio/API values to params, accepting older lists without normalize_word_timestamps."""
+        values = list(data_list)
+        field_names = list(cls.model_fields.keys())
+        normalize_field = "normalize_word_timestamps"
+
+        if normalize_field in field_names and len(values) == len(field_names) - 1:
+            values.insert(field_names.index(normalize_field), cls.model_fields[normalize_field].default)
+
+        return cls(**dict(zip(field_names, values)))
+
+    @classmethod
     def advanced_input_field_names(cls) -> List[str]:
         return [
             field_name for field_name in cls.model_fields.keys()
             if field_name not in {"model_size", "lang", "is_translate", "whisper_type"}
         ]
+
+    @classmethod
+    def advanced_visible_fields_for_whisper_type(cls, whisper_type: Optional[str]) -> set:
+        whisper_type = WhisperImpl.FASTER_WHISPER.value if whisper_type is None else whisper_type.strip().lower()
+        canary_fields = {
+            "beam_size",
+            "compute_type",
+            "start_as_subprocess",
+            "temperature",
+            "length_penalty",
+            "repetition_penalty",
+            "no_repeat_ngram_size",
+            "max_new_tokens",
+            "chunk_length",
+            "batch_size",
+            "enable_offload",
+            "canary_generation_kwargs",
+            "canary_enable_thinking",
+        }
+        insanely_fast_fields = {
+            "log_prob_threshold",
+            "no_speech_threshold",
+            "compute_type",
+            "condition_on_previous_text",
+            "start_as_subprocess",
+            "temperature",
+            "compression_ratio_threshold",
+            "max_new_tokens",
+            "batch_size",
+            "enable_offload",
+        }
+        openai_whisper_fields = {
+            "beam_size",
+            "log_prob_threshold",
+            "no_speech_threshold",
+            "compute_type",
+            "best_of",
+            "patience",
+            "condition_on_previous_text",
+            "start_as_subprocess",
+            "initial_prompt",
+            "temperature",
+            "compression_ratio_threshold",
+            "word_timestamps",
+            "normalize_word_timestamps",
+            "prepend_punctuations",
+            "append_punctuations",
+            "hallucination_silence_threshold",
+            "enable_offload",
+        }
+
+        if whisper_type == WhisperImpl.CANARY_QWEN.value:
+            return canary_fields
+        if whisper_type == WhisperImpl.INSANELY_FAST_WHISPER.value:
+            return insanely_fast_fields
+        if whisper_type == WhisperImpl.WHISPER.value:
+            return openai_whisper_fields
+        return set(cls.advanced_input_field_names()) - {"canary_generation_kwargs", "canary_enable_thinking"}
+
+    @classmethod
+    def advanced_field_visible_for_whisper_type(cls, field_name: str, whisper_type: Optional[str]) -> bool:
+        return field_name in cls.advanced_visible_fields_for_whisper_type(whisper_type)
 
     @staticmethod
     def supports_batch_size(whisper_type: Optional[str] = None) -> bool:
@@ -735,12 +813,23 @@ class WhisperParams(BaseParams):
                 info="Maximum allowed initial timestamp in seconds."
             ))
         
-        # Row 7: Word Timestamps, Prepend Punctuations, Append Punctuations
+        # Row 7: Word timestamp output controls
         with gr.Row():
             faster_whisper_inputs.append(gr.Checkbox(
                 label="Word Timestamps",
                 value=defaults.get("word_timestamps", cls.__fields__["word_timestamps"].default),
                 info="Extract timestamps for each individual word, not just each segment."
+            ))
+            faster_whisper_inputs.append(gr.Checkbox(
+                label="Normalize Word Timestamp Output",
+                value=defaults.get(
+                    "normalize_word_timestamps",
+                    cls.__fields__["normalize_word_timestamps"].default,
+                ),
+                info=(
+                    "Save normal segment-level subtitle files even when word timestamps are extracted. "
+                    "Disable this only when you want word-level highlighted SRT/WebVTT output."
+                )
             ))
             faster_whisper_inputs.append(gr.Textbox(
                 label="Prepend Punctuations",
@@ -810,6 +899,7 @@ class WhisperParams(BaseParams):
                 "suppress_tokens",
                 "max_initial_timestamp",
                 "word_timestamps",
+                "normalize_word_timestamps",
                 "prepend_punctuations",
                 "append_punctuations",
                 "max_new_tokens",
@@ -821,8 +911,8 @@ class WhisperParams(BaseParams):
             ]
             for field_name, input_component in zip(faster_whisper_field_names, faster_whisper_inputs):
                 input_component.visible = field_name in canary_visible_fields
-            faster_whisper_inputs[9].info = "Maximum generated text tokens per Canary-Qwen chunk."
-            faster_whisper_inputs[10].info = "Canary-Qwen ASR window size in seconds. Values above 40 are capped."
+            faster_whisper_inputs[10].info = "Maximum generated text tokens per Canary-Qwen chunk."
+            faster_whisper_inputs[11].info = "Canary-Qwen ASR window size in seconds. Values above 40 are capped."
         elif whisper_type != WhisperImpl.FASTER_WHISPER.value:
             for input_component in faster_whisper_inputs:
                 input_component.visible = False
@@ -862,24 +952,10 @@ class WhisperParams(BaseParams):
                 info="Forward enable_thinking to NeMo SALM. Leave disabled for normal ASR transcription."
             ))
 
-        if whisper_type == WhisperImpl.CANARY_QWEN.value and only_advanced:
-            canary_advanced_fields = {
-                "beam_size",
-                "compute_type",
-                "start_as_subprocess",
-                "temperature",
-                "length_penalty",
-                "repetition_penalty",
-                "no_repeat_ngram_size",
-                "max_new_tokens",
-                "chunk_length",
-                "batch_size",
-                "enable_offload",
-                "canary_generation_kwargs",
-                "canary_enable_thinking",
-            }
+        if only_advanced:
+            visible_fields = cls.advanced_visible_fields_for_whisper_type(whisper_type)
             for field_name, input_component in zip(cls.advanced_input_field_names(), inputs):
-                input_component.visible = field_name in canary_advanced_fields
+                input_component.visible = field_name in visible_fields
 
         return [repair_component_text(component) for component in inputs]
     
@@ -969,18 +1045,32 @@ class TranscriptionPipelineParams(BaseModel):
     @staticmethod
     def from_list(pipeline_list: List) -> 'TranscriptionPipelineParams':
         """Convert list to the data class again to use it in a function."""
-        data_list = deepcopy(pipeline_list)
+        data_list = deepcopy(list(pipeline_list))
 
-        whisper_list = data_list[0:len(WhisperParams.__annotations__)]
-        data_list = data_list[len(WhisperParams.__annotations__):]
+        whisper_field_names = list(WhisperParams.model_fields.keys())
+        normalize_field = "normalize_word_timestamps"
+        whisper_len = len(whisper_field_names)
+        vad_len = len(VadParams.model_fields)
+        diarization_len = len(DiarizationParams.model_fields)
+        bgm_sep_len = len(BGMSeparationParams.model_fields)
+        current_total_len = whisper_len + vad_len + diarization_len + bgm_sep_len
 
-        vad_list = data_list[0:len(VadParams.__annotations__)]
-        data_list = data_list[len(VadParams.__annotations__):]
+        if normalize_field in whisper_field_names and len(data_list) == current_total_len - 1:
+            data_list.insert(
+                whisper_field_names.index(normalize_field),
+                WhisperParams.model_fields[normalize_field].default,
+            )
 
-        diarization_list = data_list[0:len(DiarizationParams.__annotations__)]
-        data_list = data_list[len(DiarizationParams.__annotations__):]
+        whisper_list = data_list[0:whisper_len]
+        data_list = data_list[whisper_len:]
 
-        bgm_sep_list = data_list[0:len(BGMSeparationParams.__annotations__)]
+        vad_list = data_list[0:vad_len]
+        data_list = data_list[vad_len:]
+
+        diarization_list = data_list[0:diarization_len]
+        data_list = data_list[diarization_len:]
+
+        bgm_sep_list = data_list[0:bgm_sep_len]
 
         return TranscriptionPipelineParams(
             whisper=WhisperParams.from_list(whisper_list),

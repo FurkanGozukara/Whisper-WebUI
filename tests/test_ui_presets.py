@@ -93,6 +93,7 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     assert defaults["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
     assert defaults["file_tab"]["whisper"]["word_timestamps"] is False
+    assert defaults["file_tab"]["whisper"]["normalize_word_timestamps"] is True
     assert defaults["file_tab"]["whisper"]["chunk_length"] == 10
     assert defaults["file_tab"]["whisper"]["use_batched_inference"] is False
     assert WhisperParams(lang="English").lang == "en"
@@ -101,6 +102,43 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     assert WhisperParams(lang="Automatic Detection").lang is None
     assert WhisperParams.normalize_lang_choice("English") == "english"
     assert WhisperParams.normalize_lang_choice("en") == "english"
+
+
+def test_builtin_best_quality_enables_word_timestamps():
+    cfg = load_ui_preset("best_quality")
+
+    assert cfg is not None
+    assert cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
+    assert cfg["file_tab"]["whisper"]["beam_size"] == 2
+    assert cfg["file_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["file_tab"]["whisper"]["word_timestamps"] is True
+    assert cfg["file_tab"]["whisper"]["normalize_word_timestamps"] is True
+    assert cfg["file_tab"]["whisper"]["chunk_length"] == 30
+    assert cfg["youtube_tab"]["whisper"]["beam_size"] == 2
+    assert cfg["youtube_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["youtube_tab"]["whisper"]["word_timestamps"] is True
+    assert cfg["youtube_tab"]["whisper"]["normalize_word_timestamps"] is True
+    assert cfg["youtube_tab"]["whisper"]["chunk_length"] == 30
+    assert cfg["mic_tab"]["whisper"]["beam_size"] == 2
+    assert cfg["mic_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["mic_tab"]["whisper"]["word_timestamps"] is True
+    assert cfg["mic_tab"]["whisper"]["normalize_word_timestamps"] is True
+    assert cfg["mic_tab"]["whisper"]["chunk_length"] == 30
+
+
+def test_pipeline_params_accept_legacy_list_without_normalize_word_timestamps():
+    params = TranscriptionPipelineParams(whisper=WhisperParams(word_timestamps=True))
+    legacy_values = params.to_list()
+    normalize_index = list(WhisperParams.model_fields.keys()).index("normalize_word_timestamps")
+    legacy_values.pop(normalize_index)
+
+    parsed = TranscriptionPipelineParams.from_list(legacy_values)
+
+    assert parsed.whisper.word_timestamps is True
+    assert parsed.whisper.normalize_word_timestamps is True
+    assert parsed.vad == params.vad
+    assert parsed.diarization == params.diarization
+    assert parsed.bgm_separation == params.bgm_separation
 
 
 def test_last_used_preset_is_persisted_and_cleared_when_missing(tmp_path, monkeypatch):

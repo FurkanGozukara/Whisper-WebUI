@@ -14,8 +14,12 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Deque, Dict, Generator, Optional, Tuple
 
+from modules.utils.logger import get_logger
 from modules.utils.text import repair_mojibake_obj
 from modules.whisper.data_classes import TranscriptionPipelineParams, WhisperImpl
+
+
+logger = get_logger()
 
 
 @dataclass
@@ -111,21 +115,80 @@ class RuntimeWorkerClient:
         handle.stderr_thread.join(timeout=1)
         self._cleanup_request_file(handle.request_path)
 
+    @staticmethod
+    def _collect_process_tree(process: subprocess.Popen) -> list:
+        try:
+            import psutil
+        except Exception:
+            return []
+
+        try:
+            parent = psutil.Process(process.pid)
+        except Exception:
+            return []
+
+        try:
+            return parent.children(recursive=True) + [parent]
+        except Exception:
+            return [parent]
+
+    @staticmethod
+    def _kill_known_processes(processes: list, timeout: float = 5.0) -> list[int]:
+        if not processes:
+            return []
+
+        try:
+            import psutil
+        except Exception:
+            return []
+
+        targets = []
+        for proc in processes:
+            try:
+                if proc.is_running():
+                    targets.append(proc)
+            except Exception:
+                continue
+
+        for proc in targets:
+            try:
+                proc.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception:
+                logger.warning("Failed to kill worker child process pid=%s.", getattr(proc, "pid", "unknown"))
+
+        try:
+            _, alive = psutil.wait_procs(targets, timeout=timeout)
+        except Exception:
+            alive = []
+
+        return [int(proc.pid) for proc in alive if getattr(proc, "pid", None) is not None]
+
     def terminate_worker(self, handle: WorkerHandle) -> None:
         process = handle.process
         if process.poll() is not None:
             return
 
+        logger.info("Cancellation requested. Force terminating worker process tree pid=%s.", process.pid)
+        known_processes = self._collect_process_tree(process)
+
         if os.name == "nt":
-            subprocess.run(
+            taskkill_result = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 check=False,
             )
+            if taskkill_result.returncode != 0 and process.poll() is None:
+                stderr = taskkill_result.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning("taskkill failed for worker pid=%s: %s", process.pid, stderr or taskkill_result.returncode)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                alive_pids = self._kill_known_processes(known_processes)
+                if alive_pids:
+                    logger.warning("Worker process tree still alive after psutil kill: %s", alive_pids)
                 try:
                     process.kill()
                 except Exception:
@@ -134,12 +197,20 @@ class RuntimeWorkerClient:
                     process.wait(timeout=2)
                 except Exception:
                     pass
+            else:
+                alive_pids = self._kill_known_processes(known_processes, timeout=1.0)
+                if alive_pids:
+                    logger.warning("Worker child process(es) remained after taskkill: %s", alive_pids)
+            logger.info("Worker process tree pid=%s terminated with return code %s.", process.pid, process.poll())
             return
 
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             process.wait(timeout=3)
         except Exception:
+            alive_pids = self._kill_known_processes(known_processes)
+            if alive_pids:
+                logger.warning("Worker process tree still alive after psutil kill: %s", alive_pids)
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
             except Exception:
@@ -148,6 +219,11 @@ class RuntimeWorkerClient:
                 process.wait(timeout=2)
             except Exception:
                 pass
+        else:
+            alive_pids = self._kill_known_processes(known_processes, timeout=1.0)
+            if alive_pids:
+                logger.warning("Worker child process(es) remained after process-group termination: %s", alive_pids)
+        logger.info("Worker process tree pid=%s terminated with return code %s.", process.pid, process.poll())
 
     def iter_events(self, handle: WorkerHandle) -> Generator[Dict[str, Any], None, None]:
         assert handle.process.stdout is not None
@@ -176,14 +252,20 @@ class RuntimeWorkerClient:
             self.finalize_worker(handle)
 
         if error_payload:
-            raise RuntimeError(self._format_error(error_payload, handle.stderr_lines))
+            raise RuntimeError(self._format_error(error_payload, handle.stderr_lines, return_code=return_code))
         if return_code != 0:
-            raise RuntimeError(self._format_error({}, handle.stderr_lines))
+            raise RuntimeError(self._format_error({}, handle.stderr_lines, return_code=return_code))
         return repair_mojibake_obj(result_payload)
 
     @staticmethod
-    def _format_error(error_payload: Dict[str, Any], stderr_lines: Deque[str]) -> str:
+    def _format_error(
+        error_payload: Dict[str, Any],
+        stderr_lines: Deque[str],
+        return_code: Optional[int] = None,
+    ) -> str:
         message = error_payload.get("error") or "Worker process failed."
+        if return_code not in (None, 0):
+            message = f"{message} (worker return code: {return_code})"
         stderr_tail = "\n".join(stderr_lines).strip()
         if stderr_tail:
             return f"{message}\n{stderr_tail}"
@@ -230,6 +312,7 @@ class SubprocessWhisperProxy:
         self._client = RuntimeWorkerClient(args)
         self._active_lock = Lock()
         self._active_handle: Optional[WorkerHandle] = None
+        self._active_handles: Dict[int, WorkerHandle] = {}
         self._cancelled_pids: set[int] = set()
         self._local_inferencers: Dict[str, Any] = {}
 
@@ -293,25 +376,46 @@ class SubprocessWhisperProxy:
 
     def cancel_active_generation(self) -> bool:
         with self._active_lock:
-            handle = self._active_handle
-            if handle is None:
-                return False
-            if handle.process.poll() is not None:
-                self._active_handle = None
-                return False
-            self._cancelled_pids.add(handle.process.pid)
+            self._prune_active_handles_locked()
+            handles = dict(self._active_handles)
+            if (
+                self._active_handle is not None
+                and self._active_handle.process.poll() is None
+                and self._active_handle.process.pid not in handles
+            ):
+                handles[self._active_handle.process.pid] = self._active_handle
 
-        self._client.terminate_worker(handle)
+            if not handles:
+                return False
+
+            for handle in handles.values():
+                self._cancelled_pids.add(handle.process.pid)
+
+        logger.info("Cancellation requested for active worker pid(s): %s", sorted(handles))
+        for handle in handles.values():
+            self._client.terminate_worker(handle)
         return True
+
+    def _prune_active_handles_locked(self) -> None:
+        for pid, handle in list(self._active_handles.items()):
+            if handle.process.poll() is not None:
+                self._active_handles.pop(pid, None)
+
+        if self._active_handle is not None and self._active_handle.process.poll() is not None:
+            self._active_handle = None
 
     def _set_active_handle(self, handle: WorkerHandle) -> None:
         with self._active_lock:
             self._active_handle = handle
+            self._active_handles[handle.process.pid] = handle
+        logger.info("Registered active worker pid=%s.", handle.process.pid)
 
     def _clear_active_handle(self, handle: WorkerHandle) -> None:
         with self._active_lock:
             if self._active_handle is handle:
                 self._active_handle = None
+            self._active_handles.pop(handle.process.pid, None)
+        logger.info("Cleared active worker pid=%s.", handle.process.pid)
 
     def _terminate_unfinished_worker(self, handle: WorkerHandle) -> None:
         if handle.process.poll() is not None:
@@ -369,9 +473,9 @@ class SubprocessWhisperProxy:
         if self._was_cancelled(handle):
             raise RuntimeError("Cancelled. Running subprocess was terminated.")
         if error_payload:
-            raise RuntimeError(self._client._format_error(error_payload, handle.stderr_lines))
+            raise RuntimeError(self._client._format_error(error_payload, handle.stderr_lines, return_code=return_code))
         if return_code != 0:
-            raise RuntimeError(self._client._format_error({}, handle.stderr_lines))
+            raise RuntimeError(self._client._format_error({}, handle.stderr_lines, return_code=return_code))
         return repair_mojibake_obj(result_payload)
 
     def _stream_transcription_worker(self, action: str, action_payload: Dict[str, Any]):
@@ -405,9 +509,9 @@ class SubprocessWhisperProxy:
             return
 
         if worker_error:
-            raise RuntimeError(self._client._format_error(worker_error, handle.stderr_lines))
+            raise RuntimeError(self._client._format_error(worker_error, handle.stderr_lines, return_code=return_code))
         if return_code != 0:
-            raise RuntimeError(self._client._format_error({}, handle.stderr_lines))
+            raise RuntimeError(self._client._format_error({}, handle.stderr_lines, return_code=return_code))
 
     def transcribe_file_with_live_output(
         self,

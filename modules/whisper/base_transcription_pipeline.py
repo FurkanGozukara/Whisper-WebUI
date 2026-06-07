@@ -40,6 +40,7 @@ logger = get_logger()
 class BaseTranscriptionPipeline(ABC):
     LIVE_TRANSCRIPTION_HISTORY_LINES = 30
     LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC = 0.1
+    LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC = 5.0
     NO_WORD_TIMESTAMPS_SUFFIX = "_noword_timestaps"
 
     def __init__(self,
@@ -94,9 +95,42 @@ class BaseTranscriptionPipeline(ABC):
     def supports_word_timestamps() -> bool:
         return True
 
+    @staticmethod
+    def ensure_progress_callable(progress):
+        if callable(progress):
+            return progress
+
+        def noop_progress(*_args, **_kwargs):
+            return None
+
+        return noop_progress
+
+    def build_live_transcription_heartbeat(self, started_at: float, segment_count: int) -> str:
+        elapsed = max(0.0, time.time() - started_at)
+        if segment_count > 0:
+            return (
+                "Still transcribing... "
+                f"{segment_count} segment(s) received; waiting for the next update "
+                f"({self.format_time(elapsed)} elapsed)."
+            )
+        return (
+            "Still transcribing... waiting for the first segment "
+            f"({self.format_time(elapsed)} elapsed)."
+        )
+
     def get_writer_options(self, whisper_params: WhisperParams) -> dict:
+        normalize_word_timestamps = bool(
+            whisper_params.word_timestamps
+            and self.supports_word_timestamps()
+            and whisper_params.normalize_word_timestamps
+        )
         return {
-            "highlight_words": bool(whisper_params.word_timestamps and self.supports_word_timestamps())
+            "highlight_words": bool(
+                whisper_params.word_timestamps
+                and self.supports_word_timestamps()
+                and not normalize_word_timestamps
+            ),
+            "normalize_word_timestamps": normalize_word_timestamps,
         }
 
     def run(self,
@@ -138,6 +172,7 @@ class BaseTranscriptionPipeline(ABC):
         elapsed_time: float
             elapsed time for running
         """
+        progress = self.ensure_progress_callable(progress)
         start_time = time.time()
         
         # Log start of transcription with timestamp
@@ -354,12 +389,23 @@ class BaseTranscriptionPipeline(ABC):
 
                 worker_thread = Thread(target=run_with_live_callback, daemon=True)
                 worker_thread.start()
+                heartbeat_started_at = time.time()
+                next_heartbeat_at = heartbeat_started_at + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
                 while True:
                     try:
                         queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
                     except Empty:
                         if worker_thread.is_alive():
+                            now = time.time()
+                            if now >= next_heartbeat_at:
+                                heartbeat = self.build_live_transcription_heartbeat(
+                                    heartbeat_started_at,
+                                    segment_count[0],
+                                )
+                                logger.info(heartbeat)
+                                yield append_live_lines(heartbeat), "", collected_paths
+                                next_heartbeat_at = now + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
                             continue
                         break
 
@@ -380,6 +426,7 @@ class BaseTranscriptionPipeline(ABC):
 
                     if latest_update is not None:
                         yield latest_update, "", collected_paths
+                        next_heartbeat_at = time.time() + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
                     if saw_sentinel and not worker_thread.is_alive():
                         break
@@ -391,6 +438,7 @@ class BaseTranscriptionPipeline(ABC):
 
                 transcribed_segments = worker_result["segments"]
                 time_for_task = worker_result["time_for_task"]
+                reported_segment_count = segment_count[0] or self.count_transcribed_segments(transcribed_segments)
 
                 # Calculate transcription speed
                 if transcribed_segments and len(transcribed_segments) > 0:
@@ -419,7 +467,7 @@ class BaseTranscriptionPipeline(ABC):
                     f"✅ Completed in {self.format_time(time_for_task)}",
                     "",
                 )
-                result_str = f"Done! {segment_count[0]} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
+                result_str = f"Done! {reported_segment_count} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
 
                 yield live_output, result_str, collected_paths
 
@@ -769,12 +817,23 @@ class BaseTranscriptionPipeline(ABC):
 
             worker_thread = Thread(target=run_with_live_callback, daemon=True)
             worker_thread.start()
+            heartbeat_started_at = time.time()
+            next_heartbeat_at = heartbeat_started_at + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
             while True:
                 try:
                     queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
                 except Empty:
                     if worker_thread.is_alive():
+                        now = time.time()
+                        if now >= next_heartbeat_at:
+                            heartbeat = self.build_live_transcription_heartbeat(
+                                heartbeat_started_at,
+                                segment_count[0],
+                            )
+                            logger.info(heartbeat)
+                            yield append_live_lines(heartbeat), "", collected_paths
+                            next_heartbeat_at = now + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
                         continue
                     break
 
@@ -795,6 +854,7 @@ class BaseTranscriptionPipeline(ABC):
 
                 if latest_update is not None:
                     yield latest_update, "", collected_paths
+                    next_heartbeat_at = time.time() + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
                 if saw_sentinel and not worker_thread.is_alive():
                     break
@@ -806,6 +866,7 @@ class BaseTranscriptionPipeline(ABC):
 
             transcribed_segments = worker_result["segments"]
             time_for_task = worker_result["time_for_task"]
+            reported_segment_count = segment_count[0] or self.count_transcribed_segments(transcribed_segments)
 
             if transcribed_segments:
                 last_segment = transcribed_segments[-1]
@@ -832,7 +893,7 @@ class BaseTranscriptionPipeline(ABC):
                 "",
             )
             result_str = (
-                f"Done! {segment_count[0]} segments in {self.format_time(time_for_task)}. "
+                f"Done! {reported_segment_count} segments in {self.format_time(time_for_task)}. "
                 f"Subtitle files saved to {self.output_dir}"
             )
 
@@ -1122,6 +1183,12 @@ class BaseTranscriptionPipeline(ABC):
         if isinstance(files, list) and files and isinstance(files[0], gr.utils.NamedString):
             return [file.name for file in files]
         return files
+
+    @staticmethod
+    def count_transcribed_segments(segments: Optional[List[Segment]]) -> int:
+        if not segments:
+            return 0
+        return sum(1 for segment in segments if str(getattr(segment, "text", "") or "").strip())
 
     def get_compute_type(self):
         if "bfloat16" in self.available_compute_types:

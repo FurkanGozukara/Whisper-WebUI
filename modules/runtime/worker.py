@@ -120,7 +120,11 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     from modules.whisper.data_classes import WhisperImpl
 
     implementation_metadata = {}
-    for whisper_type in (WhisperImpl.FASTER_WHISPER.value, WhisperImpl.CANARY_QWEN.value):
+    for whisper_type in (
+        WhisperImpl.FASTER_WHISPER.value,
+        WhisperImpl.INSANELY_FAST_WHISPER.value,
+        WhisperImpl.CANARY_QWEN.value,
+    ):
         typed_args = Namespace(**vars(args))
         typed_args.whisper_type = whisper_type
         implementation_metadata[whisper_type] = whisper_metadata_payload(
