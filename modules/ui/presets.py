@@ -17,12 +17,24 @@ from modules.utils.whisper_languages import normalize_lang_choice as normalize_w
 UI_PRESET_VERSION = "1.0"
 UI_PRESET_FORMAT = "whisper_webui_ui"
 LAST_USED_UI_PRESET_FILENAME = "last_used_ui_preset.txt"
-DEFAULT_STARTUP_UI_PRESET = "canary_best_quality"
+FAST_WHISPER_BEST_QUALITY_PRESET = "fast_whisper_best_quality"
+INSANE_FAST_WHISPER_BEST_QUALITY_PRESET = "insane_fast_whisper_best_quality"
+CANARY_QWEN_BEST_QUALITY_PRESET = "canary_qwen_best_quality"
+DEFAULT_STARTUP_UI_PRESET = FAST_WHISPER_BEST_QUALITY_PRESET
+WHISPER_TYPE_DEFAULT_UI_PRESETS = {
+    "faster-whisper": FAST_WHISPER_BEST_QUALITY_PRESET,
+    "insanely_fast_whisper": INSANE_FAST_WHISPER_BEST_QUALITY_PRESET,
+    "canary-qwen": CANARY_QWEN_BEST_QUALITY_PRESET,
+}
 
 
 def sanitize_preset_name(name: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in str(name))
     return safe.strip("._") or "default"
+
+
+def _preset_name_key(name: str) -> str:
+    return sanitize_preset_name(name).casefold()
 
 
 def ui_preset_path(preset_name: str) -> Path:
@@ -34,14 +46,18 @@ def system_ui_preset_path(preset_name: str) -> Path:
 
 
 def find_ui_preset_path(preset_name: str) -> Optional[Path]:
-    safe_name = sanitize_preset_name(preset_name)
-    system_path = system_ui_preset_path(safe_name)
-    if system_path.exists():
-        return system_path
-
-    user_path = ui_preset_path(safe_name)
-    if user_path.exists():
-        return user_path
+    preset_key = _preset_name_key(preset_name)
+    for root in (Path(UI_SYSTEM_PRESETS_DIR), Path(PRESETS_DIR)):
+        if not root.exists():
+            continue
+        for path in root.glob("*.json"):
+            if not path.is_file():
+                continue
+            if (
+                _preset_name_key(path.stem) == preset_key
+                or _preset_name_key(_ui_preset_display_name_for_path(path)) == preset_key
+            ):
+                return path
 
     return None
 
@@ -49,7 +65,45 @@ def find_ui_preset_path(preset_name: str) -> Optional[Path]:
 def is_locked_ui_preset(preset_name: str) -> bool:
     if not preset_name:
         return False
-    return system_ui_preset_path(preset_name).exists()
+    path = find_ui_preset_path(preset_name)
+    if path is None:
+        return False
+    try:
+        return path.parent.resolve() == Path(UI_SYSTEM_PRESETS_DIR).resolve()
+    except OSError:
+        return False
+
+
+def is_user_ui_preset(preset_name: str) -> bool:
+    if not preset_name:
+        return False
+    path = find_ui_preset_path(preset_name)
+    if path is None:
+        return False
+    try:
+        return path.parent.resolve() == Path(PRESETS_DIR).resolve()
+    except OSError:
+        return False
+
+
+def _ui_preset_display_name_for_path(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return path.stem
+
+    meta = data.get("_meta") if isinstance(data, dict) else None
+    display_name = meta.get("display_name") if isinstance(meta, dict) else None
+    if isinstance(display_name, str) and display_name.strip():
+        return display_name.strip()
+    return path.stem
+
+
+def get_ui_preset_display_name(preset_name: str) -> Optional[str]:
+    path = find_ui_preset_path(preset_name)
+    if path is None:
+        return None
+    return _ui_preset_display_name_for_path(path)
 
 
 def last_used_ui_preset_path() -> Path:
@@ -61,7 +115,11 @@ def list_ui_presets() -> list[str]:
     for root in (Path(UI_SYSTEM_PRESETS_DIR), Path(PRESETS_DIR)):
         if not root.exists():
             continue
-        preset_names.update(path.stem for path in root.glob("*.json") if path.is_file())
+        preset_names.update(
+            _ui_preset_display_name_for_path(path)
+            for path in root.glob("*.json")
+            if path.is_file()
+        )
     return sorted(preset_names)
 
 
@@ -80,7 +138,8 @@ def set_last_used_ui_preset(preset_name: Optional[str]) -> Optional[str]:
         clear_last_used_ui_preset()
         return None
 
-    safe_name = sanitize_preset_name(str(preset_name).strip())
+    path = find_ui_preset_path(str(preset_name).strip())
+    safe_name = sanitize_preset_name(path.stem if path is not None else str(preset_name).strip())
     path = last_used_ui_preset_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -106,18 +165,27 @@ def get_last_used_ui_preset() -> Optional[str]:
         return None
 
     safe_name = sanitize_preset_name(raw_name)
-    if find_ui_preset_path(safe_name) is None:
+    path = find_ui_preset_path(safe_name)
+    if path is None:
         clear_last_used_ui_preset()
         return None
 
-    return safe_name
+    return _ui_preset_display_name_for_path(path)
 
 
 def get_default_startup_ui_preset(preset_name: str = DEFAULT_STARTUP_UI_PRESET) -> Optional[str]:
     safe_name = sanitize_preset_name(preset_name)
-    if find_ui_preset_path(safe_name) is None:
+    path = find_ui_preset_path(safe_name)
+    if path is None:
         return None
-    return safe_name
+    return _ui_preset_display_name_for_path(path)
+
+
+def get_default_ui_preset_for_whisper_type(whisper_type: str) -> Optional[str]:
+    preset_name = WHISPER_TYPE_DEFAULT_UI_PRESETS.get(str(whisper_type or "").strip().lower())
+    if preset_name is None:
+        return None
+    return get_default_startup_ui_preset(preset_name)
 
 
 def get_nested_value(data: dict[str, Any], path: tuple[str, ...], default: Any = None) -> Any:
@@ -307,8 +375,8 @@ def save_ui_preset(preset_name: str, config: dict[str, Any], default_params: Opt
         raise ValueError("Preset name cannot be empty.")
 
     safe_name = sanitize_preset_name(str(preset_name).strip())
-    if is_locked_ui_preset(safe_name):
-        raise ValueError(f"Preset '{safe_name}' is built in and cannot be overwritten.")
+    if is_locked_ui_preset(preset_name):
+        raise ValueError(f"Preset '{preset_name}' is built in and cannot be overwritten.")
 
     root = Path(PRESETS_DIR)
     root.mkdir(parents=True, exist_ok=True)
@@ -346,7 +414,14 @@ def delete_ui_preset(preset_name: str) -> bool:
         return False
     if is_locked_ui_preset(preset_name):
         return False
-    path = ui_preset_path(preset_name)
+    path = find_ui_preset_path(preset_name)
+    if path is None:
+        return False
+    try:
+        if path.parent.resolve() != Path(PRESETS_DIR).resolve():
+            return False
+    except OSError:
+        return False
     if not path.exists():
         return False
     try:

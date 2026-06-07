@@ -28,15 +28,16 @@ from modules.ui.presets import (
     build_default_ui_config,
     clear_last_used_ui_preset,
     delete_ui_preset,
+    get_default_ui_preset_for_whisper_type,
     get_default_startup_ui_preset,
     get_last_used_ui_preset,
     get_nested_value,
     is_locked_ui_preset,
+    is_user_ui_preset,
     list_ui_presets,
     load_ui_preset,
     merge_ui_config,
     save_ui_preset,
-    sanitize_preset_name,
     set_nested_value,
     set_last_used_ui_preset,
 )
@@ -65,7 +66,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V12.1 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V12.2 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -1676,6 +1677,8 @@ class App:
 
         return {
             "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + [model_type_radio] + vad_inputs + diarization_inputs + uvr_inputs,
+            "model_type_radio": model_type_radio,
+            "model_type_info": model_type_info,
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
             "run_button": run_btn,
@@ -2385,6 +2388,11 @@ class App:
                         nb_uvr_segment_size,
                     ]
                 )
+                config_info_components = [
+                    file_transcription_ui["model_type_info"],
+                    youtube_transcription_ui["model_type_info"],
+                    mic_transcription_ui["model_type_info"],
+                ]
 
                 dropdown_choice_specs = {
                     ("file_tab", "diarization", "diarization_device"): self.whisper_inf.diarizer.available_device,
@@ -2526,17 +2534,16 @@ class App:
                         values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
                         return values, "No preset selected. Showing defaults."
 
-                    safe_name = sanitize_preset_name(preset_name)
-                    cfg = load_ui_preset(safe_name, default_params=self.default_params)
+                    cfg = load_ui_preset(preset_name, default_params=self.default_params)
                     if not cfg:
-                        if get_last_used_ui_preset() == safe_name:
+                        if get_last_used_ui_preset() == preset_name:
                             clear_last_used_ui_preset()
                         values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
                         return values, f"Preset **{preset_name}** was not found. Loaded defaults."
 
-                    set_last_used_ui_preset(safe_name)
+                    set_last_used_ui_preset(preset_name)
                     values = _ui_config_to_values(cfg)
-                    return values, f"Loaded preset **{safe_name}**"
+                    return values, f"Loaded preset **{preset_name}**"
 
                 def _save_preset_ui(preset_name: str, *values):
                     try:
@@ -2555,6 +2562,44 @@ class App:
                     values, status = _load_preset_values_and_status(preset_name)
                     return (*values, status)
 
+                def _autoload_preset_for_model_type(selected_whisper_type: str, current_preset_name: str):
+                    if is_user_ui_preset(current_preset_name):
+                        return (
+                            gr.update(),
+                            *[gr.update() for _ in config_components],
+                            *[gr.update() for _ in config_info_components],
+                            f"Preset **{current_preset_name}** is user-saved, so model switch did not auto-load a built-in preset.",
+                        )
+
+                    whisper_type = self.normalize_primary_whisper_type(selected_whisper_type)
+                    preset_name = get_default_ui_preset_for_whisper_type(whisper_type)
+                    if not preset_name:
+                        return (
+                            gr.update(),
+                            *[gr.update() for _ in config_components],
+                            *[gr.update() for _ in config_info_components],
+                            "No built-in preset is available for the selected base model.",
+                        )
+
+                    cfg = load_ui_preset(preset_name, default_params=self.default_params)
+                    if not cfg:
+                        return (
+                            gr.update(),
+                            *[gr.update() for _ in config_components],
+                            *[gr.update() for _ in config_info_components],
+                            f"Preset **{preset_name}** could not be loaded.",
+                        )
+
+                    set_last_used_ui_preset(preset_name)
+                    values = _ui_config_to_values(cfg)
+                    info_text = self.model_type_details_for_whisper_type(whisper_type)
+                    return (
+                        gr.update(choices=list_ui_presets(), value=preset_name),
+                        *values,
+                        *[info_text for _ in config_info_components],
+                        f"Loaded preset **{preset_name}**",
+                    )
+
                 def _reset_defaults_ui():
                     values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
                     return (*values, "Reset to defaults")
@@ -2569,8 +2614,7 @@ class App:
                     ok = delete_ui_preset(preset_name)
                     presets = list_ui_presets()
                     if ok:
-                        if get_last_used_ui_preset() == sanitize_preset_name(preset_name):
-                            clear_last_used_ui_preset()
+                        clear_last_used_ui_preset()
                         return gr.update(choices=presets, value=None), f"Deleted preset **{preset_name}**"
                     return gr.update(choices=presets), f"Could not delete preset **{preset_name}**"
 
@@ -2602,6 +2646,14 @@ class App:
                     queue=False,
                     show_progress="hidden",
                 )
+                for transcription_ui in (file_transcription_ui, youtube_transcription_ui, mic_transcription_ui):
+                    transcription_ui["model_type_radio"].change(
+                        fn=_autoload_preset_for_model_type,
+                        inputs=[transcription_ui["model_type_radio"], ui_preset_dropdown],
+                        outputs=[ui_preset_dropdown] + config_components + config_info_components + [ui_preset_status],
+                        queue=False,
+                        show_progress="hidden",
+                    )
 
         repair_blocks_text(self.app)
         args = self.args

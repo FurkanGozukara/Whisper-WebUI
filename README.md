@@ -86,7 +86,7 @@
  
   - <img height="500" alt="image" src="https://github.com/user-attachments/assets/27909c4a-bd77-408f-824a-ab8fc9837379" />
 
-- New preset save and load system with extremely well tested best_quality and fast pre-made presets
+- New preset save and load system with locked best-quality presets for faster-whisper, Insanely Fast Whisper, and Canary-Qwen
 
   - Presets are automatically loaded as you change them and also last used preset is remembered when you restart the app
 

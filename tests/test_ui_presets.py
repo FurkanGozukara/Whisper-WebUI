@@ -7,6 +7,7 @@ from modules.ui.presets import (
     build_default_ui_config,
     clear_last_used_ui_preset,
     delete_ui_preset,
+    get_default_ui_preset_for_whisper_type,
     get_default_startup_ui_preset,
     get_last_used_ui_preset,
     last_used_ui_preset_path,
@@ -89,12 +90,14 @@ def test_merge_ui_config_restores_missing_sections():
 def test_whisper_lang_is_normalized_for_ui_and_runtime():
     defaults = build_default_ui_config()
 
-    assert defaults["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.CANARY_QWEN.value
-    assert defaults["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
+    assert defaults["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
+    assert defaults["file_tab"]["whisper"]["model_size"] == "large-v3"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
-    assert defaults["file_tab"]["whisper"]["word_timestamps"] is False
+    assert defaults["file_tab"]["whisper"]["beam_size"] == 5
+    assert defaults["file_tab"]["whisper"]["repetition_penalty"] == 1.0
+    assert defaults["file_tab"]["whisper"]["word_timestamps"] is True
     assert defaults["file_tab"]["whisper"]["normalize_word_timestamps"] is True
-    assert defaults["file_tab"]["whisper"]["chunk_length"] == 10
+    assert defaults["file_tab"]["whisper"]["chunk_length"] == 30
     assert defaults["file_tab"]["whisper"]["use_batched_inference"] is False
     assert WhisperParams(lang="English").lang == "en"
     assert WhisperParams(lang="english").lang == "en"
@@ -104,26 +107,55 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     assert WhisperParams.normalize_lang_choice("en") == "english"
 
 
-def test_builtin_best_quality_enables_word_timestamps():
-    cfg = load_ui_preset("best_quality")
+def test_builtin_fast_whisper_best_quality_enables_accuracy_settings():
+    cfg = load_ui_preset("Fast Whisper Best Quality")
 
     assert cfg is not None
     assert cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
-    assert cfg["file_tab"]["whisper"]["beam_size"] == 2
-    assert cfg["file_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["file_tab"]["whisper"]["model_size"] == "large-v3"
+    assert cfg["file_tab"]["whisper"]["beam_size"] == 5
+    assert cfg["file_tab"]["whisper"]["patience"] == 1.0
+    assert cfg["file_tab"]["whisper"]["repetition_penalty"] == 1.0
     assert cfg["file_tab"]["whisper"]["word_timestamps"] is True
     assert cfg["file_tab"]["whisper"]["normalize_word_timestamps"] is True
     assert cfg["file_tab"]["whisper"]["chunk_length"] == 30
-    assert cfg["youtube_tab"]["whisper"]["beam_size"] == 2
-    assert cfg["youtube_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["file_tab"]["whisper"]["use_batched_inference"] is False
+    assert cfg["youtube_tab"]["whisper"]["beam_size"] == 5
+    assert cfg["youtube_tab"]["whisper"]["repetition_penalty"] == 1.0
     assert cfg["youtube_tab"]["whisper"]["word_timestamps"] is True
     assert cfg["youtube_tab"]["whisper"]["normalize_word_timestamps"] is True
     assert cfg["youtube_tab"]["whisper"]["chunk_length"] == 30
-    assert cfg["mic_tab"]["whisper"]["beam_size"] == 2
-    assert cfg["mic_tab"]["whisper"]["repetition_penalty"] == 2.0
+    assert cfg["mic_tab"]["whisper"]["beam_size"] == 5
+    assert cfg["mic_tab"]["whisper"]["repetition_penalty"] == 1.0
     assert cfg["mic_tab"]["whisper"]["word_timestamps"] is True
     assert cfg["mic_tab"]["whisper"]["normalize_word_timestamps"] is True
     assert cfg["mic_tab"]["whisper"]["chunk_length"] == 30
+
+
+def test_builtin_backend_best_quality_presets_are_mapped_by_whisper_type():
+    listed = set(list_ui_presets())
+    assert {
+        "Canary Qwen Best Quality",
+        "Fast Whisper Best Quality",
+        "Insane Fast Whisper Best Quality",
+    }.issubset(listed)
+    assert get_default_startup_ui_preset() == "Fast Whisper Best Quality"
+    assert get_default_ui_preset_for_whisper_type("faster-whisper") == "Fast Whisper Best Quality"
+    assert get_default_ui_preset_for_whisper_type("insanely_fast_whisper") == "Insane Fast Whisper Best Quality"
+    assert get_default_ui_preset_for_whisper_type("canary-qwen") == "Canary Qwen Best Quality"
+
+    insane_cfg = load_ui_preset("Insane Fast Whisper Best Quality")
+    assert insane_cfg is not None
+    assert insane_cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.INSANELY_FAST_WHISPER.value
+    assert insane_cfg["file_tab"]["whisper"]["model_size"] == "large-v3"
+    assert insane_cfg["file_tab"]["whisper"]["condition_on_previous_text"] is False
+    assert insane_cfg["file_tab"]["whisper"]["chunk_length"] == 0
+
+    canary_cfg = load_ui_preset("Canary Qwen Best Quality")
+    assert canary_cfg is not None
+    assert canary_cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.CANARY_QWEN.value
+    assert canary_cfg["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
+    assert canary_cfg["file_tab"]["whisper"]["compute_type"] == "bfloat16"
 
 
 def test_pipeline_params_accept_legacy_list_without_normalize_word_timestamps():
@@ -196,23 +228,80 @@ def test_locked_system_presets_are_listed_loaded_and_protected(tmp_path, monkeyp
     assert delete_ui_preset("best_quality") is False
 
 
-def test_default_startup_ui_preset_falls_back_to_canary_without_persisting_it(tmp_path, monkeypatch):
+def test_locked_system_presets_are_protected_by_display_name(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     system_dir = tmp_path / "system"
     system_dir.mkdir(parents=True)
     monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(user_dir))
     monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(system_dir))
 
-    (system_dir / "canary_best_quality.json").write_text("{}", encoding="utf-8")
+    (system_dir / "fast_whisper_best_quality.json").write_text(
+        '{"_meta": {"display_name": "Fast Whisper Best Quality"}}',
+        encoding="utf-8",
+    )
+
+    assert ui_presets.is_locked_ui_preset("Fast Whisper Best Quality") is True
+    try:
+        save_ui_preset("Fast Whisper Best Quality", {"file_tab": {"batch_processing": True}})
+        assert False, "Expected save_ui_preset to reject overwriting a locked display name."
+    except ValueError:
+        pass
+    assert delete_ui_preset("Fast Whisper Best Quality") is False
+
+
+def test_system_preset_display_name_takes_priority_over_user_name_collision(tmp_path, monkeypatch):
+    user_dir = tmp_path / "user"
+    system_dir = tmp_path / "system"
+    user_dir.mkdir(parents=True)
+    system_dir.mkdir(parents=True)
+    monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(user_dir))
+    monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(system_dir))
+
+    (system_dir / "fast_whisper_best_quality.json").write_text(
+        """
+        {
+          "_meta": {"display_name": "Fast Whisper Best Quality"},
+          "file_tab": {"whisper": {"beam_size": 5}}
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+    (user_dir / "Fast_Whisper_Best_Quality.json").write_text(
+        """
+        {
+          "file_tab": {"whisper": {"beam_size": 1}}
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    loaded_cfg = load_ui_preset("Fast Whisper Best Quality")
+
+    assert loaded_cfg is not None
+    assert loaded_cfg["file_tab"]["whisper"]["beam_size"] == 5
+    assert ui_presets.is_locked_ui_preset("Fast Whisper Best Quality") is True
+
+
+def test_default_startup_ui_preset_falls_back_to_fast_whisper_without_persisting_it(tmp_path, monkeypatch):
+    user_dir = tmp_path / "user"
+    system_dir = tmp_path / "system"
+    system_dir.mkdir(parents=True)
+    monkeypatch.setattr(ui_presets, "PRESETS_DIR", str(user_dir))
+    monkeypatch.setattr(ui_presets, "UI_SYSTEM_PRESETS_DIR", str(system_dir))
+
+    (system_dir / "fast_whisper_best_quality.json").write_text(
+        '{"_meta": {"display_name": "Fast Whisper Best Quality"}}',
+        encoding="utf-8",
+    )
 
     startup_preset = get_default_startup_ui_preset()
 
-    assert startup_preset == "canary_best_quality"
+    assert startup_preset == "Fast Whisper Best Quality"
     assert get_last_used_ui_preset() is None
     assert not last_used_ui_preset_path().exists()
 
 
-def test_default_startup_ui_preset_returns_none_when_canary_is_missing(tmp_path, monkeypatch):
+def test_default_startup_ui_preset_returns_none_when_fast_whisper_is_missing(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     system_dir = tmp_path / "system"
     system_dir.mkdir(parents=True)
