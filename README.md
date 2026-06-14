@@ -12,6 +12,14 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 15 June 2026 - Version 12.3 
+
+- Now when downloading model - when you first time use that model - it will show download progress on CMD
+- Now it will show selected and used model on CMD
+- Just run Windows_Install_Update.bat to update / install
+
+<img width="3516" height="425" alt="image" src="https://github.com/user-attachments/assets/41c62156-51ac-45c7-bee9-de42f78978f9" />
+
 ### 8 June 2026 - Version 12.2 
 
 -   -   This is a major quality upgrade        
