@@ -42,6 +42,12 @@ class BaseTranscriptionPipeline(ABC):
     LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC = 0.1
     LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC = 5.0
     NO_WORD_TIMESTAMPS_SUFFIX = "_noword_timestaps"
+    IMPLEMENTATION_LABELS = {
+        WhisperImpl.FASTER_WHISPER.value: "Whisper (faster-whisper / CTranslate2)",
+        WhisperImpl.WHISPER.value: "Whisper (OpenAI)",
+        WhisperImpl.INSANELY_FAST_WHISPER.value: "Insanely Fast Whisper (Transformers)",
+        WhisperImpl.CANARY_QWEN.value: "Canary-Qwen (NVIDIA NeMo)",
+    }
 
     def __init__(self,
                  model_dir: str = WHISPER_MODELS_DIR,
@@ -95,6 +101,14 @@ class BaseTranscriptionPipeline(ABC):
     def supports_word_timestamps() -> bool:
         return True
 
+    @classmethod
+    def implementation_label(cls, whisper_type: Optional[str]) -> str:
+        try:
+            normalized = WhisperParams(whisper_type=whisper_type).whisper_type
+        except Exception:
+            normalized = str(whisper_type or "").strip().lower()
+        return cls.IMPLEMENTATION_LABELS.get(normalized, normalized or "unknown")
+
     @staticmethod
     def ensure_progress_callable(progress):
         if callable(progress):
@@ -104,6 +118,70 @@ class BaseTranscriptionPipeline(ABC):
             return None
 
         return noop_progress
+
+    def should_load_model_for_selection(self, model_size: str, compute_type: str) -> bool:
+        return (
+            self.model is None
+            or model_size != self.current_model_size
+            or compute_type != self.current_compute_type
+        )
+
+    def log_selected_model(
+        self,
+        whisper_type: Optional[str],
+        model_size: str,
+        compute_type: str,
+        will_load: Optional[bool] = None,
+    ) -> None:
+        logger.info("Selected Base Model: %s", self.implementation_label(whisper_type))
+        logger.info("Selected Model: %s", model_size or "(default)")
+        logger.info("Selected Device/Compute: device=%s, compute_type=%s", self.device, compute_type)
+
+        if will_load is None:
+            return
+
+        if will_load:
+            logger.info("Model load required: selected model is not currently active.")
+        else:
+            logger.info(
+                "Model already loaded: active=%s, compute_type=%s, device=%s",
+                self.current_model_size,
+                self.current_compute_type,
+                self.device,
+            )
+
+    def log_model_load_start(
+        self,
+        implementation: str,
+        selected_model: str,
+        compute_type: str,
+        resolved_model: Optional[str] = None,
+    ) -> None:
+        resolved_model = resolved_model or selected_model
+        logger.info(
+            "Loading model: Base Model=%s, selected=%s, resolved=%s, device=%s, compute_type=%s",
+            implementation,
+            selected_model or "(default)",
+            resolved_model or "(default)",
+            self.device,
+            compute_type,
+        )
+
+    def log_model_load_complete(
+        self,
+        implementation: str,
+        selected_model: str,
+        compute_type: str,
+        active_model: Optional[str] = None,
+    ) -> None:
+        logger.info(
+            "Model loaded: Base Model=%s, selected=%s, active=%s, device=%s, compute_type=%s",
+            implementation,
+            selected_model or "(default)",
+            active_model or self.current_model_size or "(unknown)",
+            self.device,
+            compute_type,
+        )
 
     def build_live_transcription_heartbeat(self, started_at: float, segment_count: int) -> str:
         elapsed = max(0.0, time.time() - started_at)
@@ -191,6 +269,15 @@ class BaseTranscriptionPipeline(ABC):
         primary_file_format = file_formats[0]
         params = self.validate_gradio_values(params)
         bgm_params, vad_params, whisper_params, diarization_params = params.bgm_separation, params.vad, params.whisper, params.diarization
+        self.log_selected_model(
+            whisper_type=whisper_params.whisper_type,
+            model_size=whisper_params.model_size,
+            compute_type=whisper_params.compute_type,
+            will_load=self.should_load_model_for_selection(
+                whisper_params.model_size,
+                whisper_params.compute_type,
+            ),
+        )
 
         if bgm_params.is_separate_bgm:
             music, audio, _ = self.music_separator.separate(

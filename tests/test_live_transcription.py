@@ -158,13 +158,15 @@ if "gradio_i18n" not in sys.modules:
     sys.modules["gradio_i18n.i18n"] = fake_gradio_i18n_i18n
 
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
-from modules.whisper.data_classes import Segment, TranscriptionPipelineParams, WhisperParams
+from modules.whisper.data_classes import Segment, TranscriptionPipelineParams, WhisperImpl, WhisperParams
 
 
 class DummyLivePipeline(BaseTranscriptionPipeline):
     def __init__(self, output_dir: Path):
         self.output_dir = str(output_dir)
         self.model = None
+        self.current_model_size = None
+        self.current_compute_type = "float32"
         self.device = "cpu"
         self.last_log_console = None
         self.last_log_model_banner = None
@@ -201,6 +203,52 @@ class BlockingLivePipeline(DummyLivePipeline):
         if progress_callback is not None:
             progress_callback(1.0, segment)
         return [segment], 0.25
+
+
+class BannerLoggingPipeline(BaseTranscriptionPipeline):
+    def __init__(self, output_dir: Path):
+        self.output_dir = str(output_dir)
+        self.model = None
+        self.current_model_size = None
+        self.current_compute_type = "float32"
+        self.device = "cpu"
+
+    def transcribe(self, audio, progress=None, progress_callback=None, *whisper_params, log_console=True, log_model_banner=True):
+        return [Segment(start=0.0, end=1.0, text="hello")], 0.1
+
+    def update_model(self, model_size, compute_type, progress=None):
+        return None
+
+
+def test_run_logs_selected_base_model_and_model_name(caplog, tmp_path):
+    media_file = tmp_path / "clip.wav"
+    media_file.write_bytes(b"fake")
+    pipeline = BannerLoggingPipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(
+        whisper=WhisperParams(
+            whisper_type=WhisperImpl.CANARY_QWEN.value,
+            model_size="nvidia/canary-qwen-2.5b",
+            compute_type="float32",
+            enable_offload=False,
+        ),
+    ).to_list()
+
+    caplog.set_level("INFO", logger="Whisper-WebUI")
+
+    pipeline.run(
+        str(media_file),
+        gr.Progress(),
+        "SRT",
+        False,
+        None,
+        *pipeline_params,
+    )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Selected Base Model: Canary-Qwen (NVIDIA NeMo)" in messages
+    assert "Selected Model: nvidia/canary-qwen-2.5b" in messages
+    assert "Selected Device/Compute: device=cpu, compute_type=float32" in messages
+    assert "Model load required: selected model is not currently active." in messages
 
 
 def test_live_transcription_streams_recent_segment_history(monkeypatch, tmp_path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import signal
@@ -12,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Any, Deque, Dict, Generator, Optional, Tuple
+from typing import Any, BinaryIO, Deque, Dict, Generator, Optional, TextIO, Tuple
 
 from modules.utils.logger import get_logger
 from modules.utils.text import repair_mojibake_obj
@@ -79,18 +80,51 @@ class RuntimeWorkerClient:
 
         def drain_stderr() -> None:
             assert process.stderr is not None
-            for line in process.stderr:
-                decoded_line = line.decode("utf-8", errors="replace").rstrip()
-                stderr_lines.append(decoded_line)
-                try:
-                    sys.stderr.write(decoded_line + "\n")
-                    sys.stderr.flush()
-                except Exception:
-                    pass
+            self._drain_stderr_stream(process.stderr, stderr_lines, sys.stderr)
 
         stderr_thread = Thread(target=drain_stderr, daemon=True)
         stderr_thread.start()
         return WorkerHandle(process=process, request_path=request_path, stderr_lines=stderr_lines, stderr_thread=stderr_thread)
+
+    @staticmethod
+    def _drain_stderr_stream(
+        stderr_stream: BinaryIO,
+        stderr_lines: Deque[str],
+        output_stream: Optional[TextIO] = None,
+    ) -> None:
+        output_stream = output_stream or sys.stderr
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        line_buffer: list[str] = []
+
+        def remember_completed_line() -> None:
+            decoded_line = "".join(line_buffer).strip()
+            line_buffer.clear()
+            if decoded_line:
+                stderr_lines.append(decoded_line)
+
+        def consume_text(text: str) -> None:
+            if not text:
+                return
+            try:
+                output_stream.write(text)
+                output_stream.flush()
+            except Exception:
+                pass
+
+            for char in text:
+                if char in ("\r", "\n"):
+                    remember_completed_line()
+                else:
+                    line_buffer.append(char)
+
+        while True:
+            raw_chunk = stderr_stream.read(4096)
+            if not raw_chunk:
+                break
+            consume_text(decoder.decode(raw_chunk))
+
+        consume_text(decoder.decode(b"", final=True))
+        remember_completed_line()
 
     @staticmethod
     def _cleanup_request_file(request_path: str) -> None:

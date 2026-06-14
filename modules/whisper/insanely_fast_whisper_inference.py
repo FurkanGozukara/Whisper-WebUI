@@ -112,7 +112,7 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         progress = self.ensure_progress_callable(progress)
         params = WhisperParams.from_list(list(whisper_params))
 
-        if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
+        if self.should_load_model_for_selection(params.model_size, params.compute_type):
             self.update_model(params.model_size, params.compute_type, progress)
 
         progress(0, desc="Starting Insanely Fast Whisper transcription..")
@@ -604,6 +604,12 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         self.current_compute_type = compute_type
         self.current_model_size = model_size
         torch_dtype = self.torch_dtype_for_compute_type(compute_type)
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.INSANELY_FAST_WHISPER.value),
+            selected_model=model_size,
+            resolved_model=model_path,
+            compute_type=compute_type,
+        )
         self.model = pipeline(
             "automatic-speech-recognition",
             model=model_path,
@@ -612,6 +618,12 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
             model_kwargs=self.model_kwargs_for_torch_dtype(torch_dtype),
         )
         self.disable_bpe_tokenizer_cleanup_warning(self.model)
+        self.log_model_load_complete(
+            implementation=self.implementation_label(WhisperImpl.INSANELY_FAST_WHISPER.value),
+            selected_model=model_size,
+            active_model=self.current_model_size,
+            compute_type=self.current_compute_type,
+        )
 
     def resolve_model_target(self, model_size: str, progress: gr.Progress) -> str:
         local_model_path = os.path.join(self.model_dir, model_size)

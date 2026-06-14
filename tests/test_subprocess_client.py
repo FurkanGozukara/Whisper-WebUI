@@ -1,5 +1,6 @@
 from argparse import Namespace
 from collections import deque
+import io
 import json
 import os
 import subprocess
@@ -11,7 +12,7 @@ import types
 
 import pytest
 
-from modules.runtime.subprocess_client import SubprocessWhisperProxy, WorkerHandle
+from modules.runtime.subprocess_client import RuntimeWorkerClient, SubprocessWhisperProxy, WorkerHandle
 from modules.whisper.data_classes import TranscriptionPipelineParams, WhisperImpl, WhisperParams
 
 
@@ -138,6 +139,37 @@ def wait_for_active_handle(proxy: SubprocessWhisperProxy, timeout: float = 5.0):
             return handle
         time.sleep(0.05)
     raise AssertionError("Timed out waiting for an active worker handle.")
+
+
+class ChunkedBytes:
+    def __init__(self, chunks):
+        self._chunks = deque(chunks)
+
+    def read(self, _size=-1):
+        if not self._chunks:
+            return b""
+        return self._chunks.popleft()
+
+
+def test_runtime_worker_stderr_drain_forwards_carriage_return_progress():
+    stderr_lines = deque(maxlen=10)
+    output = io.StringIO()
+    stream = ChunkedBytes(
+        [
+            b"\rDownloading model: 10%",
+            b"\rDownloading model: 20%",
+            b"\nFinished\n",
+        ]
+    )
+
+    RuntimeWorkerClient._drain_stderr_stream(stream, stderr_lines, output)
+
+    assert output.getvalue() == "\rDownloading model: 10%\rDownloading model: 20%\nFinished\n"
+    assert list(stderr_lines) == [
+        "Downloading model: 10%",
+        "Downloading model: 20%",
+        "Finished",
+    ]
 
 
 def test_worker_metadata_includes_insanely_fast_whisper(monkeypatch, tmp_path):

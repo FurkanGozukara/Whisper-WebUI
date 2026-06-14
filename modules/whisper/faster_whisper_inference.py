@@ -136,6 +136,13 @@ class StandardEncoderPrefetchCache:
 
 
 class FasterWhisperInference(BaseTranscriptionPipeline):
+    MODEL_ALLOW_PATTERNS = [
+        "config.json",
+        "preprocessor_config.json",
+        "model.bin",
+        "tokenizer.json",
+        "vocabulary.*",
+    ]
     MODEL_READY_PROGRESS = 0.08
     AUDIO_PREPARED_PROGRESS = 0.16
     CHUNKS_PREPARED_PROGRESS = 0.24
@@ -200,7 +207,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         if (
             not self.should_use_parallel_slice_batching(params)
-            and (params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type)
+            and self.should_load_model_for_selection(params.model_size, params.compute_type)
         ):
             self.update_model(params.model_size, params.compute_type, progress)
 
@@ -925,6 +932,16 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if self.model is not None:
             self.offload()
 
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.FASTER_WHISPER.value),
+            selected_model=params.model_size,
+            resolved_model=model_size_or_path,
+            compute_type=params.compute_type,
+        )
+        logger.info(
+            "Parallel slice workers will each load the resolved faster-whisper model before transcribing their slice."
+        )
+
         slice_params = params.model_copy(update={"batch_size": 1})
         slice_jobs = []
 
@@ -1291,26 +1308,120 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                     word.end += offset_seconds
         return offset_segment
 
+    @staticmethod
+    def safe_model_dir_name(model_size: str) -> str:
+        return str(model_size or "").replace("/", "--")
+
+    @staticmethod
+    def has_downloaded_model_files(path: str) -> bool:
+        if not os.path.isdir(path):
+            return False
+
+        has_config = False
+        has_model = False
+        try:
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [directory for directory in dirs if directory not in {".cache", ".git"}]
+                file_names = set(files)
+                if "config.json" in file_names:
+                    has_config = True
+                if "model.bin" in file_names:
+                    has_model = True
+                if has_config and has_model:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    @staticmethod
+    def hf_repo_id_for_model_size(model_size: str) -> Optional[str]:
+        if "/" in str(model_size or ""):
+            return model_size
+
+        try:
+            from faster_whisper.utils import _MODELS
+        except Exception:
+            return None
+        return _MODELS.get(model_size)
+
+    def official_model_cache_path(self, model_size: str) -> str:
+        repo_id = self.hf_repo_id_for_model_size(model_size)
+        if not repo_id:
+            return ""
+        return os.path.join(self.model_dir, "models--" + repo_id.replace("/", "--"))
+
+    @classmethod
+    def make_download_tqdm_class(cls, model_size: str):
+        class FasterWhisperDownloadTqdm(tqdm):
+            def __init__(self, *args, **kwargs):
+                kwargs.setdefault("file", sys.stderr)
+                kwargs.setdefault("dynamic_ncols", True)
+                super().__init__(*args, **kwargs)
+
+        return FasterWhisperDownloadTqdm
+
+    def download_model_snapshot(self, model_size: str, target_dir: str) -> str:
+        repo_id = self.hf_repo_id_for_model_size(model_size) or model_size
+        logger.info(
+            "Downloading faster-whisper model '%s' from '%s' to '%s'.",
+            model_size,
+            repo_id,
+            target_dir,
+        )
+        os.makedirs(target_dir, exist_ok=True)
+        snapshot_path = huggingface_hub.snapshot_download(
+            repo_id=repo_id,
+            local_dir=target_dir,
+            allow_patterns=self.MODEL_ALLOW_PATTERNS,
+            token=os.environ.get("HF_TOKEN") or None,
+            tqdm_class=self.make_download_tqdm_class(model_size),
+        )
+        logger.info("faster-whisper model download finished: %s", snapshot_path)
+        return snapshot_path
+
     def resolve_model_target(self, model_size: str) -> Tuple[str, bool]:
-        model_size_dirname = model_size.replace("/", "--") if "/" in model_size else model_size
+        model_size_dirname = self.safe_model_dir_name(model_size)
+        visible_model_dir = os.path.join(self.model_dir, model_size_dirname)
+        if self.has_downloaded_model_files(visible_model_dir):
+            return visible_model_dir, True
+
+        official_model_path = self.official_model_cache_path(model_size)
+        official_model_is_cached = bool(official_model_path) and self.has_downloaded_model_files(official_model_path)
+        if model_size in faster_whisper.available_models() and official_model_is_cached:
+            return model_size, True
+
         if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
             logger.info(
                 "Model is not detected. Trying to download '%s' from huggingface to '%s' ...",
                 model_size,
-                os.path.join(self.model_dir, model_size_dirname),
+                visible_model_dir,
             )
-            huggingface_hub.snapshot_download(
-                model_size,
-                local_dir=os.path.join(self.model_dir, model_size_dirname),
-            )
+            self.download_model_snapshot(model_size, visible_model_dir)
+            if not self.has_downloaded_model_files(visible_model_dir):
+                raise RuntimeError(
+                    f"faster-whisper download did not create a complete model folder at {visible_model_dir}."
+                )
             self.model_paths = self.get_model_paths()
+            return visible_model_dir, True
+
+        if model_size in faster_whisper.available_models():
+            logger.info(
+                "Downloading faster-whisper model '%s' to '%s' before loading.",
+                model_size,
+                visible_model_dir,
+            )
+            self.download_model_snapshot(model_size, visible_model_dir)
+            if not self.has_downloaded_model_files(visible_model_dir):
+                raise RuntimeError(
+                    f"faster-whisper download did not create a complete model folder at {visible_model_dir}."
+                )
+            self.model_paths = self.get_model_paths()
+            return visible_model_dir, True
 
         resolved_model = self.model_paths[model_size_dirname]
-        hf_prefix = "models--Systran--faster-whisper-"
-        official_model_path = os.path.join(self.model_dir, hf_prefix + model_size)
         local_files_only = (
             (os.path.isdir(resolved_model) and os.path.exists(resolved_model))
-            or (model_size in faster_whisper.available_models() and os.path.exists(official_model_path))
+            or (model_size in faster_whisper.available_models() and official_model_is_cached)
         )
         return resolved_model, local_files_only
 
@@ -1443,19 +1554,31 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         """
         progress(0.02, desc="Initializing Model..")
 
-        model_size_dirname = model_size.replace("/", "--") if "/" in model_size else model_size
+        model_size_dirname = self.safe_model_dir_name(model_size)
         model_size_or_path, local_files_only = self.resolve_model_target(model_size)
         if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
             gr.Info(f"Model is downloaded with the name \"{model_size_dirname}\"")
 
         self.current_compute_type = compute_type
         self.current_model_size = model_size_or_path
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.FASTER_WHISPER.value),
+            selected_model=model_size,
+            resolved_model=model_size_or_path,
+            compute_type=compute_type,
+        )
         self.model = faster_whisper.WhisperModel(
             device=self.device,
             model_size_or_path=model_size_or_path,
             download_root=self.model_dir,
             compute_type=self.current_compute_type,
             local_files_only=local_files_only
+        )
+        self.log_model_load_complete(
+            implementation=self.implementation_label(WhisperImpl.FASTER_WHISPER.value),
+            selected_model=model_size,
+            active_model=self.current_model_size,
+            compute_type=self.current_compute_type,
         )
 
     def get_model_paths(self):

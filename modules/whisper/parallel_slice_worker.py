@@ -9,6 +9,10 @@ import numpy as np
 
 from modules.whisper.data_classes import Segment, WhisperParams
 from modules.whisper.faster_whisper_inference import FasterWhisperInference
+from modules.utils.logger import get_logger
+
+
+logger = get_logger()
 
 
 def read_request(request_path: str) -> dict:
@@ -48,12 +52,30 @@ def run_slice(request: dict) -> None:
     model = None
 
     try:
+        logger.info(
+            "Loading model: Base Model=Whisper (faster-whisper / CTranslate2), "
+            "selected=%s, resolved=%s, device=%s, compute_type=%s, slice=P%s",
+            params.model_size,
+            request["model_size_or_path"],
+            request["device"],
+            params.compute_type,
+            int(request["slice_index"]) + 1,
+        )
         model = faster_whisper.WhisperModel(
             device=request["device"],
             model_size_or_path=request["model_size_or_path"],
             download_root=request["model_dir"],
             compute_type=params.compute_type,
             local_files_only=bool(request.get("local_files_only", False)),
+        )
+        logger.info(
+            "Model loaded: Base Model=Whisper (faster-whisper / CTranslate2), "
+            "selected=%s, active=%s, device=%s, compute_type=%s, slice=P%s",
+            params.model_size,
+            request["model_size_or_path"],
+            request["device"],
+            params.compute_type,
+            int(request["slice_index"]) + 1,
         )
         segments, info = FasterWhisperInference.run_standard_pipeline_with_model(
             model=model,

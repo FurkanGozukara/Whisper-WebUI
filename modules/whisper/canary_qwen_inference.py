@@ -15,7 +15,7 @@ from modules.utils.constants import GRADIO_NONE_STR
 from modules.utils.logger import get_logger
 from modules.utils.paths import CANARY_QWEN_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, UVR_MODELS_DIR
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
-from modules.whisper.data_classes import Segment, WhisperParams
+from modules.whisper.data_classes import Segment, WhisperImpl, WhisperParams
 
 
 logger = get_logger()
@@ -73,9 +73,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         self.validate_supported_params(params)
 
         if (
-            params.model_size != self.current_model_size
-            or self.model is None
-            or self.current_compute_type != params.compute_type
+            self.should_load_model_for_selection(params.model_size, params.compute_type)
         ):
             self.update_model(params.model_size, params.compute_type, progress, progress_callback=progress_callback)
 
@@ -172,6 +170,12 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         )
         salm_cls = self.import_salm()
         logger.info("Loading Canary-Qwen model '%s' into %s with %s.", model_target, self.device, compute_type)
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
+            selected_model=model_size,
+            resolved_model=model_target,
+            compute_type=compute_type,
+        )
 
         model = salm_cls.from_pretrained(
             model_target,
@@ -187,6 +191,12 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         self.model = model
         self.current_model_size = model_size
         self.current_compute_type = compute_type
+        self.log_model_load_complete(
+            implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
+            selected_model=model_size,
+            active_model=self.current_model_size,
+            compute_type=self.current_compute_type,
+        )
         self.emit_status_callback(progress_callback, "Canary-Qwen model loaded. Starting transcription..")
         progress(0.1, desc="Canary-Qwen model loaded.")
 

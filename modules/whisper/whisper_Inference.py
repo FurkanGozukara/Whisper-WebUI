@@ -67,7 +67,7 @@ class WhisperInference(BaseTranscriptionPipeline):
             logger.info("Whisper skipped empty audio input.")
             return [], time.time() - start_time
 
-        if params.model_size != self.current_model_size or self.model is None or self.current_compute_type != params.compute_type:
+        if self.should_load_model_for_selection(params.model_size, params.compute_type):
             self.update_model(params.model_size, params.compute_type, progress)
 
         def progress_hook(progress_value):
@@ -166,6 +166,12 @@ class WhisperInference(BaseTranscriptionPipeline):
         progress(0, desc="Initializing Model..")
         self.current_compute_type = compute_type
         self.current_model_size = model_size
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.WHISPER.value),
+            selected_model=model_size,
+            resolved_model=model_size,
+            compute_type=compute_type,
+        )
         # PyTorch 2.6 changed torch.load default to weights_only=True. Some Whisper checkpoints
         # include TorchVersion metadata which must be allowlisted for weights-only loading.
         with torch_load_safe_globals():
@@ -174,3 +180,9 @@ class WhisperInference(BaseTranscriptionPipeline):
                 device=self.device,
                 download_root=self.model_dir
             )
+        self.log_model_load_complete(
+            implementation=self.implementation_label(WhisperImpl.WHISPER.value),
+            selected_model=model_size,
+            active_model=self.current_model_size,
+            compute_type=self.current_compute_type,
+        )

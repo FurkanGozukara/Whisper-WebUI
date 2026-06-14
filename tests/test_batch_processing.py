@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import ctranslate2
 import numpy as np
@@ -61,6 +62,62 @@ def test_emit_progress_callback_supports_single_argument_callbacks():
     )
 
     assert callback_values == [0.5]
+
+
+def test_resolve_model_target_downloads_official_model_to_visible_dir(tmp_path, monkeypatch):
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model_dir = str(tmp_path)
+    inferencer.model_paths = {"large-v3": "large-v3"}
+    calls = []
+
+    def fake_snapshot_download(repo_id, local_dir, allow_patterns, token, tqdm_class):
+        calls.append(
+            {
+                "repo_id": repo_id,
+                "local_dir": local_dir,
+                "allow_patterns": allow_patterns,
+                "token": token,
+                "has_tqdm_class": tqdm_class is not None,
+            }
+        )
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        Path(local_dir, "config.json").write_text("{}", encoding="utf-8")
+        Path(local_dir, "model.bin").write_text("", encoding="utf-8")
+        return local_dir
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+
+    target, local_files_only = inferencer.resolve_model_target("large-v3")
+
+    expected_dir = tmp_path / "large-v3"
+    assert target == str(expected_dir)
+    assert local_files_only is True
+    assert calls == [
+        {
+            "repo_id": "Systran/faster-whisper-large-v3",
+            "local_dir": str(expected_dir),
+            "allow_patterns": FasterWhisperInference.MODEL_ALLOW_PATTERNS,
+            "token": None,
+            "has_tqdm_class": True,
+        }
+    ]
+
+
+def test_resolve_model_target_uses_visible_official_model_without_redownloading(tmp_path, monkeypatch):
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model_dir = str(tmp_path)
+    inferencer.model_paths = {"large-v3": "large-v3"}
+    local_model_dir = tmp_path / "large-v3"
+    local_model_dir.mkdir()
+    (local_model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (local_model_dir / "model.bin").write_text("", encoding="utf-8")
+
+    def fail_snapshot_download(*args, **kwargs):
+        raise AssertionError("Should not download when the visible model folder exists.")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fail_snapshot_download)
+
+    assert inferencer.resolve_model_target("large-v3") == (str(local_model_dir), True)
 
 
 def test_standard_pipeline_repeats_initial_prompt_every_window():
