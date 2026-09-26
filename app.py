@@ -13,6 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
+from modules.utils.paths import configure_model_cache_env
+
+# Before gradio/huggingface_hub are imported: every model download stays in Whisper-WebUI/models.
+configure_model_cache_env()
+
 from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
 
 enable_cuda_runtime_autodiscovery()
@@ -66,7 +71,7 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V12.3 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = "Whisper TTS Premium App by SECourses V12.4 : https://www.patreon.com/posts/whisper-webui-to-145395299"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "

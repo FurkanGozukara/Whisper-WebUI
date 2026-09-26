@@ -19,6 +19,7 @@ from modules.utils.logger import get_logger
 logger = get_logger()
 
 try:
+    import uvr.models as uvr_models
     from uvr.models import MDX, Demucs, VrNetwork, MDXC
 except Exception as e:
     logger.warning(
@@ -26,6 +27,20 @@ except Exception as e:
         "Please open an issue on GitHub if you encounter this error. "
         f"Error: {type(e).__name__}: {traceback.format_exc()}"
     )
+else:
+    _uvr_download_model = uvr_models.download_model
+
+    def _download_model_if_missing(model_name, model_arch, model_path=None, save_path=None, logger=None):
+        # uvr looks for an existing copy only inside its own package folder, so a model already in
+        # models/UVR was downloaded again on every load.
+        if save_path and model_path:
+            files = [os.path.join(save_path, path.split("/")[-1]) for path in model_path]
+            if all(os.path.isfile(file) and os.path.getsize(file) > 0 for file in files):
+                return save_path
+        return _uvr_download_model(model_name=model_name, model_arch=model_arch, model_path=model_path,
+                                   save_path=save_path, logger=logger)
+
+    uvr_models.download_model = _download_model_if_missing
 
 
 class MusicSeparator:

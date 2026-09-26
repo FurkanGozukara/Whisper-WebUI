@@ -522,3 +522,160 @@ def test_transcribe_live_preview_uses_local_inferencer(monkeypatch):
     assert result == "preview text"
     assert captured["audio"] == "audio-buffer"
     assert captured["pipeline_params"] == ("large-v3", "english")
+
+
+FAKE_SERVE_WORKER = r"""
+import json
+import sys
+import time
+
+
+def emit(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+emit({"event": "ready"})
+count = 0
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("action") == "exit":
+        break
+    count += 1
+    if message["request"].get("mode") == "sleep":
+        emit({"event": "update", "payload": {"live_output": "sleeping", "result_str": "", "paths": []}})
+        time.sleep(60)
+    if message["action"] == "transcribe_youtube":
+        emit({"event": "result", "payload": {"request": count}})
+    else:
+        emit({"event": "update", "payload": {"live_output": f"request {count}", "result_str": "done", "paths": []}})
+    emit({"event": "done"})
+"""
+
+
+def install_fake_persistent_workers(monkeypatch, proxy: SubprocessWhisperProxy):
+    handles = []
+
+    def fake_start_persistent_worker():
+        popen_kwargs = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "bufsize": 0,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["preexec_fn"] = os.setsid
+        process = subprocess.Popen([sys.executable, "-u", "-c", FAKE_SERVE_WORKER], **popen_kwargs)
+        stderr_thread = Thread(target=process.stderr.read, daemon=True)
+        stderr_thread.start()
+        handle = WorkerHandle(
+            process=process,
+            request_path="",
+            stderr_lines=deque(maxlen=20),
+            stderr_thread=stderr_thread,
+            stdout_reader=io.BufferedReader(process.stdout),
+        )
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(proxy._client, "start_persistent_worker", fake_start_persistent_worker)
+    return handles
+
+
+def test_offload_to_ram_reuses_one_persistent_worker_and_stops_it_when_disabled(monkeypatch):
+    proxy = build_proxy()
+    monkeypatch.setattr(proxy, "_use_subprocess", lambda params: True)
+    persistent = install_fake_persistent_workers(monkeypatch, proxy)
+    one_shot = install_worker_sequence(monkeypatch, proxy, ["finish"])
+    keep = TranscriptionPipelineParams(whisper=WhisperParams(offload_to_ram=True)).to_list()
+    unload = TranscriptionPipelineParams(whisper=WhisperParams(offload_to_ram=False)).to_list()
+
+    try:
+        first = list(proxy.transcribe_file_with_live_output(["a.wav"], False, None, None, False, None, "SRT", True, None, *keep))
+        second = list(proxy.transcribe_file_with_live_output(["a.wav"], False, None, None, False, None, "SRT", True, None, *keep))
+        youtube = proxy.transcribe_youtube("https://www.youtube.com/watch?v=test", ["SRT"], False, False, 1, *keep)
+
+        assert first == [("request 1", "done", [])]
+        assert second == [("request 2", "done", [])]
+        assert youtube == {"request": 3}
+        assert len(persistent) == 1
+        assert persistent[0].process.poll() is None
+
+        disabled = list(proxy.transcribe_file_with_live_output(["a.wav"], False, None, None, False, None, "SRT", True, None, *unload))
+
+        assert disabled == [("faster-whisper:transcribe_file:0 live", "", [])]
+        assert len(one_shot) == 1
+        assert proxy._persistent_handle is None
+        assert persistent[0].process.wait(timeout=10) == 0
+    finally:
+        proxy.shutdown_persistent_worker()
+
+
+def test_cancel_stops_persistent_worker_and_next_job_starts_a_new_one(monkeypatch):
+    proxy = build_proxy()
+    persistent = install_fake_persistent_workers(monkeypatch, proxy)
+
+    try:
+        generator = proxy._stream_job("transcribe_file", {"mode": "sleep"}, True)
+        assert next(generator) == ("sleeping", "", [])
+        assert proxy.cancel_active_generation() is True
+        assert list(generator) == [("sleeping", "Cancelled. Running subprocess was terminated.", [])]
+        assert persistent[0].process.poll() is not None
+
+        restarted = list(proxy._stream_job("transcribe_file", {}, True))
+
+        assert restarted == [("request 1", "done", [])]
+        assert len(persistent) == 2
+    finally:
+        proxy.shutdown_persistent_worker()
+
+
+def test_closing_a_persistent_worker_stream_stops_the_worker(monkeypatch):
+    proxy = build_proxy()
+    persistent = install_fake_persistent_workers(monkeypatch, proxy)
+
+    try:
+        generator = proxy._stream_job("transcribe_file", {"mode": "sleep"}, True)
+        assert next(generator) == ("sleeping", "", [])
+        generator.close()
+
+        assert persistent[0].process.poll() is not None
+        assert proxy._persistent_handle is None
+        assert list(proxy._stream_job("transcribe_file", {}, True)) == [("request 1", "done", [])]
+    finally:
+        proxy.shutdown_persistent_worker()
+
+
+def test_persistent_worker_that_dies_at_startup_reports_its_stderr(monkeypatch):
+    proxy = build_proxy()
+
+    def start_crashing_worker():
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-c", "import sys; sys.stderr.write('boom at import\n'); sys.exit(3)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        stderr_lines = deque(maxlen=20)
+        stderr_thread = Thread(
+            target=RuntimeWorkerClient._drain_stderr_stream,
+            args=(process.stderr, stderr_lines, io.StringIO()),
+            daemon=True,
+        )
+        stderr_thread.start()
+        return WorkerHandle(
+            process=process,
+            request_path="",
+            stderr_lines=stderr_lines,
+            stderr_thread=stderr_thread,
+            stdout_reader=io.BufferedReader(process.stdout),
+        )
+
+    monkeypatch.setattr(proxy._client, "start_persistent_worker", start_crashing_worker)
+
+    with pytest.raises(RuntimeError, match="boom at import"):
+        list(proxy._stream_job("transcribe_file", {}, True))
+    assert proxy._persistent_handle is None

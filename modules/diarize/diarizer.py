@@ -21,6 +21,7 @@ class Diarizer:
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
         self.pipe = None
+        self.pipe_in_ram = False
 
     def run(self,
             audio: Union[str, BinaryIO, np.ndarray],
@@ -59,6 +60,9 @@ class Diarizer:
                 device=device,
                 use_auth_token=use_auth_token
             )
+        elif self.pipe_in_ram:
+            self.pipe.model.to(torch.device(device))
+            self.pipe_in_ram = False
 
         if self.pipe is None:
             raise RuntimeError("Diarization pipeline is unavailable.")
@@ -130,8 +134,17 @@ class Diarizer:
             self.pipe = None
         logger.disabled = False
 
+    def move_to_ram(self) -> bool:
+        """Park the diarization pipeline in system RAM (restored by the next run). Returns True if moved."""
+        if self.pipe is None or self.pipe_in_ram or self.device == "cpu":
+            return False
+        self.pipe.model.to(torch.device("cpu"))
+        self.pipe_in_ram = True
+        return True
+
     def offload(self):
         """Offload the model and free up the memory"""
+        self.pipe_in_ram = False
         if self.pipe is not None:
             del self.pipe
             self.pipe = None

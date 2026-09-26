@@ -43,3 +43,23 @@ for dir_path in [MODELS_DIR,
                  UVR_VOCALS_OUTPUT_DIR,
                  BACKEND_CACHE_DIR]:
     os.makedirs(dir_path, exist_ok=True)
+
+
+def configure_model_cache_env() -> None:
+    """Point every library cache that can download models (Hugging Face hub and Xet, torch.hub, NeMo) into MODELS_DIR.
+
+    Call it before huggingface_hub is imported (gradio imports it): the hub reads these variables once, at import.
+    Values are assigned, not defaulted, so a global HF_HOME or HF_HUB_CACHE cannot send downloads elsewhere.
+    """
+    previous_hf_home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    token_path = os.path.join(os.path.abspath(previous_hf_home), "token")
+    if not os.environ.get("HF_TOKEN_PATH") and os.path.isfile(token_path):
+        # A token saved by `hf auth login` is a credential, not a model; keep using it.
+        os.environ["HF_TOKEN_PATH"] = token_path
+    for name in ("HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE"):
+        os.environ.pop(name, None)
+    os.environ["HF_HOME"] = MODELS_DIR
+    os.environ["HF_HUB_CACHE"] = os.path.join(MODELS_DIR, "hub")
+    os.environ["HF_XET_CACHE"] = os.path.join(MODELS_DIR, "xet")
+    os.environ["TORCH_HOME"] = os.path.join(MODELS_DIR, "torch")
+    os.environ["NEMO_CACHE_DIR"] = os.path.join(MODELS_DIR, "NeMo")

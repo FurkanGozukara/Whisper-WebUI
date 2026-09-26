@@ -1,5 +1,5 @@
 whisper:
-  model_size: large-v3
+  model_size: large-v3-int8-convrot
   lang: english
   is_translate: false
   beam_size: 5
@@ -35,6 +35,7 @@ whisper:
   use_batched_inference: false
   batch_size: 1
   enable_offload: true
+  offload_to_ram: false
   canary_generation_kwargs: null
   canary_enable_thinking: false
   whisper_type: faster-whisper

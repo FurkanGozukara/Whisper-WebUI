@@ -26,6 +26,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },
@@ -58,6 +59,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },
@@ -90,6 +92,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },

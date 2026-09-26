@@ -12,6 +12,21 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 27 September 2026 - Version 12.4
+
+- New INT8 ConvRot Whisper models: `large-v3-int8-convrot` and `large-v1-int8-convrot`
+  - About 3x faster than the standard models with the same accuracy: on held-out test videos Large-v3 finished in 104 seconds instead of 327 seconds, with 7.92% WER instead of 8.21%
+  - Model files are 1.6 GB instead of 3.1 GB
+  - Automatically downloaded from Hugging Face the first time you select them
+  - Fast Whisper Best Quality preset now uses `large-v3-int8-convrot` by default
+  - Needs an RTX 3000 series (Ampere) or newer GPU; on older GPUs the app automatically uses the standard model
+- New option: Offload Models to RAM When Idle
+  - After each job the loaded models move to system RAM and free the VRAM; the next job moves them back to the GPU in under a second instead of loading them from disk again
+  - Works with Whisper, Insanely Fast Whisper, Canary-Qwen and speaker diarization, with or without Start As Subprocess
+- All model downloads and caches now stay inside the `Whisper-WebUI\models` folder
+- The background music remover model is no longer downloaded again every time it is used
+- Just run Windows_Install_Update.bat to update
+
 ### 15 June 2026 - Version 12.3 
 
 - Now when downloading model - when you first time use that model - it will show download progress on CMD

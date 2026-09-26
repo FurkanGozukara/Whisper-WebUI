@@ -152,6 +152,9 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         elapsed_time = time.time() - start_time
         return segments, elapsed_time
 
+    def model_to_device(self, device: str) -> None:
+        self.model.to(device)
+
     def update_model(
         self,
         model_size: str,

@@ -4,12 +4,12 @@
     "format": "whisper_webui_ui",
     "locked": true,
     "display_name": "Fast Whisper Best Quality",
-    "description": "Maximum word-accuracy faster-whisper preset using large-v3, standard decoding, word timestamps, and neutral repetition controls."
+    "description": "Maximum word-accuracy faster-whisper preset using large-v3 INT8 ConvRot (about 3x faster than FP16 at the same accuracy; GPUs older than RTX 30 fall back to large-v3), standard decoding, word timestamps, and neutral repetition controls."
   },
   "file_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
-      "model_size": "large-v3",
+      "model_size": "large-v3-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 5,
@@ -45,6 +45,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },
@@ -60,7 +61,7 @@
   "youtube_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
-      "model_size": "large-v3",
+      "model_size": "large-v3-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 5,
@@ -96,6 +97,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },
@@ -111,7 +113,7 @@
   "mic_tab": {
     "whisper": {
       "whisper_type": "faster-whisper",
-      "model_size": "large-v3",
+      "model_size": "large-v3-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 5,
@@ -147,6 +149,7 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "enable_offload": true,
+      "offload_to_ram": false,
       "canary_generation_kwargs": null,
       "canary_enable_thinking": false
     },

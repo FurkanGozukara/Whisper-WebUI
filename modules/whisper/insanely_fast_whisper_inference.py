@@ -15,7 +15,8 @@ import whisper
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 from argparse import Namespace
 
-from modules.utils.paths import (INSANELY_FAST_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR)
+from modules.utils.paths import (INSANELY_FAST_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR,
+                                 MODELS_DIR)
 from modules.whisper.data_classes import *
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.utils.logger import get_logger
@@ -579,6 +580,9 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         except Exception:
             pass
 
+    def model_to_device(self, device: str) -> None:
+        self.model.model.to(device)
+
     def update_model(self,
                      model_size: str,
                      compute_type: str,
@@ -819,13 +823,11 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         except Exception:
             pass
 
-        user_profile = os.environ.get("USERPROFILE")
-        if user_profile:
-            candidates.append(os.path.join(user_profile, ".cache", "huggingface", "hub"))
-
         local_models_dir = Path(INSANELY_FAST_WHISPER_MODELS_DIR).resolve().parents[1] / "hub"
         candidates.append(str(local_models_dir))
 
+        # Only caches inside Whisper-WebUI/models: a model found in a global cache would be loaded from outside it.
+        models_root = os.path.normcase(os.path.abspath(MODELS_DIR))
         unique_candidates = []
         seen = set()
         for candidate in candidates:
@@ -833,6 +835,11 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
                 continue
             normalized = os.path.normcase(os.path.abspath(os.path.expanduser(str(candidate))))
             if normalized in seen:
+                continue
+            try:
+                if os.path.commonpath([normalized, models_root]) != models_root:
+                    continue
+            except ValueError:  # different drive
                 continue
             seen.add(normalized)
             unique_candidates.append(normalized)

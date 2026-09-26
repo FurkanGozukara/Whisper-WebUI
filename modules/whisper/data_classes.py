@@ -388,6 +388,10 @@ class WhisperParams(BaseParams):
         default=True,
         description="Offload Whisper model after transcription"
     )
+    offload_to_ram: bool = Field(
+        default=False,
+        description="Keep loaded models in system RAM between jobs and free their VRAM while idle"
+    )
     canary_generation_kwargs: Optional[str] = Field(
         default=None,
         description="Canary-Qwen raw generation keyword arguments as a JSON object"
@@ -492,6 +496,7 @@ class WhisperParams(BaseParams):
             "chunk_length",
             "batch_size",
             "enable_offload",
+            "offload_to_ram",
             "canary_generation_kwargs",
             "canary_enable_thinking",
         }
@@ -506,6 +511,7 @@ class WhisperParams(BaseParams):
             "max_new_tokens",
             "batch_size",
             "enable_offload",
+            "offload_to_ram",
         }
         openai_whisper_fields = {
             "beam_size",
@@ -525,6 +531,7 @@ class WhisperParams(BaseParams):
             "append_punctuations",
             "hallucination_silence_threshold",
             "enable_offload",
+            "offload_to_ram",
         }
 
         if whisper_type == WhisperImpl.CANARY_QWEN.value:
@@ -932,6 +939,15 @@ class WhisperParams(BaseParams):
                 label=_("Offload sub model when finished"),
                 value=defaults.get("enable_offload", cls.__fields__["enable_offload"].default),
                 info="Unload the model from VRAM after transcription."
+            ))
+            inputs.append(gr.Checkbox(
+                label="Offload Models to RAM When Idle",
+                value=defaults.get("offload_to_ram", cls.__fields__["offload_to_ram"].default),
+                info=(
+                    "Keep loaded models in system RAM between jobs and free their VRAM while idle; the next job "
+                    "moves them back to the GPU instead of reloading from disk. Takes priority over the unload "
+                    "option above. With Start As Subprocess, a background worker keeps the models."
+                )
             ))
 
         with gr.Row():

@@ -7,6 +7,10 @@ import sys
 
 import numpy as np
 
+from modules.utils.paths import configure_model_cache_env
+
+configure_model_cache_env()
+
 from modules.whisper.data_classes import Segment, WhisperParams
 from modules.whisper.faster_whisper_inference import FasterWhisperInference
 from modules.utils.logger import get_logger

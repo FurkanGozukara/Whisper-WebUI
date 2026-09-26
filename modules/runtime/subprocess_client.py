@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import atexit
 import codecs
+import io
 import json
 import os
 import signal
@@ -29,6 +31,8 @@ class WorkerHandle:
     request_path: str
     stderr_lines: Deque[str]
     stderr_thread: Thread
+    # Set for the persistent "serve" worker, which reads JSON-line requests from stdin.
+    stdout_reader: Optional[io.BufferedReader] = None
 
 
 class RuntimeWorkerClient:
@@ -52,15 +56,23 @@ class RuntimeWorkerClient:
 
     def start_worker(self, action: str, action_payload: Dict[str, Any]) -> WorkerHandle:
         request_path = self._write_request(action_payload)
+        return self._spawn_worker([action, "--request", request_path], request_path)
+
+    def start_persistent_worker(self) -> WorkerHandle:
+        """Start a long-lived worker that serves one request per stdin line and keeps its models in RAM."""
+        handle = self._spawn_worker(["serve"], "", persistent=True)
+        assert handle.process.stdout is not None
+        handle.stdout_reader = io.BufferedReader(handle.process.stdout)
+        return handle
+
+    def _spawn_worker(self, worker_args: list, request_path: str, persistent: bool = False) -> WorkerHandle:
         repo_root = str(Path(__file__).resolve().parents[2])
         command = [
             sys.executable,
             "-u",
             "-m",
             "modules.runtime.worker",
-            action,
-            "--request",
-            request_path,
+            *worker_args,
         ]
 
         popen_kwargs: Dict[str, Any] = {
@@ -69,6 +81,8 @@ class RuntimeWorkerClient:
             "stderr": subprocess.PIPE,
             "bufsize": 0,
         }
+        if persistent:
+            popen_kwargs["stdin"] = subprocess.PIPE
 
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -133,13 +147,57 @@ class RuntimeWorkerClient:
         except OSError:
             pass
 
+    def send_request(self, handle: WorkerHandle, action: str, action_payload: Dict[str, Any]) -> None:
+        """Send one request to a persistent worker."""
+        self._write_line(handle, {"action": action, "request": {"args": self.args_dict, **action_payload}})
+
+    def iter_persistent_events(self, handle: WorkerHandle) -> Generator[Dict[str, Any], None, None]:
+        """Events from a persistent worker; the caller stops at the "done" event that ends each request."""
+        assert handle.stdout_reader is not None
+        while True:
+            raw_line = handle.stdout_reader.readline()
+            if not raw_line:
+                return  # the worker exited
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") != "ready":
+                yield event
+
+    def stop_persistent_worker(self, handle: WorkerHandle, timeout: float = 15.0) -> None:
+        if handle.process.poll() is None:
+            try:
+                self._write_line(handle, {"action": "exit"})
+                handle.process.stdin.close()
+                handle.process.wait(timeout=timeout)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                self.terminate_worker(handle)
+        self.finalize_worker(handle)
+
+    @staticmethod
+    def _write_line(handle: WorkerHandle, message: Dict[str, Any]) -> None:
+        stdin = handle.process.stdin
+        if stdin is None:
+            raise RuntimeError("The worker was not started with a request pipe.")
+        data = memoryview((json.dumps(message, ensure_ascii=True) + "\n").encode("ascii"))
+        while data:
+            written = stdin.write(data)
+            if not written:
+                raise BrokenPipeError("The worker stopped reading requests.")
+            data = data[written:]
+        stdin.flush()
+
     def finalize_worker(self, handle: WorkerHandle) -> None:
         try:
             if handle.process.poll() is None:
                 handle.process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
-        for pipe in (handle.process.stdout, handle.process.stderr):
+        for pipe in (handle.stdout_reader, handle.process.stdin, handle.process.stdout, handle.process.stderr):
             if pipe is None:
                 continue
             try:
@@ -147,7 +205,8 @@ class RuntimeWorkerClient:
             except OSError:
                 pass
         handle.stderr_thread.join(timeout=1)
-        self._cleanup_request_file(handle.request_path)
+        if handle.request_path:
+            self._cleanup_request_file(handle.request_path)
 
     @staticmethod
     def _collect_process_tree(process: subprocess.Popen) -> list:
@@ -349,6 +408,10 @@ class SubprocessWhisperProxy:
         self._active_handles: Dict[int, WorkerHandle] = {}
         self._cancelled_pids: set[int] = set()
         self._local_inferencers: Dict[str, Any] = {}
+        # Long-lived worker used when "Offload Models to RAM When Idle" is on; it parks its models in RAM between jobs.
+        self._persistent_lock = Lock()
+        self._persistent_handle: Optional[WorkerHandle] = None
+        atexit.register(self.shutdown_persistent_worker)
 
         self.implementation_metadata = metadata.get("implementations") or {
             getattr(args, "whisper_type", WhisperImpl.FASTER_WHISPER.value): metadata
@@ -391,6 +454,155 @@ class SubprocessWhisperProxy:
     def _use_subprocess(pipeline_params) -> bool:
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
         return bool(getattr(params.whisper, "start_as_subprocess", True))
+
+    @staticmethod
+    def _offload_to_ram(pipeline_params) -> bool:
+        try:
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            return bool(getattr(params.whisper, "offload_to_ram", False))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _park_local_models(inferencer) -> None:
+        """In-process jobs: move the models to RAM once the job is finished."""
+        move_models_to_ram = getattr(inferencer, "move_models_to_ram", None)
+        if move_models_to_ram is None:
+            return
+        try:
+            move_models_to_ram()
+        except Exception as exc:
+            logger.warning("Could not move the models to RAM: %s: %s", type(exc).__name__, exc)
+
+    def _acquire_persistent_worker(self) -> Optional[WorkerHandle]:
+        """Lock and return the persistent worker, starting it if needed; None while another job uses it."""
+        if not self._persistent_lock.acquire(blocking=False):
+            return None
+        try:
+            handle = self._persistent_handle
+            if handle is not None and handle.process.poll() is not None:
+                self._discard_persistent_worker(handle)
+                handle = None
+            if handle is None:
+                handle = self._client.start_persistent_worker()
+                self._persistent_handle = handle
+                logger.info("Started the persistent worker pid=%s (Offload Models to RAM When Idle).",
+                            handle.process.pid)
+            else:
+                handle.stderr_lines.clear()  # error reports should show this job's output only
+                logger.info("Reusing the persistent worker pid=%s; its models wait in RAM.", handle.process.pid)
+            return handle
+        except BaseException:
+            self._persistent_lock.release()
+            raise
+
+    def _discard_persistent_worker(self, handle: WorkerHandle) -> None:
+        if self._persistent_handle is handle:
+            self._persistent_handle = None
+        try:
+            handle.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._client.terminate_worker(handle)
+        self._client.finalize_worker(handle)
+
+    def shutdown_persistent_worker(self) -> None:
+        """Stop the persistent worker and release the RAM and CUDA context it holds (no-op while it runs a job)."""
+        if self._persistent_handle is None or not self._persistent_lock.acquire(blocking=False):
+            return
+        try:
+            handle, self._persistent_handle = self._persistent_handle, None
+            if handle is not None:
+                logger.info("Stopping the persistent worker pid=%s.", handle.process.pid)
+                self._client.stop_persistent_worker(handle)
+        finally:
+            self._persistent_lock.release()
+
+    def _run_on_persistent_worker(self, handle: WorkerHandle, action: str, action_payload: Dict[str, Any]):
+        """Yield the events of one request on the locked persistent worker, then unlock it.
+
+        Ends with a synthetic "cancelled" event when the job was cancelled; raises if the worker died.
+        """
+        finished = False
+        worker_exited = False
+        self._set_active_handle(handle)
+        try:
+            try:
+                self._client.send_request(handle, action, action_payload)
+            except (OSError, ValueError):
+                pass  # the worker already exited; the error below reports its stderr
+            for event in self._client.iter_persistent_events(handle):
+                if event.get("event") == "done":
+                    finished = True
+                    break
+                yield event
+            else:
+                worker_exited = True  # killed by Cancel, or crashed
+        finally:
+            self._clear_active_handle(handle)
+            if not finished:
+                if not worker_exited:
+                    # Abandoned mid-job: the worker's state is unknown, so it is stopped.
+                    self._terminate_unfinished_worker(handle)
+                self._discard_persistent_worker(handle)
+            self._persistent_lock.release()
+
+        if self._was_cancelled(handle):
+            yield {"event": "cancelled"}
+        elif not finished:
+            raise RuntimeError(self._client._format_error({}, handle.stderr_lines, return_code=handle.process.poll()))
+
+    def _stream_job(self, action: str, action_payload: Dict[str, Any], keep_models_in_ram: bool):
+        handle = self._acquire_persistent_worker() if keep_models_in_ram else None
+        if handle is None:
+            if not keep_models_in_ram:
+                self.shutdown_persistent_worker()
+            yield from self._stream_transcription_worker(action, action_payload)
+            return
+
+        last_live_output = ""
+        last_result = ""
+        last_paths = []
+        worker_error = None
+        events = self._run_on_persistent_worker(handle, action, action_payload)
+        try:
+            for event in events:
+                if event["event"] == "update":
+                    payload = repair_mojibake_obj(event.get("payload") or {})
+                    last_live_output = payload.get("live_output", last_live_output)
+                    last_result = payload.get("result_str", last_result)
+                    last_paths = payload.get("paths", last_paths)
+                    yield last_live_output, last_result, last_paths
+                elif event["event"] == "error":
+                    worker_error = event.get("payload") or {}
+                elif event["event"] == "cancelled":
+                    yield last_live_output, "Cancelled. Running subprocess was terminated.", last_paths
+                    return
+        finally:
+            events.close()
+
+        if worker_error:
+            raise RuntimeError(self._client._format_error(worker_error, handle.stderr_lines))
+
+    def _call_job(self, action: str, action_payload: Dict[str, Any], keep_models_in_ram: bool) -> Any:
+        handle = self._acquire_persistent_worker() if keep_models_in_ram else None
+        if handle is None:
+            if not keep_models_in_ram:
+                self.shutdown_persistent_worker()
+            return self._call_transcription_worker(action, action_payload)
+
+        result_payload = None
+        error_payload = None
+        for event in self._run_on_persistent_worker(handle, action, action_payload):
+            if event["event"] == "result":
+                result_payload = event.get("payload")
+            elif event["event"] == "error":
+                error_payload = event.get("payload") or {}
+            elif event["event"] == "cancelled":
+                raise RuntimeError("Cancelled. Running subprocess was terminated.")
+
+        if error_payload:
+            raise RuntimeError(self._client._format_error(error_payload, handle.stderr_lines))
+        return repair_mojibake_obj(result_payload)
 
     def _selected_whisper_type(self, pipeline_params) -> str:
         try:
@@ -561,8 +773,11 @@ class SubprocessWhisperProxy:
         *pipeline_params,
     ):
         whisper_type = self._selected_whisper_type(pipeline_params)
+        keep_models_in_ram = self._offload_to_ram(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            yield from self._local_inferencer_for(whisper_type).transcribe_file_with_live_output(
+            self.shutdown_persistent_worker()
+            inferencer = self._local_inferencer_for(whisper_type)
+            yield from inferencer.transcribe_file_with_live_output(
                 files,
                 batch_mode,
                 input_folder_path,
@@ -574,9 +789,11 @@ class SubprocessWhisperProxy:
                 progress,
                 *pipeline_params,
             )
+            if keep_models_in_ram:
+                self._park_local_models(inferencer)
             return
 
-        yield from self._stream_transcription_worker(
+        yield from self._stream_job(
             "transcribe_file",
             {
                 "files": files,
@@ -589,7 +806,8 @@ class SubprocessWhisperProxy:
                 "add_timestamp": add_timestamp,
                 "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
-            }
+            },
+            keep_models_in_ram,
         )
 
     def transcribe_youtube(
@@ -603,8 +821,11 @@ class SubprocessWhisperProxy:
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
         whisper_type = self._selected_whisper_type(pipeline_params)
+        keep_models_in_ram = self._offload_to_ram(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            return self._local_inferencer_for(whisper_type).transcribe_youtube(
+            self.shutdown_persistent_worker()
+            inferencer = self._local_inferencer_for(whisper_type)
+            result = inferencer.transcribe_youtube(
                 youtube_link,
                 file_format,
                 add_timestamp,
@@ -613,8 +834,11 @@ class SubprocessWhisperProxy:
                 progress,
                 *pipeline_params,
             )
+            if keep_models_in_ram:
+                self._park_local_models(inferencer)
+            return result
 
-        return self._call_transcription_worker(
+        return self._call_job(
             "transcribe_youtube",
             {
                 "youtube_link": youtube_link,
@@ -625,6 +849,7 @@ class SubprocessWhisperProxy:
                 "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
+            keep_models_in_ram,
         )
 
     def transcribe_mic(
@@ -636,16 +861,22 @@ class SubprocessWhisperProxy:
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
         whisper_type = self._selected_whisper_type(pipeline_params)
+        keep_models_in_ram = self._offload_to_ram(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            return self._local_inferencer_for(whisper_type).transcribe_mic(
+            self.shutdown_persistent_worker()
+            inferencer = self._local_inferencer_for(whisper_type)
+            result = inferencer.transcribe_mic(
                 mic_audio,
                 file_format,
                 add_timestamp,
                 progress,
                 *pipeline_params,
             )
+            if keep_models_in_ram:
+                self._park_local_models(inferencer)
+            return result
 
-        return self._call_transcription_worker(
+        return self._call_job(
             "transcribe_mic",
             {
                 "mic_audio": mic_audio,
@@ -654,6 +885,7 @@ class SubprocessWhisperProxy:
                 "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
+            keep_models_in_ram,
         )
 
     def transcribe_mic_with_live_output(
@@ -665,17 +897,22 @@ class SubprocessWhisperProxy:
     ):
         progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
         whisper_type = self._selected_whisper_type(pipeline_params)
+        keep_models_in_ram = self._offload_to_ram(pipeline_params)
         if not self._use_subprocess(pipeline_params):
-            yield from self._local_inferencer_for(whisper_type).transcribe_mic_with_live_output(
+            self.shutdown_persistent_worker()
+            inferencer = self._local_inferencer_for(whisper_type)
+            yield from inferencer.transcribe_mic_with_live_output(
                 mic_audio,
                 file_format,
                 add_timestamp,
                 progress,
                 *pipeline_params,
             )
+            if keep_models_in_ram:
+                self._park_local_models(inferencer)
             return
 
-        yield from self._stream_transcription_worker(
+        yield from self._stream_job(
             "transcribe_mic_stream",
             {
                 "mic_audio": mic_audio,
@@ -684,6 +921,7 @@ class SubprocessWhisperProxy:
                 "whisper_type": whisper_type,
                 "pipeline_params": list(pipeline_params),
             },
+            keep_models_in_ram,
         )
 
     def transcribe_live_preview(self, audio, *pipeline_params):

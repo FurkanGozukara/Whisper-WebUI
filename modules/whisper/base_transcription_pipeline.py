@@ -69,6 +69,7 @@ class BaseTranscriptionPipeline(ABC):
         )
 
         self.model = None
+        self.models_in_ram = False  # model parked in system RAM between jobs (Offload Models to RAM When Idle)
         self.current_model_size = None
         self.available_models = whisper.available_models()
         self.available_langs = sorted(list(whisper.tokenizer.LANGUAGES.values()))
@@ -269,6 +270,7 @@ class BaseTranscriptionPipeline(ABC):
         primary_file_format = file_formats[0]
         params = self.validate_gradio_values(params)
         bgm_params, vad_params, whisper_params, diarization_params = params.bgm_separation, params.vad, params.whisper, params.diarization
+        self.prepare_models_for_run(whisper_params)
         self.log_selected_model(
             whisper_type=whisper_params.whisper_type,
             model_size=whisper_params.model_size,
@@ -330,7 +332,9 @@ class BaseTranscriptionPipeline(ABC):
             progress_callback,
             *whisper_params.to_list()
         )
-        if whisper_params.enable_offload:
+        if whisper_params.offload_to_ram:
+            pass  # the whole job ends with move_models_to_ram(); keep the model between files
+        elif whisper_params.enable_offload:
             self.offload()
 
         if vad_params.vad_filter:
@@ -352,7 +356,7 @@ class BaseTranscriptionPipeline(ABC):
                     transcribed_result=result,
                     device=diarization_params.diarization_device
                 )
-                if diarization_params.enable_offload:
+                if diarization_params.enable_offload and not whisper_params.offload_to_ram:
                     self.diarizer.offload()
             except Exception as e:
                 # Diarization is optional; don't fail the whole transcription if it can't run.
@@ -782,6 +786,7 @@ class BaseTranscriptionPipeline(ABC):
         params.bgm_separation.is_separate_bgm = False
         params.whisper.start_as_subprocess = False
         params.whisper.enable_offload = False
+        self.prepare_models_for_run(params.whisper)
 
         vad_params = params.vad
         audio_to_transcribe = audio
@@ -1293,8 +1298,63 @@ class BaseTranscriptionPipeline(ABC):
         else:
             return list(ctranslate2.get_supported_compute_types("cpu"))
 
+    def model_to_device(self, device: str) -> None:
+        """Move the loaded model between the GPU and system RAM ("cpu"). Backends override this."""
+        raise NotImplementedError(f"{type(self).__name__} cannot move its model between devices")
+
+    def prepare_models_for_run(self, whisper_params) -> None:
+        """Bring a RAM-parked model back to the GPU, or drop it when a different model is selected."""
+        if self.model is None or not self.models_in_ram:
+            return
+        if self.should_load_model_for_selection(whisper_params.model_size, whisper_params.compute_type):
+            logger.info("Releasing the model parked in RAM: a different model or compute type is selected.")
+            self.offload()
+            return
+        started = time.time()
+        self.model_to_device(self.device)
+        self.models_in_ram = False
+        logger.info("Moved the model from RAM back to %s in %.1f s (no reload from disk).", self.device,
+                    time.time() - started)
+
+    def move_models_to_ram(self) -> None:
+        """Park the loaded models in system RAM and release their VRAM until the next job."""
+        started = time.time()
+        free_before = self._cuda_free_mb()
+        moved = []
+        if self.model is not None and not self.models_in_ram:
+            try:
+                self.model_to_device("cpu")
+                self.models_in_ram = True
+                moved.append("transcription model")
+            except Exception as exc:
+                logger.warning("Could not move the transcription model to RAM (%s: %s); unloading it instead.",
+                               type(exc).__name__, exc)
+                self.offload()
+        if self.diarizer.move_to_ram():
+            moved.append("diarization pipeline")
+        # The UVR separator is a small ONNX session that cannot change device; it reloads from disk.
+        self.music_separator.offload()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        free_after = self._cuda_free_mb()
+        if moved:
+            freed = "" if free_before is None else f"; GPU free memory {free_before:.0f} -> {free_after:.0f} MB"
+            logger.info("Offloaded %s to RAM in %.1f s%s.", " and ".join(moved), time.time() - started, freed)
+
+    @staticmethod
+    def _cuda_free_mb():
+        if not torch.cuda.is_available():
+            return None
+        try:
+            free, _total = torch.cuda.mem_get_info()
+            return free / (1024 ** 2)
+        except Exception:
+            return None
+
     def offload(self):
         """Offload the model and free up the memory"""
+        self.models_in_ram = False
         if self.model is not None:
             del self.model
             self.model = None

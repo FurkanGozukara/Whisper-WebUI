@@ -9,6 +9,7 @@ import tempfile
 import time
 import math
 from contextlib import contextmanager
+from functools import partial
 from queue import Empty, Queue
 from threading import Thread
 from types import MethodType
@@ -29,6 +30,9 @@ from argparse import Namespace
 from tqdm import tqdm
 
 from modules.utils.paths import (FASTER_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR)
+from modules.whisper.convrot.registry import (CONVROT_FALLBACK_MODELS, HOSTED_CONVROT_MODELS,
+                                             convrot_runtime_supported, download_convrot_model,
+                                             is_convrot_model_dir)
 from modules.whisper.data_classes import *
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.utils.logger import get_logger
@@ -98,6 +102,10 @@ class StandardEncoderPrefetchCache:
         batch_length = int(encoded_batch.shape[0])
         if batch_length <= 0:
             return []
+
+        if isinstance(encoded_batch, torch.Tensor):
+            # INT8 ConvRot engine: encoder outputs are already torch tensors.
+            return [(encoded_batch[idx : idx + 1], encoded_batch) for idx in range(batch_length)]
 
         batch_tensor: Optional[torch.Tensor] = None
         try:
@@ -1312,10 +1320,49 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     def safe_model_dir_name(model_size: str) -> str:
         return str(model_size or "").replace("/", "--")
 
+    def model_to_device(self, device: str) -> None:
+        # CTranslate2 (and the ConvRot engine) keep the weights in RAM with to_cpu=True.
+        engine = self.model.model
+        if device == "cpu":
+            action = partial(engine.unload_model, to_cpu=True)
+        else:
+            action = engine.load_model
+        # CTranslate2 leaves CUDA state in the calling thread. In a long-lived thread (the main thread) it is torn
+        # down after the CUDA libraries at exit and the process dies with 0xC0000409 (fail-fast), even after the
+        # model is deleted; a short-lived thread frees it when it finishes.
+        errors = []
+
+        def run():
+            try:
+                action()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = Thread(target=run, name="ctranslate2-model-move")
+        thread.start()
+        thread.join()
+        if errors:
+            raise errors[0]
+
+    def should_load_model_for_selection(self, model_size: str, compute_type: str) -> bool:
+        # current_model_size holds the resolved folder; compare the name the user selected.
+        return (
+            self.model is None
+            or model_size != getattr(self, "current_model_selection", None)
+            or compute_type != self.current_compute_type
+        )
+
+    @staticmethod
+    def is_convrot_model(path: str) -> bool:
+        """INT8 ConvRot model folder (model.safetensors + config.json with a "convrot" section)."""
+        return is_convrot_model_dir(path)
+
     @staticmethod
     def has_downloaded_model_files(path: str) -> bool:
         if not os.path.isdir(path):
             return False
+        if FasterWhisperInference.is_convrot_model(path):
+            return True
 
         has_config = False
         has_model = False
@@ -1379,10 +1426,32 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         logger.info("faster-whisper model download finished: %s", snapshot_path)
         return snapshot_path
 
+    def download_convrot_model(self, model_size: str, target_dir: str) -> None:
+        repo_id, subfolder = HOSTED_CONVROT_MODELS[model_size]
+        logger.info(
+            "Downloading INT8 ConvRot model '%s' from '%s/%s' to '%s'.",
+            model_size,
+            repo_id,
+            subfolder,
+            target_dir,
+        )
+        download_convrot_model(
+            model_size,
+            target_dir,
+            tqdm_class=self.make_download_tqdm_class(model_size),
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+        logger.info("INT8 ConvRot model download finished: %s", target_dir)
+
     def resolve_model_target(self, model_size: str) -> Tuple[str, bool]:
         model_size_dirname = self.safe_model_dir_name(model_size)
         visible_model_dir = os.path.join(self.model_dir, model_size_dirname)
         if self.has_downloaded_model_files(visible_model_dir):
+            return visible_model_dir, True
+
+        if model_size in HOSTED_CONVROT_MODELS:
+            self.download_convrot_model(model_size, visible_model_dir)
+            self.model_paths = self.get_model_paths()
             return visible_model_dir, True
 
         official_model_path = self.official_model_cache_path(model_size)
@@ -1554,6 +1623,19 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         """
         progress(0.02, desc="Initializing Model..")
 
+        requested_model = model_size
+        fallback_model = CONVROT_FALLBACK_MODELS.get(model_size)
+        if fallback_model is not None:
+            supported, reason = convrot_runtime_supported()
+            if not supported:
+                logger.warning(
+                    "INT8 ConvRot model '%s' cannot run on this system (%s); loading '%s' instead.",
+                    model_size,
+                    reason,
+                    fallback_model,
+                )
+                model_size = fallback_model
+
         model_size_dirname = self.safe_model_dir_name(model_size)
         model_size_or_path, local_files_only = self.resolve_model_target(model_size)
         if model_size not in self.model_paths and model_size_dirname not in self.model_paths:
@@ -1561,19 +1643,31 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         self.current_compute_type = compute_type
         self.current_model_size = model_size_or_path
+        self.current_model_selection = requested_model
         self.log_model_load_start(
             implementation=self.implementation_label(WhisperImpl.FASTER_WHISPER.value),
             selected_model=model_size,
             resolved_model=model_size_or_path,
             compute_type=compute_type,
         )
-        self.model = faster_whisper.WhisperModel(
-            device=self.device,
-            model_size_or_path=model_size_or_path,
-            download_root=self.model_dir,
-            compute_type=self.current_compute_type,
-            local_files_only=local_files_only
-        )
+        if self.is_convrot_model(model_size_or_path):
+            from modules.whisper.convrot.faster_whisper_adapter import ConvRotFasterWhisperModel
+
+            if self.device != "cuda":
+                raise RuntimeError("INT8 ConvRot Whisper models require an NVIDIA CUDA GPU.")
+            logger.info(
+                "INT8 ConvRot model detected: running the ConvRot engine (INT8 weights, CUDA graphs); "
+                "the compute type setting does not apply to this model."
+            )
+            self.model = ConvRotFasterWhisperModel(model_size_or_path, device="cuda", device_index=0)
+        else:
+            self.model = faster_whisper.WhisperModel(
+                device=self.device,
+                model_size_or_path=model_size_or_path,
+                download_root=self.model_dir,
+                compute_type=self.current_compute_type,
+                local_files_only=local_files_only
+            )
         self.log_model_load_complete(
             implementation=self.implementation_label(WhisperImpl.FASTER_WHISPER.value),
             selected_model=model_size,
@@ -1590,11 +1684,16 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         Name list of models
         """
         model_paths = {model:model for model in faster_whisper.available_models()}
+        for model_name in HOSTED_CONVROT_MODELS:
+            model_paths[model_name] = os.path.join(self.model_dir, model_name)
         faster_whisper_prefix = "models--Systran--faster-whisper-"
 
         existing_models = os.listdir(self.model_dir)
         wrong_dirs = [".locks", "faster_whisper_models_will_be_saved_here"]
-        existing_models = list(set(existing_models) - set(wrong_dirs))
+        existing_models = [
+            model_name for model_name in set(existing_models) - set(wrong_dirs)
+            if not model_name.startswith(".")
+        ]
 
         for model_name in existing_models:
             if faster_whisper_prefix in model_name:

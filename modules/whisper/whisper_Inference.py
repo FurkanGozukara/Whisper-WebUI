@@ -145,6 +145,9 @@ class WhisperInference(BaseTranscriptionPipeline):
             audio_array = np.nan_to_num(audio_array, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         return audio_array
 
+    def model_to_device(self, device: str) -> None:
+        self.model.to(device)
+
     def update_model(self,
                      model_size: str,
                      compute_type: str,

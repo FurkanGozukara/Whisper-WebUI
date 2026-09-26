@@ -91,8 +91,9 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     defaults = build_default_ui_config()
 
     assert defaults["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
-    assert defaults["file_tab"]["whisper"]["model_size"] == "large-v3"
+    assert defaults["file_tab"]["whisper"]["model_size"] == "large-v3-int8-convrot"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
+    assert defaults["file_tab"]["whisper"]["offload_to_ram"] is False
     assert defaults["file_tab"]["whisper"]["beam_size"] == 5
     assert defaults["file_tab"]["whisper"]["repetition_penalty"] == 1.0
     assert defaults["file_tab"]["whisper"]["word_timestamps"] is True
@@ -112,7 +113,7 @@ def test_builtin_fast_whisper_best_quality_enables_accuracy_settings():
 
     assert cfg is not None
     assert cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
-    assert cfg["file_tab"]["whisper"]["model_size"] == "large-v3"
+    assert cfg["file_tab"]["whisper"]["model_size"] == "large-v3-int8-convrot"
     assert cfg["file_tab"]["whisper"]["beam_size"] == 5
     assert cfg["file_tab"]["whisper"]["patience"] == 1.0
     assert cfg["file_tab"]["whisper"]["repetition_penalty"] == 1.0

@@ -9,8 +9,14 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, Dict
 
+from modules.utils.paths import configure_model_cache_env
+
+configure_model_cache_env()
 
 _JSON_STDOUT = sys.stdout
+# serve mode keeps inferencers (and their models, parked in RAM between jobs) alive across requests
+_CACHE_INFERENCERS = False
+_INFERENCERS: Dict[tuple, Any] = {}
 
 
 def emit(event: str, payload: Any = None, **extra: Any) -> None:
@@ -34,7 +40,15 @@ def create_whisper_inferencer(args: Namespace):
     from modules.whisper.whisper_factory import WhisperFactory
     from modules.utils.paths import CANARY_QWEN_MODELS_DIR
 
-    return WhisperFactory.create_whisper_inference(
+    key = None
+    if _CACHE_INFERENCERS:
+        key = tuple(str(getattr(args, name, None)) for name in (
+            "whisper_type", "whisper_model_dir", "faster_whisper_model_dir", "insanely_fast_whisper_model_dir",
+            "canary_qwen_model_dir", "diarization_model_dir", "uvr_model_dir", "output_dir"))
+        if key in _INFERENCERS:
+            return _INFERENCERS[key]
+
+    inferencer = WhisperFactory.create_whisper_inference(
         whisper_type=args.whisper_type,
         whisper_model_dir=args.whisper_model_dir,
         faster_whisper_model_dir=args.faster_whisper_model_dir,
@@ -44,6 +58,9 @@ def create_whisper_inferencer(args: Namespace):
         uvr_model_dir=args.uvr_model_dir,
         output_dir=args.output_dir,
     )
+    if key is not None:
+        _INFERENCERS[key] = inferencer
+    return inferencer
 
 
 def selected_whisper_type(request: Dict[str, Any]) -> str:
@@ -275,47 +292,102 @@ def translate_nllb_result(request: Dict[str, Any]) -> Any:
     )
 
 
+ACTIONS = (
+    "metadata",
+    "transcribe_file",
+    "transcribe_mic_stream",
+    "transcribe_youtube",
+    "transcribe_mic",
+    "separate_bgm",
+    "translate_nllb",
+)
+
+
+def run_action(action: str, request: Dict[str, Any]) -> None:
+    if action == "metadata":
+        emit("result", query_metadata(request))
+    elif action == "transcribe_file":
+        transcribe_file_stream(request)
+    elif action == "transcribe_mic_stream":
+        transcribe_mic_stream(request)
+    elif action == "transcribe_youtube":
+        emit("result", transcribe_youtube_result(request))
+    elif action == "transcribe_mic":
+        emit("result", transcribe_mic_result(request))
+    elif action == "separate_bgm":
+        emit("result", separate_bgm_result(request))
+    elif action == "translate_nllb":
+        emit("result", translate_nllb_result(request))
+    else:
+        raise ValueError(f"Unknown worker action: {action}")
+
+
+def emit_exception(exc: BaseException) -> None:
+    emit(
+        "error",
+        {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+
+def serve() -> int:
+    """Persistent worker (Offload Models to RAM When Idle): one JSON request per stdin line.
+
+    Each request ends with a "done" event. Models stay loaded between requests but are parked
+    in system RAM while idle. The loop ends on {"action": "exit"} or when stdin closes, which
+    also happens when the app process goes away.
+    """
+    global _CACHE_INFERENCERS
+    _CACHE_INFERENCERS = True
+    emit("ready")
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        action = message.get("action")
+        if action == "exit":
+            break
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                run_action(action, message.get("request") or {})
+        except Exception as exc:
+            emit_exception(exc)
+        finally:
+            with contextlib.redirect_stdout(sys.stderr):
+                for inferencer in list(_INFERENCERS.values()):
+                    try:
+                        inferencer.move_models_to_ram()
+                    except Exception as exc:
+                        print(f"Could not offload models to RAM: {type(exc).__name__}: {exc}", file=sys.stderr)
+            emit("done")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=[
-        "metadata",
-        "transcribe_file",
-        "transcribe_mic_stream",
-        "transcribe_youtube",
-        "transcribe_mic",
-        "separate_bgm",
-        "translate_nllb",
-    ])
-    parser.add_argument("--request", required=True)
+    parser.add_argument("action", choices=[*ACTIONS, "serve"])
+    parser.add_argument("--request", required=False)
     parsed = parser.parse_args()
+
+    if parsed.action == "serve":
+        return serve()
+    if not parsed.request:
+        parser.error("--request is required")
 
     request = read_request(parsed.request)
 
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            if parsed.action == "metadata":
-                emit("result", query_metadata(request))
-            elif parsed.action == "transcribe_file":
-                transcribe_file_stream(request)
-            elif parsed.action == "transcribe_mic_stream":
-                transcribe_mic_stream(request)
-            elif parsed.action == "transcribe_youtube":
-                emit("result", transcribe_youtube_result(request))
-            elif parsed.action == "transcribe_mic":
-                emit("result", transcribe_mic_result(request))
-            elif parsed.action == "separate_bgm":
-                emit("result", separate_bgm_result(request))
-            elif parsed.action == "translate_nllb":
-                emit("result", translate_nllb_result(request))
+            run_action(parsed.action, request)
         return 0
     except Exception as exc:
-        emit(
-            "error",
-            {
-                "error": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc(),
-            },
-        )
+        emit_exception(exc)
         return 1
 
 
