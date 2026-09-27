@@ -17,6 +17,36 @@ from modules.utils.torch_compat import torch_load_safe_globals
 logger = get_logger()
 
 
+def _fall_back_from_whisper_triton_median_filter():
+    """Let openai-whisper use its torch median filter when its Triton kernel cannot be built.
+
+    ``whisper.triton_ops.median_kernel`` edits the kernel source with ``kernel.src = ...``, which
+    Triton 3.7 rejects with a TypeError. ``whisper.timing.median_filter`` only falls back on
+    RuntimeError, so word timestamps on CUDA failed; re-raise any other error as one.
+    """
+    try:
+        from whisper import triton_ops
+    except Exception:
+        return
+    median_filter_cuda = getattr(triton_ops, "median_filter_cuda", None)
+    if median_filter_cuda is None or getattr(median_filter_cuda, "_webui_fallback", False):
+        return
+
+    def median_filter_cuda_or_fallback(x, filter_width):
+        try:
+            return median_filter_cuda(x, filter_width)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Triton median filter unavailable: {type(exc).__name__}: {exc}") from exc
+
+    median_filter_cuda_or_fallback._webui_fallback = True
+    triton_ops.median_filter_cuda = median_filter_cuda_or_fallback
+
+
+_fall_back_from_whisper_triton_median_filter()
+
+
 class WhisperInference(BaseTranscriptionPipeline):
     def __init__(self,
                  model_dir: str = WHISPER_MODELS_DIR,

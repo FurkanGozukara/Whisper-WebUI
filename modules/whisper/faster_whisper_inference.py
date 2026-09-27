@@ -30,6 +30,7 @@ from argparse import Namespace
 from tqdm import tqdm
 
 from modules.utils.paths import (FASTER_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR)
+from modules.whisper.convrot import triton_status
 from modules.whisper.convrot.registry import (CONVROT_FALLBACK_MODELS, HOSTED_CONVROT_MODELS,
                                              convrot_runtime_supported, download_convrot_model,
                                              is_convrot_model_dir)
@@ -213,6 +214,22 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         params = WhisperParams.from_list(list(whisper_params))
         params = self.resolve_prompt_safe_params(params, log_console=log_model_banner)
 
+        # The ConvRot engine's first-run Triton tuning is reported in the Live Transcription box
+        # too; faster-whisper decodes lazily, so the block spans the segment loop.
+        triton_counts = triton_status.counts()
+        with triton_status.report_to(lambda message: self.emit_status_callback(progress_callback, message)):
+            segments_result = self._transcribe_segments(
+                audio, params, progress, progress_callback, log_console, log_model_banner,
+            )
+        triton_summary = triton_status.summary_since(triton_counts)
+        if triton_summary:
+            logger.info(triton_summary)
+            self.emit_status_callback(progress_callback, triton_summary)
+
+        elapsed_time = time.time() - start_time
+        return segments_result, elapsed_time
+
+    def _transcribe_segments(self, audio, params, progress, progress_callback, log_console, log_model_banner):
         if (
             not self.should_use_parallel_slice_batching(params)
             and self.should_load_model_for_selection(params.model_size, params.compute_type)
@@ -268,8 +285,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
             self.emit_progress_callback(progress_callback, progress_n, seg_obj)
 
-        elapsed_time = time.time() - start_time
-        return segments_result, elapsed_time
+        return segments_result
 
     @staticmethod
     def should_use_batched_inference(params: WhisperParams) -> bool:
@@ -1591,7 +1607,20 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             progress_callback(progress_value, segment)
         except TypeError:
             progress_callback(progress_value)
-    
+
+    @staticmethod
+    def emit_status_callback(
+        progress_callback: Optional[Callable],
+        status: str,
+    ):
+        if progress_callback is None:
+            return
+
+        try:
+            progress_callback(None, None, status)
+        except TypeError:
+            pass
+
     @staticmethod
     def format_timestamp(seconds: float) -> str:
         """Format seconds to HH:MM:SS.mmm"""

@@ -12,6 +12,21 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 27 September 2026 - Version 12.5
+
+- Redesigned interface in the style of the IndexTTS app
+  - Every button has its own color and icon, dark theme by default with a Light / dark theme switch, and an Open / close all sections button
+  - Smoother: no constantly animated buttons and lighter page scripts
+- Uploaded videos are previewed directly, without any conversion
+  - MKV (H.264, VP9, HEVC) plays as soon as it is uploaded; formats the browser cannot play (such as AVI) show a note and still transcribe normally
+  - Load From File Path no longer copies the file: a 3 GB MKV loads in 0.2 seconds instead of 6 seconds
+- Fixed Insanely Fast Whisper hallucinations: audio is now decoded in windows of up to 30 seconds that end in a pause (test video WER 57% → 16%)
+- Fixed Canary-Qwen on new installs (the latest NeMo needs lhotse 2.0.0a6)
+- Fixed NLLB subtitle translation with Transformers 5, and it no longer downloads a second, unused copy of each NLLB model
+- INT8 ConvRot models: the one-time Triton kernel tuning now shows its progress in CMD and in Live Transcription, and the tuned kernels are cached in `Whisper-WebUI\models\triton_cache` and reused by every later run (a 5 minute file then takes about 7 seconds on an RTX 5090)
+- All output formats of one run now share the same timestamp in their file names, and durations read like "1 minute 6 seconds"
+- Requirements updated (Transformers 5.17.0, lhotse 2.0.0a6): use the latest installer files and run Windows_Install_Update.bat to update
+
 ### 27 September 2026 - Version 12.4
 
 - New INT8 ConvRot Whisper models: `large-v3-int8-convrot` and `large-v1-int8-convrot`

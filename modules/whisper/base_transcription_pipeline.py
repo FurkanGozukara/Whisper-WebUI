@@ -1245,6 +1245,8 @@ class BaseTranscriptionPipeline(ABC):
         existing_outputs = existing_outputs or {}
         subtitle_preview = ""
         generated_paths = []
+        # One suffix for the whole job, so every format of the same run shares a file name.
+        timestamp = datetime.now().strftime("%m%d%H%M%S%f") if add_timestamp else ""
 
         for spec in output_specs:
             lookup_key = spec["lookup_key"]
@@ -1252,12 +1254,15 @@ class BaseTranscriptionPipeline(ABC):
                 file_path = sorted(existing_outputs[lookup_key])[-1]
                 subtitle_preview = subtitle_preview or read_file(file_path)
             else:
+                output_file_name = spec["output_file_name"]
+                if timestamp:
+                    output_file_name = f"{output_file_name}-{timestamp}"
                 subtitle, file_path = generate_file(
                     output_dir=output_dir,
-                    output_file_name=spec["output_file_name"],
+                    output_file_name=output_file_name,
                     output_format=spec["output_format"],
                     result=result,
-                    add_timestamp=add_timestamp,
+                    add_timestamp=False,
                     **spec["writer_options"],
                 )
                 subtitle_preview = subtitle_preview or subtitle
@@ -1381,18 +1386,19 @@ class BaseTranscriptionPipeline(ABC):
         ----------
         Time format string
         """
-        hours, rem = divmod(elapsed_time, 3600)
+        hours, rem = divmod(int(round(elapsed_time)), 3600)
         minutes, seconds = divmod(rem, 60)
 
-        time_str = ""
-        if hours:
-            time_str += f"{hours} hours "
-        if minutes:
-            time_str += f"{minutes} minutes "
-        seconds = round(seconds)
-        time_str += f"{seconds} seconds"
+        def unit(value, name):
+            return f"{value} {name}" if value == 1 else f"{value} {name}s"
 
-        return time_str.strip()
+        parts = []
+        if hours:
+            parts.append(unit(hours, "hour"))
+        if minutes:
+            parts.append(unit(minutes, "minute"))
+        parts.append(unit(seconds, "second"))
+        return " ".join(parts)
     
     @staticmethod
     def format_timestamp(seconds: float) -> str:

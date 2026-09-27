@@ -6,7 +6,8 @@ import urllib.request
 from modules.utils import paths
 
 CACHE_VARIABLES = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR",
-                   "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_TOKEN_PATH")
+                   "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_TOKEN_PATH", "TRITON_CACHE_DIR",
+                   "DISABLE_SAFETENSORS_CONVERSION")
 
 
 def inside_models_dir(path: str) -> bool:
@@ -22,10 +23,21 @@ def test_model_cache_env_overrides_global_caches(monkeypatch, tmp_path):
 
     paths.configure_model_cache_env()
 
-    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR"):
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR", "TRITON_CACHE_DIR"):
         assert inside_models_dir(os.environ[name]), name
     assert "TRANSFORMERS_CACHE" not in os.environ
     assert "HF_TOKEN_PATH" not in os.environ
+    assert os.environ["DISABLE_SAFETENSORS_CONVERSION"] == "1"
+
+
+def test_model_cache_env_respects_an_explicit_triton_cache(monkeypatch, tmp_path):
+    for name in CACHE_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "my_triton_cache"))
+
+    paths.configure_model_cache_env()
+
+    assert os.environ["TRITON_CACHE_DIR"] == str(tmp_path / "my_triton_cache")
 
 
 def test_model_cache_env_keeps_a_saved_login_token(monkeypatch, tmp_path):

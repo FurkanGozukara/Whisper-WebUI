@@ -396,8 +396,26 @@ def test_insanely_fast_whisper_live_callback_processes_audio_in_chunks():
     assert any(desc and "chunk 2/2" in desc for _value, desc in progress.calls)
 
 
-def test_insanely_fast_whisper_live_chunk_length_is_capped_for_ui_updates():
-    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(None) == 5
-    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(10) == 5
-    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(30) == 5
+def test_insanely_fast_whisper_live_chunk_length_uses_whisper_window():
+    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(None) == 30
+    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(0) == 30
+    # 10 s is the shared WhisperParams default, which means "not customized" here.
+    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(10) == 30
+    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(20) == 20
+    assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(45) == 30
     assert InsanelyFastWhisperInference.resolve_live_chunk_length_seconds(1) == 1
+
+
+def test_insanely_fast_whisper_live_chunks_end_in_a_pause():
+    sampling_rate = 16000
+    audio = np.full(70 * sampling_rate, 0.5, dtype=np.float32)
+    pause_start = int(26.0 * sampling_rate)
+    audio[pause_start:pause_start + int(0.3 * sampling_rate)] = 0.0
+
+    bounds = InsanelyFastWhisperInference.live_chunk_bounds(audio, sampling_rate, 30)
+
+    assert bounds[0][0] == 0
+    assert pause_start < bounds[0][1] <= pause_start + int(0.3 * sampling_rate)
+    assert all(end - start <= 30 * sampling_rate for start, end in bounds)
+    assert [start for start, _end in bounds[1:]] == [end for _start, end in bounds[:-1]]
+    assert bounds[-1][1] == len(audio)

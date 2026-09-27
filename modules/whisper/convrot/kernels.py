@@ -22,6 +22,8 @@ import torch
 import triton
 import triton.language as tl
 
+from .triton_status import instrument_autotuner
+
 CONVROT_GROUP = 256
 
 PRE_NONE = 0
@@ -526,6 +528,18 @@ def _splitk_reduce_kernel(WS, C, SB, BIAS, RES, M, N, stride_cm, stride_rm,
     if HAS_RES:
         out += tl.load(RES + m.to(tl.int64) * stride_rm + n, mask=mask, other=0.0).to(tl.float32)
     tl.store(C + m.to(tl.int64) * stride_cm + n, out.to(C.dtype.element_ty), mask=mask)
+
+
+# First-run tuning is reported in the console and the Live Transcription box; Triton keeps
+# the winning configurations on disk, so later processes load them instead of re-tuning.
+for _kernel, _label in (
+    (_int8_gemm_kernel, "INT8 GEMM"),
+    (_int8_gemm_small_m_kernel, "INT8 GEMM (small M)"),
+    (_w8a16_gemm_kernel, "weight-only INT8 GEMM"),
+    (_w8a16_small_m_kernel, "weight-only INT8 GEMM (decode)"),
+):
+    instrument_autotuner(_kernel, _label)
+del _kernel, _label
 
 
 def w8a16_linear(x_rot: torch.Tensor, weight: torch.Tensor, w_scale: torch.Tensor,

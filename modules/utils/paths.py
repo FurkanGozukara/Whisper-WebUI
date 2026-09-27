@@ -63,3 +63,11 @@ def configure_model_cache_env() -> None:
     os.environ["HF_XET_CACHE"] = os.path.join(MODELS_DIR, "xet")
     os.environ["TORCH_HOME"] = os.path.join(MODELS_DIR, "torch")
     os.environ["NEMO_CACHE_DIR"] = os.path.join(MODELS_DIR, "NeMo")
+    # Compiled Triton kernels and the INT8 ConvRot GEMM tuning results: kept with the models so
+    # every later run reuses them, also on cloud pods where only the app folder persists.
+    # An explicitly set TRITON_CACHE_DIR is respected.
+    os.environ.setdefault("TRITON_CACHE_DIR", os.path.join(MODELS_DIR, "triton_cache"))
+    # After loading a .bin-only checkpoint (all three NLLB models) Transformers downloads a
+    # .safetensors copy from the Hub's conversion PR in the background, which the app never loads:
+    # +2.3 GB for nllb-200-distilled-600M, +17.6 GB for nllb-200-3.3B.
+    os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")

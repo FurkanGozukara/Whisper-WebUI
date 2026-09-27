@@ -71,7 +71,10 @@ from modules.whisper.data_classes import *
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_TITLE = "Whisper TTS Premium App by SECourses V12.4 : https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_NAME = "Whisper TTS Premium App by SECourses"
+APP_VERSION = "12.5"
+APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
+APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
 TIMESTAMP_INFO = (
     "Adds the current date and time to the output filename. "
     "Enable this if you want each run to create a unique file and avoid overwriting older outputs. "
@@ -559,10 +562,32 @@ class App:
         except Exception as exc:
             raise gr.Error(str(exc))
 
+        # Serve the file where it is. Otherwise Gradio hashes and copies the whole file into
+        # its temp cache before the preview or the transcription can start (a 3 GB MKV took
+        # 6 s and 3 GB of extra disk). Every drive is already an allowed path.
+        gr.set_static_paths([normalized_path])
         summary_update, preview_update = self.update_uploaded_media_preview([normalized_path])
         return [normalized_path], gr.update(value=normalized_path), summary_update, preview_update
 
+    @staticmethod
+    def format_file_size(num_bytes):
+        size = float(num_bytes)
+        if size < 1024:
+            return f"{size:.0f} B"
+        for unit in ("KB", "MB", "GB"):
+            size /= 1024
+            if size < 1024 or unit == "GB":
+                return f"{size:.1f} {unit}"
+
     def update_uploaded_media_preview(self, files):
+        """Show a player for every uploaded or loaded file.
+
+        The players read the original file through Gradio's file route, so nothing is
+        copied or converted: an MKV is previewed as soon as it is uploaded. gr.Video is
+        not used on purpose, because Gradio (6.28 included) remuxes or re-encodes every
+        MKV/AVI/MOV value to a new MP4 before showing it. Formats the browser cannot play
+        get a note on their card from the page script (modules/ui/htmls.py).
+        """
         hidden_markdown = gr.update(value="", visible=False)
         hidden_html = gr.update(value="", visible=False)
 
@@ -573,8 +598,8 @@ class App:
         if not file_paths:
             return hidden_markdown, hidden_html
 
-        summary_lines = ["**Uploaded Media**"]
         preview_cards = []
+        total_seconds = 0.0
 
         for file_path in file_paths:
             absolute_path = os.path.abspath(file_path)
@@ -582,44 +607,51 @@ class App:
                 continue
 
             media_type = "Video" if is_video(absolute_path) else "Audio"
-            duration_text = self.format_media_duration(self.get_media_duration_seconds(absolute_path))
-            summary_lines.append(
-                f"- `{os.path.basename(absolute_path)}` ({media_type}) | Duration: `{duration_text}`"
+            duration_seconds = self.get_media_duration_seconds(absolute_path)
+            total_seconds += duration_seconds or 0.0
+            container = os.path.splitext(absolute_path)[1].lstrip(".").upper() or media_type
+            details = " · ".join([
+                media_type,
+                container,
+                self.format_media_duration(duration_seconds),
+                self.format_file_size(os.path.getsize(absolute_path)),
+            ])
+            file_url = html.escape(self.get_gradio_file_url(absolute_path), quote=True)
+            if media_type == "Video":
+                player = f'<video controls preload="metadata" playsinline src="{file_url}"></video>'
+            else:
+                player = f'<audio controls preload="metadata" src="{file_url}"></audio>'
+
+            preview_cards.append(
+                f"""
+                <div class="upload-preview-card is-{media_type.lower()}">
+                  <div class="upload-preview-meta">
+                    <span class="upload-preview-name">{html.escape(os.path.basename(absolute_path))}</span>
+                    <span class="upload-preview-type">{html.escape(details)}</span>
+                  </div>
+                  {player}
+                </div>
+                """
             )
 
-            if media_type == "Video":
-                preview_cards.append(
-                    f"""
-                    <div class="upload-preview-card">
-                      <div class="upload-preview-meta">
-                        <span class="upload-preview-name">{html.escape(os.path.basename(absolute_path))}</span>
-                        <span class="upload-preview-type">Video · {html.escape(duration_text)}</span>
-                      </div>
-                      <video controls preload="metadata" playsinline src="{self.get_gradio_file_url(absolute_path)}"></video>
-                    </div>
-                    """
-                )
-            else:
-                preview_cards.append(
-                    f"""
-                    <div class="upload-preview-card">
-                      <div class="upload-preview-meta">
-                        <span class="upload-preview-name">{html.escape(os.path.basename(absolute_path))}</span>
-                        <span class="upload-preview-type">Audio · {html.escape(duration_text)}</span>
-                      </div>
-                      <audio controls preload="metadata" src="{self.get_gradio_file_url(absolute_path)}"></audio>
-                    </div>
-                    """
-                )
-
-        if len(summary_lines) == 1:
+        if not preview_cards:
             return hidden_markdown, hidden_html
 
+        summary_update = hidden_markdown
+        if len(preview_cards) > 1:
+            summary_update = gr.update(
+                value=(
+                    f"**{len(preview_cards)} files uploaded** · total duration "
+                    f"`{self.format_media_duration(total_seconds)}`"
+                ),
+                visible=True,
+            )
+
         return (
-            gr.update(value="\n".join(summary_lines), visible=True),
+            summary_update,
             gr.update(
                 value=f'<div class="upload-preview-grid">{"".join(preview_cards)}</div>',
-                visible=bool(preview_cards),
+                visible=True,
             ),
         )
 
@@ -1536,7 +1568,7 @@ class App:
                         label=_("Base Model"),
                         interactive=True,
                     )
-                with gr.Column(scale=2, min_width=360):
+                with gr.Column(scale=2, min_width=360, elem_classes=["group-panel"]):
                     model_type_info = gr.Markdown(
                         self.model_type_details_for_whisper_type(selected_whisper_type)
                     )
@@ -1586,26 +1618,25 @@ class App:
             with gr.Column(scale=2):
                 run_btn = gr.Button(
                     _("GENERATE SUBTITLE FILE"),
-                    variant="primary",
-                    elem_classes=["action-button", "generate-subtitle-button"],
+                    elem_classes=btn("emerald", "ax-lg", "generate-subtitle-button", icon="generate"),
                 )
             with gr.Column(scale=1):
                 cancel_btn = gr.Button(
                     "Cancel Generation",
-                    variant="stop",
+                    elem_classes=btn("red", "ax-lg", icon="cancel"),
                 )
             if open_outputs_btn is None:
                 with gr.Column(scale=1):
                     open_outputs_btn = gr.Button(
                         "OPEN OUTPUTS FOLDER",
-                        elem_classes=["action-button", "open-outputs-folder-button"],
+                        elem_classes=btn("indigo", "ax-lg", "open-outputs-folder-button", icon="folder"),
                     )
 
         with gr.Row(equal_height=True):
             with gr.Column(scale=3, visible=WhisperParams.supports_batch_size(selected_whisper_type)) as batch_size_column:
                 with gr.Group():
                     with gr.Row(equal_height=True):
-                        with gr.Column(scale=4):
+                        with gr.Column(scale=4, elem_classes=["group-panel"]):
                             gr.Markdown("**Batch Size**")
                             batch_size_help = gr.Markdown(self.batch_help_for_whisper_type(selected_whisper_type))
                         with gr.Column(scale=2, min_width=220):
@@ -1726,9 +1757,30 @@ class App:
             )
             cancel_confirmed = gr.Checkbox(value=False, visible=False)
             with Translate(self.i18n):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown(f"### {self.title}", elem_id="md_project")
+                with gr.Row(elem_classes=["app-header"]):
+                    gr.Markdown(
+                        f"# {APP_NAME}\n"
+                        f"Version {APP_VERSION} | [Premium release, tutorials, and support]({APP_URL})",
+                        container=False,
+                        elem_id="md_project",
+                    )
+                    with gr.Row(elem_classes=["header-actions"], scale=0):
+                        sections_btn = gr.Button(
+                            "Open / close all sections",
+                            elem_classes=btn("slate", icon="sections"),
+                            scale=0,
+                            min_width=230,
+                        )
+                        theme_btn = gr.Button(
+                            "Light / dark theme",
+                            elem_classes=btn("gray", icon="theme"),
+                            scale=0,
+                            min_width=200,
+                        )
+                # Both switches are pure client-side DOM work, so they stay instant
+                # even while a transcription is holding the queue.
+                sections_btn.click(None, None, None, js=TOGGLE_SECTIONS_JS, queue=False, show_progress="hidden")
+                theme_btn.click(None, None, None, js=TOGGLE_THEME_JS, queue=False, show_progress="hidden")
 
                 with gr.Row():
                     with gr.Column(scale=3):
@@ -1741,29 +1793,36 @@ class App:
                                 )
                                 ui_preset_name = gr.Textbox(label="New Preset Name", placeholder="my_preset")
                             with gr.Row():
-                                ui_preset_save_btn = gr.Button("Save", variant="primary")
-                                ui_preset_reset_btn = gr.Button("Reset Defaults", variant="secondary")
-                                ui_preset_delete_btn = gr.Button("Delete", variant="stop")
-                            ui_preset_status = gr.Markdown(startup_preset_status)
-                    with gr.Column(scale=2):
+                                ui_preset_save_btn = gr.Button("Save", elem_classes=btn("blue", icon="save"))
+                                ui_preset_reset_btn = gr.Button("Reset Defaults", elem_classes=btn("amber", icon="reset"))
+                                ui_preset_delete_btn = gr.Button("Delete", elem_classes=btn("rose", icon="delete"))
+                            ui_preset_status = gr.Markdown(startup_preset_status, elem_classes=["preset-status"])
+                    with gr.Column(scale=2, elem_classes=["side-actions"]):
                         file_download_btn = gr.DownloadButton(
-                                    "Download Transcription",
+                            "Download Transcription",
                             visible=False,
                             elem_id="top-download-output-button",
-                            elem_classes=["action-button", "download-output-button"],
+                            elem_classes=btn("gold", "download-output-button", icon="download"),
                         )
                         file_open_outputs_btn = gr.Button(
                             "OPEN OUTPUTS FOLDER",
-                            elem_classes=["action-button", "open-outputs-folder-button"],
+                            elem_classes=btn("indigo", "open-outputs-folder-button", icon="folder"),
                         )
-                        tb_load_file_path = gr.Textbox(
-                            label=_("Load From File Path"),
-                            placeholder="C:\\media\\clip.mp4, /workspace/media/clip.mp4, ./media/clip.mp4, or file:///path/to/clip.mp4",
-                            info=_("Supports Windows, Linux, relative, absolute, quoted, and file:// paths."),
-                        )
-                        btn_load_file_path = gr.Button(_("Load"))
+                        with gr.Row(elem_classes=["input-action-row"]):
+                            tb_load_file_path = gr.Textbox(
+                                label=_("Load From File Path"),
+                                placeholder="C:\\media\\clip.mkv or /workspace/media/clip.mp4",
+                                info=_("Supports Windows, Linux, relative, absolute, quoted, and file:// paths."),
+                                scale=4,
+                            )
+                            btn_load_file_path = gr.Button(
+                                _("Load"),
+                                elem_classes=btn("cyan", icon="load"),
+                                scale=1,
+                                min_width=120,
+                            )
 
-                with gr.Tabs():
+                with gr.Tabs(elem_id="main-tabs"):
                     with gr.TabItem(_("File")):
                         with gr.Row():
                             with gr.Column():
@@ -2184,11 +2243,14 @@ class App:
                                     interactive=True,
                                 )
                             with gr.Row():
-                                deepl_run_btn = gr.Button(_("TRANSLATE SUBTITLE FILE"), variant="primary")
+                                deepl_run_btn = gr.Button(
+                                    _("TRANSLATE SUBTITLE FILE"),
+                                    elem_classes=btn("violet", "ax-lg", icon="translate"),
+                                )
                             with gr.Row():
                                 deepl_output = gr.Textbox(label=_("Output"), scale=5)
                                 deepl_outputs = gr.Files(label=_("Downloadable output file"), scale=3)
-                                deepl_open_btn = gr.Button('Open', scale=1)
+                                deepl_open_btn = gr.Button('Open folder', scale=1, elem_classes=btn("teal", icon="folder"))
 
                         deepl_run_btn.click(
                             fn=self.deepl_api.translate_deepl,
@@ -2232,11 +2294,14 @@ class App:
                                     interactive=True,
                                 )
                             with gr.Row():
-                                nllb_run_btn = gr.Button(_("TRANSLATE SUBTITLE FILE"), variant="primary")
+                                nllb_run_btn = gr.Button(
+                                    _("TRANSLATE SUBTITLE FILE"),
+                                    elem_classes=btn("purple", "ax-lg", icon="translate"),
+                                )
                             with gr.Row():
                                 nllb_output = gr.Textbox(label=_("Output"), scale=5)
                                 nllb_outputs = gr.Files(label=_("Downloadable output file"), scale=3)
-                                nllb_open_btn = gr.Button('Open', scale=1)
+                                nllb_open_btn = gr.Button('Open folder', scale=1, elem_classes=btn("sky", icon="folder"))
                             with gr.Column():
                                 gr.HTML(NLLB_VRAM_TABLE, elem_id="md_nllb_vram_table")
 
@@ -2273,14 +2338,21 @@ class App:
                             value=True,
                             visible=False,
                         )
-                        uvr_run_btn = gr.Button(_("SEPARATE BACKGROUND MUSIC"), variant="primary")
+                        uvr_run_btn = gr.Button(
+                            _("SEPARATE BACKGROUND MUSIC"),
+                            elem_classes=btn("fuchsia", "ax-lg", icon="music"),
+                        )
                         with gr.Column():
                             with gr.Row():
                                 ad_instrumental = gr.Audio(label=_("Instrumental"), scale=8)
-                                btn_open_instrumental_folder = gr.Button('Open', scale=1)
+                                btn_open_instrumental_folder = gr.Button(
+                                    'Open folder', scale=1, elem_classes=btn("lime", icon="folder")
+                                )
                             with gr.Row():
                                 ad_vocals = gr.Audio(label=_("Vocals"), scale=8)
-                                btn_open_vocals_folder = gr.Button('Open', scale=1)
+                                btn_open_vocals_folder = gr.Button(
+                                    'Open folder', scale=1, elem_classes=btn("coral", icon="folder")
+                                )
 
                         uvr_run_btn.click(
                             fn=self.whisper_inf.music_separator.separate_files,
@@ -2675,7 +2747,7 @@ class App:
             allowed_paths=self.allowed_paths,
             server_name=args.server_name,
             server_port=args.server_port,
-            theme=args.theme,
+            theme=app_theme(args.theme),
             css=CSS,
             head=HEAD,
             prevent_thread_lock=prevent_thread_lock,
@@ -2713,7 +2785,7 @@ parser.add_argument("--server_port", type=int, default=None)
 parser.add_argument("--root_path", type=str, default=None)
 parser.add_argument("--username", type=str, default=None)
 parser.add_argument("--password", type=str, default=None)
-parser.add_argument("--theme", type=str, default="soft")
+parser.add_argument("--theme", type=str, default="origin")
 parser.add_argument("--colab", type=str2bool, default=False, nargs="?", const=True)
 parser.add_argument("--api_open", type=str2bool, default=False, nargs="?", const=True)
 parser.add_argument("--allowed_paths", type=str, default=None)

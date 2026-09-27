@@ -1,6 +1,7 @@
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import gradio as gr
 import os
+import torch
 
 from modules.utils.paths import TRANSLATION_OUTPUT_DIR, NLLB_MODELS_DIR
 from modules.translation.translation_base import TranslationBase
@@ -16,20 +17,25 @@ class NLLBInference(TranslationBase):
             output_dir=output_dir
         )
         self.tokenizer = None
+        self.tgt_lang = None
         self.available_models = ["facebook/nllb-200-3.3B", "facebook/nllb-200-1.3B", "facebook/nllb-200-distilled-600M"]
         self.available_source_langs = list(NLLB_AVAILABLE_LANGS.keys())
         self.available_target_langs = list(NLLB_AVAILABLE_LANGS.keys())
-        self.pipeline = None
 
     def translate(self,
                   text: str,
                   max_length: int
                   ):
-        result = self.pipeline(
-            text,
-            max_length=max_length
-        )
-        return result[0]["translation_text"]
+        # Transformers 5 removed the "translation" pipeline task. Generate directly and force
+        # the target language code as the first token, which is what that pipeline did for NLLB.
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True).to(self.model.device)
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **inputs,
+                forced_bos_token_id=self.tokenizer.convert_tokens_to_ids(self.tgt_lang),
+                max_length=max_length,
+            )
+        return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
 
     def update_model(self,
                      model_size: str,
@@ -58,13 +64,10 @@ class NLLBInference(TranslationBase):
             self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_size,
                                                            cache_dir=os.path.join(self.model_dir, "tokenizers"),
                                                            local_files_only=local_files_only)
+            self.model.to(self.device).eval()
 
-        self.pipeline = pipeline("translation",
-                                 model=self.model,
-                                 tokenizer=self.tokenizer,
-                                 src_lang=src_lang,
-                                 tgt_lang=tgt_lang,
-                                 device=self.device)
+        self.tokenizer.src_lang = src_lang
+        self.tgt_lang = tgt_lang
 
     def is_model_exists(self,
                         model_size: str):

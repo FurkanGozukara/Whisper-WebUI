@@ -29,8 +29,14 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
     PROMPT_TOKEN_RESERVE = 16
     MIN_RETRY_MAX_NEW_TOKENS = 16
     MAX_PROMPT_LENGTH_RETRIES = 5
-    DEFAULT_LIVE_CHUNK_SECONDS = 5
-    MAX_LIVE_CHUNK_SECONDS = 5
+    # Live progress decodes the audio window by window. Whisper's native window is 30 s:
+    # 5 s windows cut words in half and left large-v3 hallucinating over the padding
+    # (test2.mp3 in the app: 57 % WER with 5 s windows, 16 % with these windows).
+    DEFAULT_LIVE_CHUNK_SECONDS = 30
+    MAX_LIVE_CHUNK_SECONDS = 30
+    # Each window ends at the quietest frame of its last seconds, not at a fixed sample.
+    LIVE_CHUNK_SEARCH_SECONDS = 8.0
+    LIVE_CHUNK_FRAME_SECONDS = 0.1
     REQUIRED_MODEL_FILES = (
         "config.json",
         "generation_config.json",
@@ -173,13 +179,11 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
             return []
 
         chunk_seconds = self.resolve_live_chunk_length_seconds(params.chunk_length)
-        chunk_samples = max(1, int(chunk_seconds * sampling_rate))
-        total_samples = int(audio_array.shape[0])
-        total_chunks = max(1, int(np.ceil(total_samples / chunk_samples)))
+        chunk_bounds = self.live_chunk_bounds(audio_array, sampling_rate, chunk_seconds)
+        total_chunks = len(chunk_bounds)
         segments_result: List[Segment] = []
 
-        for chunk_index, start_sample in enumerate(range(0, total_samples, chunk_samples), start=1):
-            end_sample = min(total_samples, start_sample + chunk_samples)
+        for chunk_index, (start_sample, end_sample) in enumerate(chunk_bounds, start=1):
             chunk_audio = np.ascontiguousarray(audio_array[start_sample:end_sample], dtype=np.float32)
             chunk_start = start_sample / sampling_rate
             chunk_end = end_sample / sampling_rate
@@ -254,6 +258,32 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         if chunk_length is None or chunk_length == shared_default:
             chunk_length = cls.DEFAULT_LIVE_CHUNK_SECONDS
         return max(1, min(int(chunk_length), cls.MAX_LIVE_CHUNK_SECONDS))
+
+    @classmethod
+    def live_chunk_bounds(cls, audio_array: np.ndarray, sampling_rate: int, chunk_seconds: float) -> List[Tuple[int, int]]:
+        """Split audio into (start, end) sample windows of at most ``chunk_seconds``.
+
+        Every window except the last ends after the quietest frame of its final seconds
+        (the one nearest the nominal end on ties), so a boundary falls in a pause rather
+        than inside a word.
+        """
+        total_samples = int(audio_array.shape[0])
+        max_samples = max(1, int(chunk_seconds * sampling_rate))
+        frame = max(1, int(cls.LIVE_CHUNK_FRAME_SECONDS * sampling_rate))
+        search = min(int(cls.LIVE_CHUNK_SEARCH_SECONDS * sampling_rate), max_samples // 3) // frame * frame
+
+        bounds = []
+        start = 0
+        while start < total_samples:
+            end = min(total_samples, start + max_samples)
+            if end < total_samples and search:
+                tail = np.asarray(audio_array[end - search:end], dtype=np.float64).reshape(-1, frame)
+                energy = np.mean(np.square(tail), axis=1)
+                quietest = len(energy) - 1 - int(np.argmin(energy[::-1]))
+                end = end - search + (quietest + 1) * frame
+            bounds.append((start, end))
+            start = end
+        return bounds
 
     @staticmethod
     def offset_segments(segments: List[Segment], offset_seconds: float, audio_duration: float) -> List[Segment]:
