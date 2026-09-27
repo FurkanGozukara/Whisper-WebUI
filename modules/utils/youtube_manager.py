@@ -1,9 +1,13 @@
 import os
+import shutil
 import subprocess
+import tempfile
 from urllib.parse import urlparse
 
 from pytubefix import YouTube
 from pytubefix.contrib.channel import Channel
+
+YT_DOWNLOAD_DIR_PREFIX = "whisper_webui_yt_"
 
 
 def get_ytdata(link):
@@ -70,19 +74,38 @@ def get_latest_channel_videos(link, limit: int = 100):
 def get_ytaudio(ytdata: YouTube):
     # Somehow the audio is corrupted so need to convert to valid audio file.
     # Fix for : https://github.com/jhj0517/Whisper-WebUI/issues/304
-
-    audio_path = ytdata.streams.get_audio_only().download(filename=os.path.join("modules", "yt_tmp.wav"))
-    temp_audio_path = os.path.join("modules", "yt_tmp_fixed.wav")
+    # pytubefix strips path separators from `filename` (modules/yt_tmp.wav became modulesyt_tmp.wav in the
+    # working folder), so every download gets its own temporary folder; that also keeps two jobs, or a file
+    # left behind by a cancelled job, from sharing one audio file.
+    download_dir = tempfile.mkdtemp(prefix=YT_DOWNLOAD_DIR_PREFIX)
+    source_path = ytdata.streams.get_audio_only().download(
+        output_path=download_dir,
+        filename="yt_source",
+        skip_existing=False,
+    )
+    audio_path = os.path.join(download_dir, "yt_tmp.wav")
 
     try:
         subprocess.run([
             'ffmpeg', '-y',
-            '-i', audio_path,
-            temp_audio_path
+            '-i', source_path,
+            audio_path
         ], check=True)
 
-        os.replace(temp_audio_path, audio_path)
+        os.remove(source_path)
         return audio_path
     except subprocess.CalledProcessError as e:
         print(f"Error during ffmpeg conversion: {e}")
+        remove_ytaudio(audio_path)
         return None
+
+
+def remove_ytaudio(audio_path):
+    """Delete audio returned by get_ytaudio, together with its temporary download folder."""
+    if not audio_path:
+        return
+    download_dir = os.path.dirname(os.path.abspath(audio_path))
+    if os.path.basename(download_dir).startswith(YT_DOWNLOAD_DIR_PREFIX):
+        shutil.rmtree(download_dir, ignore_errors=True)
+    elif os.path.exists(audio_path):
+        os.remove(audio_path)

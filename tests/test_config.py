@@ -32,11 +32,9 @@ def is_cuda_available():
 @functools.lru_cache
 def is_pytube_detected_bot(url: str = TEST_YOUTUBE_URL):
     try:
-        yt_temp_path = os.path.join("modules", "yt_tmp.wav")
-        if os.path.exists(yt_temp_path):
-            return False
         yt = get_ytdata(url)
         audio = get_ytaudio(yt)
+        remove_ytaudio(audio)
         return False
     except Exception as e:
         print(f"Pytube has detected as a bot: {e}")

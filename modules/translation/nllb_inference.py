@@ -1,10 +1,14 @@
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import gradio as gr
 import os
+import re
 import torch
 
 from modules.utils.paths import TRANSLATION_OUTPUT_DIR, NLLB_MODELS_DIR
 from modules.translation.translation_base import TranslationBase
+
+# Diarized subtitles start with "SPEAKER_00|"; NLLB drops or mangles it, so it is kept out of the model input.
+SPEAKER_PREFIX = re.compile(r"^\s*(SPEAKER_\d+\|)")
 
 
 class NLLBInference(TranslationBase):
@@ -26,16 +30,28 @@ class NLLBInference(TranslationBase):
                   text: str,
                   max_length: int
                   ):
+        match = SPEAKER_PREFIX.match(text or "")
+        prefix = match.group(1) if match else ""
+        if match:
+            text = text[match.end():]
+        if not text.strip():
+            return prefix + text
+
         # Transformers 5 removed the "translation" pipeline task. Generate directly and force
         # the target language code as the first token, which is what that pipeline did for NLLB.
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True).to(self.model.device)
+        # Greedy decoding loops on subtitle lines that end mid-sentence ("...make sure Iran cannot be the"
+        # became "İran'ın, İran'ın, ..." until max_length); beam search avoids that, and the length cap
+        # tied to the input keeps any remaining runaway output short.
+        length_cap = min(int(max_length), 3 * int(inputs["input_ids"].shape[1]) + 16)
         with torch.inference_mode():
             output_ids = self.model.generate(
                 **inputs,
                 forced_bos_token_id=self.tokenizer.convert_tokens_to_ids(self.tgt_lang),
-                max_length=max_length,
+                max_length=length_cap,
+                num_beams=4,
             )
-        return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+        return prefix + self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
 
     def update_model(self,
                      model_size: str,

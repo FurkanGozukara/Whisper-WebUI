@@ -51,6 +51,23 @@ def test_model_cache_env_keeps_a_saved_login_token(monkeypatch, tmp_path):
     assert os.environ["HF_TOKEN_PATH"] == str(tmp_path / "token")
 
 
+def test_model_cache_env_finds_the_login_token_when_the_start_script_sets_models_home(monkeypatch, tmp_path):
+    for name in CACHE_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    login_home = tmp_path / "user" / ".cache" / "huggingface"
+    login_home.mkdir(parents=True)
+    (login_home / "token").write_text("hf_test", encoding="utf-8")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "user"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    # Windows_Start_app.bat runs `set HF_HOME=models` inside Whisper-WebUI.
+    monkeypatch.chdir(paths.WEBUI_DIR)
+    monkeypatch.setenv("HF_HOME", "models")
+
+    paths.configure_model_cache_env()
+
+    assert os.environ["HF_TOKEN_PATH"] == str(login_home / "token")
+
+
 def test_insanely_fast_whisper_never_loads_from_global_hf_caches(monkeypatch, tmp_path):
     from modules.whisper.insanely_fast_whisper_inference import InsanelyFastWhisperInference
 

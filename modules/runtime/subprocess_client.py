@@ -852,6 +852,48 @@ class SubprocessWhisperProxy:
             keep_models_in_ram,
         )
 
+    def transcribe_youtube_with_live_output(
+        self,
+        youtube_link: str,
+        file_format="SRT",
+        add_timestamp=True,
+        mass_transcribe_channel=False,
+        latest_video_count=100,
+        *extra_args,
+    ):
+        progress, pipeline_params = self._split_progress_and_pipeline_args(extra_args)
+        whisper_type = self._selected_whisper_type(pipeline_params)
+        keep_models_in_ram = self._offload_to_ram(pipeline_params)
+        if not self._use_subprocess(pipeline_params):
+            self.shutdown_persistent_worker()
+            inferencer = self._local_inferencer_for(whisper_type)
+            yield from inferencer.transcribe_youtube_with_live_output(
+                youtube_link,
+                file_format,
+                add_timestamp,
+                mass_transcribe_channel,
+                latest_video_count,
+                progress,
+                *pipeline_params,
+            )
+            if keep_models_in_ram:
+                self._park_local_models(inferencer)
+            return
+
+        yield from self._stream_job(
+            "transcribe_youtube_stream",
+            {
+                "youtube_link": youtube_link,
+                "file_format": file_format,
+                "add_timestamp": add_timestamp,
+                "mass_transcribe_channel": mass_transcribe_channel,
+                "latest_video_count": latest_video_count,
+                "whisper_type": whisper_type,
+                "pipeline_params": list(pipeline_params),
+            },
+            keep_models_in_ram,
+        )
+
     def transcribe_mic(
         self,
         mic_audio: str,

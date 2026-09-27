@@ -45,17 +45,34 @@ for dir_path in [MODELS_DIR,
     os.makedirs(dir_path, exist_ok=True)
 
 
+def _is_inside(path: str, folder: str) -> bool:
+    path = os.path.normcase(os.path.abspath(path))
+    folder = os.path.normcase(os.path.abspath(folder))
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # different drives
+        return False
+
+
 def configure_model_cache_env() -> None:
     """Point every library cache that can download models (Hugging Face hub and Xet, torch.hub, NeMo) into MODELS_DIR.
 
     Call it before huggingface_hub is imported (gradio imports it): the hub reads these variables once, at import.
     Values are assigned, not defaulted, so a global HF_HOME or HF_HUB_CACHE cannot send downloads elsewhere.
     """
-    previous_hf_home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
-    token_path = os.path.join(os.path.abspath(previous_hf_home), "token")
-    if not os.environ.get("HF_TOKEN_PATH") and os.path.isfile(token_path):
+    default_hf_home = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    previous_hf_home = os.environ.get("HF_HOME")
+    token_homes = [previous_hf_home or default_hf_home]
+    if previous_hf_home and _is_inside(previous_hf_home, MODELS_DIR):
+        # The start scripts set HF_HOME=models, where `hf auth login` never saves its token.
+        token_homes.append(default_hf_home)
+    if not os.environ.get("HF_TOKEN_PATH"):
         # A token saved by `hf auth login` is a credential, not a model; keep using it.
-        os.environ["HF_TOKEN_PATH"] = token_path
+        for hf_home in token_homes:
+            token_path = os.path.join(os.path.abspath(hf_home), "token")
+            if os.path.isfile(token_path):
+                os.environ["HF_TOKEN_PATH"] = token_path
+                break
     for name in ("HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE"):
         os.environ.pop(name, None)
     os.environ["HF_HOME"] = MODELS_DIR

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sys
 import traceback
 from argparse import Namespace
@@ -158,7 +159,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
 
     nllb_inf = NLLBInference(
         model_dir=args.nllb_model_dir,
-        output_dir=f"{args.output_dir}/translations",
+        output_dir=os.path.join(args.output_dir, "translations"),
     )
 
     return {
@@ -211,6 +212,33 @@ def transcribe_mic_stream(request: Dict[str, Any]) -> None:
         request.get("mic_audio"),
         request.get("file_format", "SRT"),
         request.get("add_timestamp", True),
+        gr.Progress(),
+        *request.get("pipeline_params", []),
+    ):
+        emit(
+            "update",
+            {
+                "live_output": live_output,
+                "result_str": result_str,
+                "paths": collected_paths,
+            },
+        )
+
+    emit("complete")
+
+
+def transcribe_youtube_stream(request: Dict[str, Any]) -> None:
+    import gradio as gr
+
+    args = args_for_request(request)
+    whisper_inf = create_whisper_inferencer(args)
+
+    for live_output, result_str, collected_paths in whisper_inf.transcribe_youtube_with_live_output(
+        request["youtube_link"],
+        request.get("file_format", "SRT"),
+        request.get("add_timestamp", True),
+        request.get("mass_transcribe_channel", False),
+        request.get("latest_video_count", 100),
         gr.Progress(),
         *request.get("pipeline_params", []),
     ):
@@ -279,7 +307,7 @@ def translate_nllb_result(request: Dict[str, Any]) -> Any:
 
     nllb_inf = NLLBInference(
         model_dir=args.nllb_model_dir,
-        output_dir=f"{args.output_dir}/translations",
+        output_dir=os.path.join(args.output_dir, "translations"),
     )
     return nllb_inf.translate_file(
         request["fileobjs"],
@@ -296,6 +324,7 @@ ACTIONS = (
     "metadata",
     "transcribe_file",
     "transcribe_mic_stream",
+    "transcribe_youtube_stream",
     "transcribe_youtube",
     "transcribe_mic",
     "separate_bgm",
@@ -310,6 +339,8 @@ def run_action(action: str, request: Dict[str, Any]) -> None:
         transcribe_file_stream(request)
     elif action == "transcribe_mic_stream":
         transcribe_mic_stream(request)
+    elif action == "transcribe_youtube_stream":
+        transcribe_youtube_stream(request)
     elif action == "transcribe_youtube":
         emit("result", transcribe_youtube_result(request))
     elif action == "transcribe_mic":

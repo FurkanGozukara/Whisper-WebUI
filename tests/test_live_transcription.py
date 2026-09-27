@@ -87,6 +87,7 @@ if "modules.utils.youtube_manager" not in sys.modules:
     fake_youtube_manager = types.ModuleType("modules.utils.youtube_manager")
     fake_youtube_manager.get_ytdata = lambda url: types.SimpleNamespace(title="Video")
     fake_youtube_manager.get_ytaudio = lambda _yt: ""
+    fake_youtube_manager.remove_ytaudio = lambda audio_path: Path(audio_path).unlink(missing_ok=True) if audio_path else None
     fake_youtube_manager.get_latest_channel_videos = lambda url, limit=100: []
     fake_youtube_manager.get_ytmetas = lambda url: (None, "", "")
     sys.modules["modules.utils.youtube_manager"] = fake_youtube_manager

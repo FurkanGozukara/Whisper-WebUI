@@ -1,5 +1,6 @@
 import importlib
 import sys
+import threading
 from pathlib import Path
 
 import gradio as gr
@@ -420,6 +421,14 @@ def test_live_preview_logs_error_to_terminal(monkeypatch):
         state,
         "large-v3",
     )
+    # The preview runs in a background thread; the next chunk reports its outcome.
+    app_instance.live_preview_job_for(updated_state)["thread"].join(timeout=5)
+    updated_state, transcript, status = app_instance.transcribe_live_mic_chunk(
+        (16000, np.ones(1600, dtype=np.float32)),
+        True,
+        updated_state,
+        "large-v3",
+    )
 
     assert updated_state is state
     assert transcript == ""
@@ -512,14 +521,51 @@ def test_transcribe_live_mic_chunk_updates_transcript_once_buffer_is_ready(monke
         "large-v3",
         "english",
     )
+    # The first full buffer starts a background preview and the handler returns without waiting for it.
+    assert transcript == ""
+    app_instance.live_preview_job_for(updated_state)["thread"].join(timeout=5)
+    updated_state, transcript, status = app_instance.transcribe_live_mic_chunk(
+        (16000, np.ones(1600, dtype=np.float32)),
+        True,
+        updated_state,
+        "large-v3",
+        "english",
+    )
 
     assert transcript == "preview transcript"
     assert updated_state["transcript"] == "preview transcript"
     assert updated_state["last_processed_samples"] == 32000
-    assert updated_state["stream_total_samples"] == 32000
+    assert updated_state["stream_total_samples"] == 33600
     assert captured["audio"].shape == (32000,)
     assert captured["pipeline_params"] == ("large-v3", "english")
     assert "Preview updated." in status
+
+
+def test_transcribe_live_mic_chunk_keeps_every_chunk_while_preview_runs(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+    release_preview = threading.Event()
+
+    class SlowWhisperInference:
+        def transcribe_live_preview(self, audio, *pipeline_params):
+            release_preview.wait(timeout=5)
+            return "slow preview"
+
+    app_instance.whisper_inf = SlowWhisperInference()
+    state = app_module.App.create_live_mic_state()
+
+    state, transcript, status = app_instance.transcribe_live_mic_chunk(
+        (16000, np.ones(32000, dtype=np.float32)), True, state, "large-v3"
+    )
+    # Chunks that arrive while the preview is still running are appended, not dropped.
+    for _ in range(5):
+        state, transcript, status = app_instance.transcribe_live_mic_chunk(
+            (16000, np.full(16000, 0.5, dtype=np.float32)), True, state, "large-v3"
+        )
+    assert state["stream_total_samples"] == 32000 + 5 * 16000
+    assert transcript == ""
+    release_preview.set()
+    app_instance.live_preview_job_for(state)["thread"].join(timeout=5)
 
 
 def test_trim_live_mic_audio_caps_buffer_to_recent_window(monkeypatch):
@@ -563,11 +609,19 @@ def test_transcribe_live_mic_chunk_keeps_updating_for_cumulative_stream_after_tr
         state,
         "large-v3",
     )
+    assert transcript == "older preview"
+    app_instance.live_preview_job_for(updated_state)["thread"].join(timeout=5)
+    updated_state, transcript, status = app_instance.transcribe_live_mic_chunk(
+        (16000, np.arange(0, 289600, dtype=np.float32)),
+        True,
+        updated_state,
+        "large-v3",
+    )
 
     assert transcript == "preview transcript"
     assert updated_state["audio"].shape == (240000,)
     assert updated_state["last_processed_samples"] == 288000
-    assert updated_state["stream_total_samples"] == 288000
+    assert updated_state["stream_total_samples"] == 289600
     assert captured["audio"].shape == (240000,)
     assert captured["pipeline_params"] == ("large-v3",)
     assert "Preview updated." in status

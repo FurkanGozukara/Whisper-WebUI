@@ -147,6 +147,7 @@ class VadParams(BaseParams):
             inputs.append(gr.Number(
                 label="Maximum Speech Duration (s)",
                 value=defaults.get("max_speech_duration_s", GRADIO_NONE_NUMBER_MAX),
+                step=0.1,
                 info="Maximum length of continuous speech chunks before forcing a split."
             ))
             inputs.append(gr.Number(
@@ -694,11 +695,13 @@ class WhisperParams(BaseParams):
             inputs.append(gr.Number(
                 label="Log Probability Threshold",
                 value=defaults.get("log_prob_threshold", cls.__fields__["log_prob_threshold"].default),
+                step=0.1,
                 info="Reject segments with average log probability below this value. Lower values are stricter."
             ))
             inputs.append(gr.Number(
                 label="No Speech Threshold",
                 value=defaults.get("no_speech_threshold", cls.__fields__["no_speech_threshold"].default),
+                step=0.05,
                 info="Probability threshold for detecting silence or no-speech. Range: 0.0-1.0."
             ))
         
@@ -719,6 +722,7 @@ class WhisperParams(BaseParams):
             inputs.append(gr.Number(
                 label="Patience",
                 value=defaults.get("patience", cls.__fields__["patience"].default),
+                step=0.1,
                 info="Beam search patience controls how long to wait for better candidates. Higher values search more thoroughly."
             ))
         
@@ -772,11 +776,13 @@ class WhisperParams(BaseParams):
                 label="Compression Ratio Threshold",
                 value=defaults.get("compression_ratio_threshold",
                                    cls.__fields__["compression_ratio_threshold"].default),
+                step=0.1,
                 info="Detect repetitive or hallucinated text by gzip compression ratio. Lower values are stricter."
             ))
             inputs.append(gr.Number(
                 label="Length Penalty",
                 value=defaults.get("length_penalty", cls.__fields__["length_penalty"].default),
+                step=0.1,
                 info="Penalty for longer sequences. Values above 1.0 favor longer outputs, below 1.0 favor shorter outputs, and 1.0 is neutral."
             ))
         
@@ -788,6 +794,7 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Number(
                 label="Repetition Penalty",
                 value=defaults.get("repetition_penalty", cls.__fields__["repetition_penalty"].default),
+                step=0.05,
                 info="Penalty applied to repeated tokens. Increase it if you see repeated phrases."
             ))
             faster_whisper_inputs.append(gr.Number(
@@ -817,6 +824,7 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Number(
                 label="Max Initial Timestamp",
                 value=defaults.get("max_initial_timestamp", cls.__fields__["max_initial_timestamp"].default),
+                step=0.1,
                 info="Maximum allowed initial timestamp in seconds."
             ))
         
@@ -866,6 +874,7 @@ class WhisperParams(BaseParams):
                 label="Hallucination Silence Threshold (sec)",
                 value=defaults.get("hallucination_silence_threshold",
                                    GRADIO_NONE_NUMBER_MIN),
+                step=0.1,
                 info="Skip silent periods longer than this when detecting hallucinations."
             ))
         
@@ -880,6 +889,7 @@ class WhisperParams(BaseParams):
                 label="Language Detection Threshold",
                 value=defaults.get("language_detection_threshold",
                                    GRADIO_NONE_NUMBER_MIN),
+                step=0.05,
                 info="Confidence threshold for language detection."
             ))
             faster_whisper_inputs.append(gr.Number(

@@ -234,7 +234,18 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             not self.should_use_parallel_slice_batching(params)
             and self.should_load_model_for_selection(params.model_size, params.compute_type)
         ):
+            # A first-use download takes minutes; without these lines the Live Transcription box
+            # only shows "waiting for the first segment" meanwhile.
+            downloading_model = self.model_to_download(params.model_size)
+            if downloading_model:
+                self.emit_status_callback(
+                    progress_callback,
+                    f"Downloading model '{downloading_model}' to {self.model_dir} (first use only; "
+                    "the download progress is shown in CMD)..",
+                )
             self.update_model(params.model_size, params.compute_type, progress)
+            if downloading_model:
+                self.emit_status_callback(progress_callback, f"Model '{downloading_model}' downloaded and loaded.")
 
         if self.should_use_batched_inference(params):
             progress(0, desc="Loading audio..")
@@ -1458,6 +1469,26 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             token=os.environ.get("HF_TOKEN") or None,
         )
         logger.info("INT8 ConvRot model download finished: %s", target_dir)
+
+    def model_to_download(self, model_size: str) -> Optional[str]:
+        """Name of the model that loading `model_size` downloads first, or None when it is already local."""
+        model_dir = getattr(self, "model_dir", None)
+        if not model_size or not model_dir:
+            return None
+        try:
+            fallback_model = CONVROT_FALLBACK_MODELS.get(model_size)
+            if fallback_model is not None and not convrot_runtime_supported()[0]:
+                model_size = fallback_model  # update_model loads the standard model on this system
+            if model_size not in HOSTED_CONVROT_MODELS and model_size not in faster_whisper.available_models():
+                return None
+            if self.has_downloaded_model_files(os.path.join(model_dir, self.safe_model_dir_name(model_size))):
+                return None
+            official_model_path = self.official_model_cache_path(model_size)
+            if official_model_path and self.has_downloaded_model_files(official_model_path):
+                return None
+        except Exception:
+            return None  # this only decides whether to show a status line
+        return model_size
 
     def resolve_model_target(self, model_size: str) -> Tuple[str, bool]:
         model_size_dirname = self.safe_model_dir_name(model_size)

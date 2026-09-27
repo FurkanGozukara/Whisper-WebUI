@@ -5,12 +5,32 @@
 > https://www.patreon.com/posts/145395299
 
 ## Quick Info
-- This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.11 venv, best quality presets fully ready):
+- This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.12 venv, best quality presets fully ready):
   -   Whisper from OpenAI : [https://github.com/openai/whisper](https://github.com/openai/whisper)
   -   NVIDIA NeMo Canary-Qwen-2.5B : [https://huggingface.co/nvidia/canary-qwen-2.5b](https://huggingface.co/nvidia/canary-qwen-2.5b)
 -   Full tutorial video (2 May 2026) : [https://www.youtube.com/watch?v=4lAk6sf1qF8](https://www.youtube.com/watch?v=4lAk6sf1qF8)
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
+
+### 27 September 2026 - Version 12.6
+
+- Fixed Canary-Qwen on new installs: a new fsspec release made the installer pick a 2020 version of `datasets`, and Canary-Qwen stopped with `module 'pyarrow' has no attribute 'PyExtensionType'`
+  - The requirements now require `datasets` 4.0 or newer: use the latest installer files and run Windows_Install_Update.bat to update
+- Live Mic now keeps the whole recording: before, about half of the audio was lost (7 seconds saved from a 14 second recording) and the button showed "Waiting" instead of "Stop"
+  - The live preview runs in the background, so it never interrupts the recording
+  - With Auto transcribe while recording turned off, Stop still saves and transcribes the whole recording
+- YouTube tab: Live Transcription now shows the download, every segment and the result as they happen, also for Mass Transcribe Latest Channel Videos
+- NLLB translation
+  - No more repeating lines such as "İran'ın, İran'ın, İran'ın…" (beam search and a length limit tied to each line)
+  - Speaker labels from Diarization (`SPEAKER_00|`) are kept in the translated subtitles
+  - Clicking Translate without a file or languages now tells you what is missing instead of doing nothing
+- DeepL: a missing or wrong API key now shows a clear message (for example HTTP 403) instead of failing silently
+- The first use of a model now shows "Downloading model ..." in Live Transcription instead of only "waiting for the first segment"
+- When a job fails, the full error is now printed in CMD too, so saved console logs show the cause
+- A file that cannot be opened (corrupted or unsupported) now shows a warning instead of "Done! 0 segments"
+- A Hugging Face token saved with `hf auth login` is now used, so model downloads are no longer unauthenticated
+- YouTube audio is downloaded into a temporary folder that is removed after each job (it was written into the Whisper-WebUI folder)
+- Advanced Parameters: decimal settings such as No Speech Threshold now change in 0.05 or 0.1 steps with the arrow keys (they jumped from 0.6 to 1)
 
 ### 27 September 2026 - Version 12.5
 

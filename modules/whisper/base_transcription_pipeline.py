@@ -26,7 +26,7 @@ from modules.utils.constants import *
 from modules.utils.logger import get_logger
 from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
-from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio
+from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio, remove_ytaudio
 from modules.utils.files_manager import get_media_files, format_gradio_files, read_file
 from modules.utils.audio_manager import coerce_audio_input_path, validate_audio
 from modules.whisper.data_classes import *
@@ -263,6 +263,13 @@ class BaseTranscriptionPipeline(ABC):
         logger.info("="*80 + "\n")
 
         if not validate_audio(audio):
+            # Only CMD showed why; the UI reported "Done! 0 segments" for an unreadable file.
+            if progress_callback is not None:
+                try:
+                    progress_callback(None, None, "⚠️ This file could not be opened (corrupted or unsupported "
+                                                  "format), so nothing was transcribed. See CMD for the reason.")
+                except TypeError:
+                    pass
             return [Segment()], 0
 
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
@@ -563,9 +570,11 @@ class BaseTranscriptionPipeline(ABC):
                 yield live_output, result_str, collected_paths
 
         except Exception as e:
+            # The UI only gets the message; the traceback goes to CMD so saved console logs show the cause.
+            logger.error("Transcription failed: %s: %s", type(e).__name__, e, exc_info=True)
             error_msg = f"❌ Error: {str(e)}"
             yield error_msg, error_msg, []
-    
+
     def transcribe_file(self,
                         files: Optional[List] = None,
                         batch_mode: bool = False,
@@ -992,6 +1001,7 @@ class BaseTranscriptionPipeline(ABC):
             yield live_output, result_str, collected_paths
 
         except Exception as e:
+            logger.error("Microphone transcription failed: %s: %s", type(e).__name__, e, exc_info=True)
             error_msg = f"❌ Error: {str(e)}"
             yield error_msg, error_msg, []
 
@@ -1071,35 +1081,8 @@ class BaseTranscriptionPipeline(ABC):
 
                 progress(1, desc="Completed!")
 
-                success_count = len(successful_titles)
-                if success_count == 0:
-                    raise RuntimeError(
-                        "No channel videos were transcribed successfully.\n"
-                        + "\n".join(failed_titles[:20])
-                    )
-
-                result_lines = [
-                    (
-                        f"Done in {self.format_time(total_time)}! Transcribed "
-                        f"{success_count}/{total_videos} latest channel videos. "
-                        "Subtitle files are in the outputs folder."
-                    ),
-                    "",
-                    "Completed:",
-                ]
-                completed_preview = successful_titles[:20]
-                result_lines.extend(f"- {title}" for title in completed_preview)
-                if success_count > len(completed_preview):
-                    result_lines.append(f"- ... and {success_count - len(completed_preview)} more")
-                if failed_titles:
-                    failed_preview = failed_titles[:20]
-                    result_lines.extend(["", "Failed:"])
-                    result_lines.extend(f"- {item}" for item in failed_preview)
-                    if len(failed_titles) > len(failed_preview):
-                        result_lines.append(f"- ... and {len(failed_titles) - len(failed_preview)} more")
-
                 result_file_path = all_paths[0] if len(all_paths) == 1 else all_paths
-                return "\n".join(result_lines), result_file_path
+                return self._channel_batch_summary(total_time, total_videos, successful_titles, failed_titles), result_file_path
 
             progress(0, desc="Loading Audio from Youtube..")
             yt = get_ytdata(youtube_link)
@@ -1120,6 +1103,219 @@ class BaseTranscriptionPipeline(ABC):
 
         except Exception as e:
             raise RuntimeError(f"Error transcribing youtube: {e}") from e
+
+    def _channel_batch_summary(self, total_time: float, total_videos: int,
+                               successful_titles: List[str], failed_titles: List[str]) -> str:
+        success_count = len(successful_titles)
+        if success_count == 0:
+            raise RuntimeError(
+                "No channel videos were transcribed successfully.\n"
+                + "\n".join(failed_titles[:20])
+            )
+
+        result_lines = [
+            (
+                f"Done in {self.format_time(total_time)}! Transcribed "
+                f"{success_count}/{total_videos} latest channel videos. "
+                "Subtitle files are in the outputs folder."
+            ),
+            "",
+            "Completed:",
+        ]
+        completed_preview = successful_titles[:20]
+        result_lines.extend(f"- {title}" for title in completed_preview)
+        if success_count > len(completed_preview):
+            result_lines.append(f"- ... and {success_count - len(completed_preview)} more")
+        if failed_titles:
+            failed_preview = failed_titles[:20]
+            result_lines.extend(["", "Failed:"])
+            result_lines.extend(f"- {item}" for item in failed_preview)
+            if len(failed_titles) > len(failed_preview):
+                result_lines.append(f"- ... and {len(failed_titles) - len(failed_preview)} more")
+        return "\n".join(result_lines)
+
+    def _run_with_live_updates(self, audio, progress, file_format, add_timestamp, pipeline_params,
+                               append_live_lines, collected_paths):
+        """Run self.run() in a thread and yield (live_output, "", collected_paths) updates meanwhile.
+
+        Returns (transcribed_segments, time_for_task, segment_count) to the `yield from` caller.
+        """
+        segment_count = [0]
+        live_update_queue: Queue = Queue()
+        worker_result = {}
+        worker_error = {}
+
+        def live_progress_callback(progress_value, segment=None, status=None):
+            del progress_value
+            if status:
+                live_update_queue.put(append_live_lines(str(status)))
+            elif segment:
+                segment_count[0] += 1
+                start_time = self.format_timestamp(segment.start) if hasattr(segment, "start") else "00:00:00.000"
+                end_time = self.format_timestamp(segment.end) if hasattr(segment, "end") else "00:00:00.000"
+                text = segment.text if hasattr(segment, "text") else ""
+                live_update_queue.put(append_live_lines(f"[{start_time} → {end_time}] {text}"))
+
+        def run_with_live_callback():
+            try:
+                transcribed_segments, time_for_task = self.run(
+                    audio,
+                    progress,
+                    file_format,
+                    add_timestamp,
+                    live_progress_callback,
+                    *pipeline_params,
+                )
+                worker_result["segments"] = transcribed_segments
+                worker_result["time_for_task"] = time_for_task
+            except Exception as e:
+                worker_error["exception"] = e
+            finally:
+                live_update_queue.put(None)
+
+        worker_thread = Thread(target=run_with_live_callback, daemon=True)
+        worker_thread.start()
+        heartbeat_started_at = time.time()
+        next_heartbeat_at = heartbeat_started_at + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+
+        while True:
+            try:
+                queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
+            except Empty:
+                if worker_thread.is_alive():
+                    now = time.time()
+                    if now >= next_heartbeat_at:
+                        heartbeat = self.build_live_transcription_heartbeat(heartbeat_started_at, segment_count[0])
+                        logger.info(heartbeat)
+                        yield append_live_lines(heartbeat), "", collected_paths
+                        next_heartbeat_at = now + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+                    continue
+                break
+
+            latest_update = queued_update
+            saw_sentinel = queued_update is None
+            while True:
+                try:
+                    queued_update = live_update_queue.get_nowait()
+                except Empty:
+                    break
+                if queued_update is None:
+                    saw_sentinel = True
+                    continue
+                latest_update = queued_update
+
+            if latest_update is not None:
+                yield latest_update, "", collected_paths
+                next_heartbeat_at = time.time() + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+
+            if saw_sentinel and not worker_thread.is_alive():
+                break
+
+        worker_thread.join()
+        if "exception" in worker_error:
+            raise worker_error["exception"]
+
+        transcribed_segments = worker_result["segments"]
+        reported_segment_count = segment_count[0] or self.count_transcribed_segments(transcribed_segments)
+        return transcribed_segments, worker_result["time_for_task"], reported_segment_count
+
+    def transcribe_youtube_with_live_output(self,
+                                            youtube_link: str,
+                                            file_format: Union[str, List[str]] = "SRT",
+                                            add_timestamp: bool = True,
+                                            mass_transcribe_channel: bool = False,
+                                            latest_video_count: int = 100,
+                                            progress=gr.Progress(),
+                                            *pipeline_params):
+        """Transcribe a YouTube video, or the latest videos of a channel, while streaming segment updates."""
+        try:
+            params = TranscriptionPipelineParams.from_list(list(pipeline_params))
+            file_formats = self.normalize_file_formats(file_format)
+            writer_options = self.get_writer_options(params.whisper)
+
+            live_output_lines = deque(maxlen=self.LIVE_TRANSCRIPTION_HISTORY_LINES)
+            live_output_lock = Lock()
+            collected_paths: List[str] = []
+
+            def append_live_lines(*lines: str) -> str:
+                normalized_lines = []
+                for line in lines:
+                    if line is None:
+                        continue
+                    normalized_lines.extend(str(line).splitlines() or [""])
+                with live_output_lock:
+                    live_output_lines.extend(normalized_lines)
+                    return "\n".join(live_output_lines)
+
+            if mass_transcribe_channel:
+                requested_count = max(1, min(9999, int(latest_video_count or 100)))
+                yield append_live_lines(f"📺 Loading the latest {requested_count} channel videos.."), "", collected_paths
+                videos = get_latest_channel_videos(youtube_link, requested_count)
+                if not videos:
+                    raise ValueError("No videos were found for the provided YouTube channel.")
+            else:
+                yield append_live_lines("📺 Loading the YouTube video.."), "", collected_paths
+                videos = [get_ytdata(youtube_link)]
+
+            total_videos = len(videos)
+            used_output_names: dict[str, int] = {}
+            successful_titles: List[str] = []
+            failed_titles: List[str] = []
+            total_time = 0.0
+            subtitle_preview = ""
+
+            for index, yt in enumerate(videos, start=1):
+                video_title = getattr(yt, "title", None) or f"Video {index}"
+                counter = f"[{index}/{total_videos}] " if mass_transcribe_channel else ""
+                yield append_live_lines(
+                    f"📺 {counter}Processing: {video_title}",
+                    "=" * 60,
+                    "",
+                    "Downloading the audio from YouTube..",
+                ), "", collected_paths
+                audio = None
+                try:
+                    audio = get_ytaudio(yt)
+                    if not audio:
+                        raise RuntimeError("Failed to download or convert the YouTube audio stream.")
+                    transcribed_segments, time_for_task, segment_count = yield from self._run_with_live_updates(
+                        audio, progress, file_formats[0], add_timestamp, pipeline_params,
+                        append_live_lines, collected_paths,
+                    )
+                    output_file_name = self._unique_output_file_name(safe_filename(video_title), used_output_names)
+                    output_specs = self._build_output_specs(output_file_name, file_formats, writer_options)
+                    subtitle_preview, file_paths = self._write_output_files(
+                        output_specs=output_specs,
+                        output_dir=self.output_dir,
+                        result=transcribed_segments,
+                        add_timestamp=add_timestamp,
+                    )
+                    collected_paths.extend(file_paths)
+                    total_time += time_for_task
+                    successful_titles.append(video_title)
+                    yield append_live_lines(
+                        f"✅ Completed in {self.format_time(time_for_task)} ({segment_count} segments)",
+                        "",
+                    ), "", collected_paths
+                except Exception as exc:
+                    if not mass_transcribe_channel:
+                        raise
+                    logger.error("YouTube video '%s' failed: %s: %s", video_title, type(exc).__name__, exc)
+                    failed_titles.append(f"{video_title}: {exc}")
+                    yield append_live_lines(f"❌ Failed: {exc}", ""), "", collected_paths
+                finally:
+                    remove_ytaudio(audio)
+
+            if mass_transcribe_channel:
+                result_str = self._channel_batch_summary(total_time, total_videos, successful_titles, failed_titles)
+            else:
+                result_str = f"Done in {self.format_time(total_time)}! Subtitle file is in the outputs folder.\n\n{subtitle_preview}"
+            yield "\n".join(live_output_lines), result_str, collected_paths
+
+        except Exception as e:
+            logger.error("YouTube transcription failed: %s: %s", type(e).__name__, e, exc_info=True)
+            error_msg = f"❌ Error: {str(e)}"
+            yield error_msg, error_msg, []
 
     @staticmethod
     def _unique_output_file_name(base_name: str, used_output_names: dict[str, int]) -> str:
@@ -1161,8 +1357,7 @@ class BaseTranscriptionPipeline(ABC):
             )
             return subtitle_preview, file_paths, time_for_task
         finally:
-            if audio and os.path.exists(audio):
-                os.remove(audio)
+            remove_ytaudio(audio)
 
     @staticmethod
     def normalize_file_formats(file_formats: Union[str, List[str], None]) -> List[str]:

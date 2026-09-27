@@ -120,7 +120,18 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         params = WhisperParams.from_list(list(whisper_params))
 
         if self.should_load_model_for_selection(params.model_size, params.compute_type):
+            # A first-use download takes minutes; without these lines the Live Transcription box
+            # only shows "waiting for the first segment" meanwhile.
+            downloading_model = self.model_to_download(params.model_size)
+            if downloading_model:
+                self.emit_status_callback(
+                    progress_callback,
+                    f"Downloading model '{downloading_model}' to {self.model_dir} (first use only; "
+                    "the download progress is shown in CMD)..",
+                )
             self.update_model(params.model_size, params.compute_type, progress)
+            if downloading_model:
+                self.emit_status_callback(progress_callback, f"Model '{downloading_model}' downloaded and loaded.")
 
         progress(0, desc="Starting Insanely Fast Whisper transcription..")
         self.emit_status_callback(progress_callback, "Starting Insanely Fast Whisper transcription..")
@@ -658,6 +669,20 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
             active_model=self.current_model_size,
             compute_type=self.current_compute_type,
         )
+
+    def model_to_download(self, model_size: str) -> Optional[str]:
+        """Name of the model that loading `model_size` downloads first, or None when it is already local."""
+        model_dir = getattr(self, "model_dir", None)
+        if not model_size or not model_dir:
+            return None
+        try:
+            if self.has_transformers_model_files(os.path.join(model_dir, model_size)):
+                return None
+            if self.find_cached_transformers_model(model_size=model_size):
+                return None
+        except Exception:
+            return None  # this only decides whether to show a status line
+        return model_size
 
     def resolve_model_target(self, model_size: str, progress: gr.Progress) -> str:
         local_model_path = os.path.join(self.model_dir, model_size)

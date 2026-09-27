@@ -114,6 +114,7 @@ class TranslationBase(ABC):
             gr_str = f"Done! Subtitle is in the outputs/translation folder.\n\n{total_result}"
 
             output_file_paths = [item["path"] for key, item in files_info.items()]
+            print(f"Translation finished: {len(output_file_paths)} file(s) saved to {self.output_dir}")
             return [gr_str, output_file_paths]
 
         except Exception as e:

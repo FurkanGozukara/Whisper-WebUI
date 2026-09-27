@@ -7,10 +7,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from threading import Lock, Thread
 from urllib.parse import quote, unquote, urlparse
 
 from modules.utils.paths import configure_model_cache_env
@@ -72,7 +75,7 @@ logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_NAME = "Whisper TTS Premium App by SECourses"
-APP_VERSION = "12.5"
+APP_VERSION = "12.6"
 APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
 APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
 TIMESTAMP_INFO = (
@@ -120,6 +123,7 @@ class App:
     LIVE_MIC_MIN_PREVIEW_SECONDS = 2.0
     LIVE_MIC_REFRESH_SECONDS = 2.0
     LIVE_MIC_MAX_BUFFER_SECONDS = 15.0
+    LIVE_MIC_PREVIEW_JOB_TTL_SECONDS = 600
     LIVE_MIC_STREAM_MODE_UNKNOWN = "unknown"
     LIVE_MIC_STREAM_MODE_CUMULATIVE = "cumulative"
     LIVE_MIC_STREAM_MODE_DELTA = "delta"
@@ -801,6 +805,67 @@ class App:
             self.log_persistent_error("YouTube transcription", exc)
             return self.format_persistent_error("YouTube transcription", exc), self.prepare_files_output([])
 
+    def transcribe_youtube_with_live_output(self,
+                                            youtube_link: str,
+                                            file_formats="SRT",
+                                            add_timestamp=True,
+                                            mass_transcribe_channel=False,
+                                            latest_video_count=100,
+                                            progress=gr.Progress(),
+                                            *pipeline_params):
+        last_live_output = ""
+        try:
+            for live_output, result_str, collected_paths in self.whisper_inf.transcribe_youtube_with_live_output(
+                youtube_link,
+                file_formats,
+                add_timestamp,
+                mass_transcribe_channel,
+                latest_video_count,
+                progress,
+                *pipeline_params,
+            ):
+                last_live_output = live_output
+                yield live_output, result_str, self.prepare_files_output(collected_paths)
+        except Exception as exc:
+            self.log_persistent_error("YouTube transcription", exc)
+            yield last_live_output, self.format_persistent_error("YouTube transcription", exc), self.prepare_files_output([])
+
+    @staticmethod
+    def missing_translation_inputs(fileobjs, source_lang, target_lang, auth_key=None, needs_auth_key=False) -> str:
+        """Message listing what the user still has to fill in, or "" when a translation can start."""
+        steps = []
+        if needs_auth_key and not str(auth_key or "").strip():
+            steps.append("enter your DeepL API key")
+        if not fileobjs:
+            steps.append("upload one or more subtitle files")
+        if not source_lang:
+            steps.append("choose a Source Language")
+        if not target_lang:
+            steps.append("choose a Target Language")
+        if not steps:
+            return ""
+        return "Nothing was translated. Please " + ", ".join(steps) + ", then click TRANSLATE SUBTITLE FILE again."
+
+    def translate_subtitles_nllb(self, fileobjs, model_size, source_lang, target_lang, max_length=200, add_timestamp=True):
+        missing = self.missing_translation_inputs(fileobjs, source_lang, target_lang)
+        if missing:
+            return missing, gr.update(value=None)
+        try:
+            return self.nllb_inf.translate_file(fileobjs, model_size, source_lang, target_lang, max_length, add_timestamp)
+        except Exception as exc:
+            self.log_persistent_error("NLLB translation", exc)
+            return self.format_persistent_error("NLLB translation", exc), gr.update(value=None)
+
+    def translate_subtitles_deepl(self, auth_key, fileobjs, source_lang, target_lang, is_pro=False, add_timestamp=True):
+        missing = self.missing_translation_inputs(fileobjs, source_lang, target_lang, auth_key, needs_auth_key=True)
+        if missing:
+            return missing, gr.update(value=None)
+        try:
+            return self.deepl_api.translate_deepl(auth_key, fileobjs, source_lang, target_lang, is_pro, add_timestamp)
+        except Exception as exc:
+            self.log_persistent_error("DeepL translation", exc)
+            return self.format_persistent_error("DeepL translation", exc), gr.update(value=None)
+
     def transcribe_mic_with_progress(self,
                                      mic_audio: str,
                                      file_formats="SRT",
@@ -1157,6 +1222,9 @@ class App:
 
     def prepare_live_mic_capture_for_generation(self, auto_live_enabled: bool, live_state, live_mic_audio):
         state = live_state if isinstance(live_state, dict) else self.create_live_mic_state()
+        job = self.live_preview_job_for(state, remove=True)
+        if job is not None:
+            state["transcript"] = job["transcript"]
         staged_path, captured_seconds, fallback_message = self.stage_live_mic_audio(live_mic_audio, state)
         if staged_path is None:
             captured_seconds = float(state.get("stream_total_samples") or 0) / float(
@@ -1242,14 +1310,62 @@ class App:
             gr.update(interactive=True),
         )
 
+    def live_preview_jobs(self):
+        """Background live-preview jobs by recording session; created on first use."""
+        jobs = getattr(self, "_live_preview_jobs", None)
+        if jobs is None:
+            jobs = self._live_preview_jobs = {}
+            self._live_preview_jobs_lock = Lock()
+            self._live_preview_model_lock = Lock()
+        return jobs
+
+    def live_preview_job_for(self, state, remove: bool = False):
+        key = state.get("preview_job_key")
+        if not key:
+            return None
+        jobs = self.live_preview_jobs()
+        return jobs.pop(key, None) if remove else jobs.get(key)
+
+    def start_live_preview_job(self, state, audio, processed_samples, pipeline_params):
+        """Transcribe the preview window in a background thread, so the stream handler returns at once."""
+        jobs = self.live_preview_jobs()
+        key = state.setdefault("preview_job_key", uuid.uuid4().hex)
+        job = {
+            "transcript": state.get("transcript", ""),
+            "processed_samples": processed_samples,
+            "error": "",
+            "finished_at": None,
+        }
+
+        def run_preview():
+            try:
+                with self._live_preview_model_lock:
+                    job["transcript"] = self.whisper_inf.transcribe_live_preview(audio, *pipeline_params)
+            except Exception as exc:
+                self.log_persistent_error("Live microphone preview", exc)
+                job["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                job["finished_at"] = time.time()
+
+        job["thread"] = Thread(target=run_preview, daemon=True)
+        with self._live_preview_jobs_lock:
+            now = time.time()
+            for stale_key, stale_job in list(jobs.items()):
+                finished_at = stale_job.get("finished_at")
+                if finished_at is not None and now - finished_at > self.LIVE_MIC_PREVIEW_JOB_TTL_SECONDS:
+                    jobs.pop(stale_key, None)
+            jobs[key] = job
+        state["last_processed_samples"] = processed_samples
+        job["thread"].start()
+        return job
+
     def transcribe_live_mic_chunk(self, mic_audio, auto_live_enabled: bool, live_state, *pipeline_params):
         state = live_state if isinstance(live_state, dict) else self.create_live_mic_state()
 
-        if not auto_live_enabled:
-            return state, state.get("transcript", ""), self.build_live_mic_status(False)
-
         incoming_sample_rate, incoming_audio = self.normalize_live_mic_chunk(mic_audio)
         if incoming_audio is None:
+            if not auto_live_enabled:
+                return state, state.get("transcript", ""), self.build_live_mic_status(False)
             audio = state.get("audio")
             if not isinstance(audio, np.ndarray):
                 audio = np.array([], dtype=np.float32)
@@ -1301,37 +1417,46 @@ class App:
             else 0.0
         )
 
+        if not auto_live_enabled:
+            # The audio is still collected, so Stop saves the whole recording.
+            return state, state.get("transcript", ""), self.build_live_mic_status(False)
+
         min_preview_samples = int(sample_rate * self.LIVE_MIC_MIN_PREVIEW_SECONDS)
         refresh_samples = int(sample_rate * self.LIVE_MIC_REFRESH_SECONDS)
-        last_processed_samples = int(state.get("last_processed_samples") or 0)
+
+        # The preview runs in a background thread and this handler returns at once: every stream chunk
+        # (about 10 per second) is queued with concurrency_limit=1, so a handler that waited for the
+        # transcription would build a growing backlog.
+        job = self.live_preview_job_for(state)
+        if job is not None:
+            state["transcript"] = job["transcript"]
+        transcript = state.get("transcript", "")
 
         if preview_total_samples < min_preview_samples:
-            return state, state.get("transcript", ""), self.build_live_mic_status(
+            return state, transcript, self.build_live_mic_status(
                 True,
                 captured_seconds,
                 "Collecting enough audio for the first preview.",
             )
 
-        if state.get("transcript") and stream_total_samples - last_processed_samples < refresh_samples:
-            return state, state.get("transcript", ""), self.build_live_mic_status(
-                True,
-                captured_seconds,
-                "Listening...",
-            )
+        if job is None or (
+            not job["thread"].is_alive() and stream_total_samples - job["processed_samples"] >= refresh_samples
+        ):
+            previous_job = job
+            if previous_job is not None:
+                previous_job.pop("previous", None)
+            job = self.start_live_preview_job(state, combined_audio.copy(), stream_total_samples, pipeline_params)
+            job["previous"] = previous_job
 
-        try:
-            transcript = self.whisper_inf.transcribe_live_preview(combined_audio, *pipeline_params)
-            state["transcript"] = transcript
-            state["last_processed_samples"] = stream_total_samples
-            suffix = "Preview updated." if transcript else "Speech not detected yet."
-            return state, transcript, self.build_live_mic_status(True, captured_seconds, suffix)
-        except Exception as exc:
-            self.log_persistent_error("Live microphone preview", exc)
-            return state, state.get("transcript", ""), self.build_live_mic_status(
-                True,
-                captured_seconds,
-                f"Live preview error: {type(exc).__name__}: {exc}",
-            )
+        # The status describes the newest finished preview; the one just started shows up on a later chunk.
+        finished_job = job if not job["thread"].is_alive() else job.get("previous")
+        if finished_job is None:
+            suffix = "Listening... preparing the first preview."
+        elif finished_job["error"]:
+            suffix = f"Live preview error: {finished_job['error']}"
+        else:
+            suffix = "Preview updated." if finished_job["transcript"] else "Speech not detected yet."
+        return state, transcript, self.build_live_mic_status(True, captured_seconds, suffix)
 
     def transcribe_saved_live_mic_with_download(self,
                                                 live_capture,
@@ -1962,7 +2087,7 @@ class App:
                         ]
 
                         with gr.Row():
-                            gr.Textbox(
+                            youtube_live_transcription = gr.Textbox(
                                 label=_("Live Transcription"),
                                 lines=10,
                                 max_lines=10,
@@ -1983,9 +2108,9 @@ class App:
                             sl_latest_video_count,
                         ]
                         youtube_run_event = youtube_transcription_ui["run_button"].click(
-                            fn=self.transcribe_youtube_with_progress,
+                            fn=self.transcribe_youtube_with_live_output,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
-                            outputs=[youtube_output, youtube_outputs],
+                            outputs=[youtube_live_transcription, youtube_output, youtube_outputs],
                         )
                         youtube_transcription_ui["cancel_button"].click(
                             fn=self.cancel_active_generation,
@@ -2107,13 +2232,16 @@ class App:
                             queue=False,
                             show_progress="hidden",
                         )
+                        # Queued stream with Gradio's default trigger mode ("multiple"): the browser keeps one
+                        # stream open and every 100 ms chunk reaches the handler in order. With queue=False and
+                        # "always_last" each chunk was a new request, the recorder showed "Waiting" and about
+                        # half of the audio never arrived (7 s of a 14 s recording). The handler returns at once;
+                        # the preview transcription runs in a background thread.
                         live_mic_stream_event = live_mic_input.stream(
                             fn=self.transcribe_live_mic_chunk,
                             inputs=live_mic_stream_inputs + mic_transcription_ui["pipeline"],
                             outputs=[live_mic_state, live_mic_transcription, live_mic_status],
-                            queue=False,
                             show_progress="hidden",
-                            trigger_mode="always_last",
                             concurrency_limit=1,
                             stream_every=1.0,
                         )
@@ -2253,7 +2381,7 @@ class App:
                                 deepl_open_btn = gr.Button('Open folder', scale=1, elem_classes=btn("teal", icon="folder"))
 
                         deepl_run_btn.click(
-                            fn=self.deepl_api.translate_deepl,
+                            fn=self.translate_subtitles_deepl,
                             inputs=[tb_api_key, file_subs, deepl_source_lang, deepl_target_lang, cb_is_pro, deepl_add_timestamp],
                             outputs=[deepl_output, deepl_outputs],
                         )
@@ -2306,7 +2434,7 @@ class App:
                                 gr.HTML(NLLB_VRAM_TABLE, elem_id="md_nllb_vram_table")
 
                         nllb_run_btn.click(
-                            fn=self.nllb_inf.translate_file,
+                            fn=self.translate_subtitles_nllb,
                             inputs=[file_subs, nllb_model_size, nllb_source_lang, nllb_target_lang, nb_max_length, nllb_add_timestamp],
                             outputs=[nllb_output, nllb_outputs],
                         )

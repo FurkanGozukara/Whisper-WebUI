@@ -188,9 +188,12 @@ class DeepLAPI:
             'source_lang': DEEPL_AVAILABLE_SOURCE_LANGS[source_lang],
             'target_lang': DEEPL_AVAILABLE_TARGET_LANGS[target_lang]
         }
-        response = requests.post(url, headers=headers, data=data).json()
+        response = requests.post(url, headers=headers, data=data, timeout=120)
+        if response.status_code != 200:
+            # 403: wrong key or the wrong Pro/Free endpoint, 456: quota exceeded.
+            raise RuntimeError(f"DeepL API request failed with HTTP {response.status_code}: {response.text[:300]}")
         time.sleep(self.api_interval)
-        return response["translations"]
+        return response.json()["translations"]
 
     @staticmethod
     def cache_parameters(api_key: str,
