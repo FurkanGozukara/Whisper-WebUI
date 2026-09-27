@@ -12,6 +12,15 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 27 September 2026 - Version 12.7
+
+- Fixed the installer stopping with `CERTIFICATE_VERIFY_FAILED ... self-signed certificate in certificate chain` while downloading the diarization models, on PCs with antivirus HTTPS scanning (for example Kaspersky) or a company proxy
+  - Downloads are now verified with the Windows certificate store, as browsers and pip do: use the latest installer files and run Windows_Install_Update.bat to update
+- Insanely Fast Whisper: `large-v1` and `turbo` no longer fail with "404 Repository Not Found"
+  - `large-v1` now downloads a 3.1 GB FP16 copy of OpenAI's large-v1 (the original is 6.2 GB FP32) from our Hugging Face repo
+  - `turbo` and `large` now load `large-v3-turbo` and `large-v3`, the same models these names mean in the Whisper (faster-whisper) list
+- Batch processing with an Output Folder now keeps the input subfolders: before, two files with the same name in different subfolders shared one output, and the second one was skipped as "outputs already exist"
+
 ### 27 September 2026 - Version 12.6
 
 - Fixed Canary-Qwen on new installs: a new fsspec release made the installer pick a 2020 version of `datasets`, and Canary-Qwen stopped with `module 'pyarrow' has no attribute 'PyExtensionType'`

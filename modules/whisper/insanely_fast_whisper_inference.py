@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import time
 import numpy as np
 import inspect
@@ -10,7 +11,7 @@ from faster_whisper.audio import decode_audio
 from transformers import pipeline
 from transformers.utils import is_flash_attn_2_available
 import gradio as gr
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 import whisper
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 from argparse import Namespace
@@ -68,6 +69,17 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         "special_tokens_map.json",
         "vocab.json",
     )
+    # Names that mean another entry's checkpoint, as in faster-whisper and openai-whisper:
+    # the Hub has no openai/whisper-turbo, and openai/whisper-large is large-v1, not large-v3.
+    MODEL_ALIASES = {
+        "large": "large-v3",
+        "turbo": "large-v3-turbo",
+    }
+    # Models kept in a subfolder of a Hub repo, because there is no openai/whisper-<name> for them:
+    # large-v1 is published as openai/whisper-large in FP32 (6.2 GB); this FP16 copy is 3.1 GB.
+    HOSTED_MODELS = {
+        "large-v1": ("MonsterMMORPG/Wan_GGUF", "Whisper_Transformers/large-v1"),
+    }
 
     def __init__(self,
                  model_dir: str = INSANELY_FAST_WHISPER_MODELS_DIR,
@@ -675,6 +687,7 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         model_dir = getattr(self, "model_dir", None)
         if not model_size or not model_dir:
             return None
+        model_size = self.canonical_model_size(model_size)
         try:
             if self.has_transformers_model_files(os.path.join(model_dir, model_size)):
                 return None
@@ -685,6 +698,7 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         return model_size
 
     def resolve_model_target(self, model_size: str, progress: gr.Progress) -> str:
+        model_size = self.canonical_model_size(model_size)
         local_model_path = os.path.join(self.model_dir, model_size)
         if self.has_transformers_model_files(local_model_path):
             logger.info('Using existing Transformers Whisper model "%s" from "%s".', model_size, local_model_path)
@@ -761,7 +775,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         distil_models = ["distil-large-v2", "distil-large-v3", "distil-medium.en", "distil-small.en"]
         default_models = openai_models + distil_models
 
-        existing_models = os.listdir(self.model_dir)
+        # Hidden entries are caches and unfinished downloads (.download-<model>), not models.
+        existing_models = [name for name in os.listdir(self.model_dir) if not name.startswith(".")]
         wrong_dirs = [".locks", "insanely_fast_whisper_models_will_be_saved_here"]
 
         available_models = default_models + existing_models
@@ -779,13 +794,18 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
     ) -> str:
         progress = cls.ensure_progress_callable(progress)
         progress(0, "Preparing model..")
-        repo_id = cls.repo_id_for_model_size(model_size)
+        model_size = cls.canonical_model_size(model_size)
+        repo_id, subfolder = cls.repo_for_model_size(model_size)
         logger.info(
             'Downloading Transformers Whisper model "%s" (%s) to "%s".',
             model_size,
-            repo_id,
+            f"{repo_id}/{subfolder}" if subfolder else repo_id,
             download_root,
         )
+
+        if subfolder:
+            cls.download_hosted_model(model_size, download_root)
+            return download_root
 
         os.makedirs(download_root, exist_ok=True)
         for item in cls.REQUIRED_DOWNLOAD_FILES + cls.OPTIONAL_DOWNLOAD_FILES:
@@ -803,6 +823,26 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
                 "Remove the folder and try again, or place a complete Transformers-format Whisper model there."
             )
         return download_root
+
+    @classmethod
+    def download_hosted_model(cls, model_size: str, download_root: str) -> None:
+        """Download a model kept in a subfolder of a Hub repo (``HOSTED_MODELS``) into ``download_root``.
+
+        Files are fetched into a hidden staging folder next to it (an interrupted download resumes
+        from there) and the finished folder is moved into place, as for the INT8 ConvRot models.
+        """
+        repo_id, subfolder = cls.HOSTED_MODELS[model_size]
+        staging = os.path.join(os.path.dirname(os.path.abspath(download_root)), f".download-{model_size}")
+        snapshot_download(repo_id=repo_id, allow_patterns=[f"{subfolder}/*"], local_dir=staging)
+        downloaded = os.path.join(staging, *subfolder.split("/"))
+        if not cls.has_transformers_model_files(downloaded):
+            raise RuntimeError(
+                f'Downloaded files for "{model_size}" from {repo_id}/{subfolder} are incomplete: {downloaded}'
+            )
+        if os.path.isdir(download_root):
+            shutil.rmtree(download_root)
+        os.replace(downloaded, download_root)
+        shutil.rmtree(staging, ignore_errors=True)
 
     @classmethod
     def has_transformers_model_files(cls, model_path: Union[str, os.PathLike]) -> bool:
@@ -842,7 +882,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
 
     @classmethod
     def find_cached_transformers_model(cls, model_size: str) -> Optional[str]:
-        repo_cache_name = f"models--{cls.repo_id_for_model_size(model_size).replace('/', '--')}"
+        repo_id, subfolder = cls.repo_for_model_size(model_size)
+        repo_cache_name = f"models--{repo_id.replace('/', '--')}"
         for cache_dir in cls.candidate_hf_cache_dirs():
             repo_dir = Path(cache_dir) / repo_cache_name
             snapshots_dir = repo_dir / "snapshots"
@@ -854,8 +895,9 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
                 reverse=True,
             )
             for snapshot in snapshots:
-                if cls.has_transformers_model_files(snapshot):
-                    return str(snapshot)
+                model_path = snapshot.joinpath(*subfolder.split("/")) if subfolder else snapshot
+                if cls.has_transformers_model_files(model_path):
+                    return str(model_path)
         return None
 
     @classmethod
@@ -907,9 +949,19 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         except OSError:
             return 0.0
 
-    @staticmethod
-    def repo_id_for_model_size(model_size: str) -> str:
-        return f"distil-whisper/{model_size}" if model_size.startswith("distil") else f"openai/whisper-{model_size}"
+    @classmethod
+    def canonical_model_size(cls, model_size: str) -> str:
+        return cls.MODEL_ALIASES.get(model_size, model_size)
+
+    @classmethod
+    def repo_for_model_size(cls, model_size: str) -> Tuple[str, Optional[str]]:
+        """Hub repo id and subfolder (None for the repo root) that a model name downloads from."""
+        model_size = cls.canonical_model_size(model_size)
+        if model_size in cls.HOSTED_MODELS:
+            return cls.HOSTED_MODELS[model_size]
+        if model_size.startswith("distil"):
+            return f"distil-whisper/{model_size}", None
+        return f"openai/whisper-{model_size}", None
 
     @staticmethod
     def is_hf_entry_not_found(exc: Exception) -> bool:

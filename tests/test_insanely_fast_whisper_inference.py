@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -419,3 +420,74 @@ def test_insanely_fast_whisper_live_chunks_end_in_a_pause():
     assert all(end - start <= 30 * sampling_rate for start, end in bounds)
     assert [start for start, _end in bounds[1:]] == [end for _start, end in bounds[:-1]]
     assert bounds[-1][1] == len(audio)
+
+
+def test_insanely_fast_whisper_maps_every_model_name_to_a_published_repo():
+    # openai/whisper-large-v1 and openai/whisper-turbo do not exist on the Hub (404 on first use).
+    repo = InsanelyFastWhisperInference.repo_for_model_size
+
+    assert repo("large-v1") == ("MonsterMMORPG/Wan_GGUF", "Whisper_Transformers/large-v1")
+    assert repo("large") == ("openai/whisper-large-v3", None)
+    assert repo("turbo") == ("openai/whisper-large-v3-turbo", None)
+    assert repo("large-v3-turbo") == ("openai/whisper-large-v3-turbo", None)
+    assert repo("medium.en") == ("openai/whisper-medium.en", None)
+    assert repo("distil-large-v3") == ("distil-whisper/distil-large-v3", None)
+
+
+def test_insanely_fast_whisper_alias_uses_the_canonical_model_folder(tmp_path):
+    local_model = tmp_path / "large-v3-turbo"
+    write_complete_transformers_model(local_model)
+
+    inferencer = object.__new__(InsanelyFastWhisperInference)
+    inferencer.model_dir = str(tmp_path)
+    inferencer.download_model = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("downloaded"))
+
+    assert inferencer.resolve_model_target("turbo", DummyProgress()) == str(local_model)
+    assert inferencer.model_to_download("turbo") is None
+
+
+def test_insanely_fast_whisper_downloads_hosted_model_into_its_folder(tmp_path, monkeypatch):
+    import modules.whisper.insanely_fast_whisper_inference as ifw_module
+
+    calls = []
+
+    def fake_snapshot_download(repo_id, allow_patterns, local_dir):
+        calls.append((repo_id, allow_patterns))
+        write_complete_transformers_model(Path(local_dir) / "Whisper_Transformers" / "large-v1")
+        return local_dir
+
+    monkeypatch.setattr(ifw_module, "snapshot_download", fake_snapshot_download)
+    target = tmp_path / "large-v1"
+    target.mkdir()  # left empty by an earlier failed attempt
+
+    assert InsanelyFastWhisperInference.download_model("large-v1", str(target), DummyProgress()) == str(target)
+    assert calls == [("MonsterMMORPG/Wan_GGUF", ["Whisper_Transformers/large-v1/*"])]
+    assert InsanelyFastWhisperInference.has_transformers_model_files(target)
+    assert [path.name for path in tmp_path.iterdir()] == ["large-v1"]  # staging folder removed
+
+
+def test_insanely_fast_whisper_finds_hosted_model_in_hf_cache_subfolder(tmp_path, monkeypatch):
+    cached_model = (
+        tmp_path / "hub" / "models--MonsterMMORPG--Wan_GGUF" / "snapshots" / "abcdef"
+        / "Whisper_Transformers" / "large-v1"
+    )
+    write_complete_transformers_model(cached_model)
+    monkeypatch.setattr(
+        InsanelyFastWhisperInference,
+        "candidate_hf_cache_dirs",
+        classmethod(lambda cls: [str(tmp_path / "hub")]),
+    )
+
+    assert InsanelyFastWhisperInference.find_cached_transformers_model("large-v1") == str(cached_model)
+
+
+def test_insanely_fast_whisper_model_list_skips_hidden_download_folders(tmp_path):
+    (tmp_path / ".download-large-v1").mkdir()
+    (tmp_path / "my-finetune").mkdir()
+
+    inferencer = object.__new__(InsanelyFastWhisperInference)
+    inferencer.model_dir = str(tmp_path)
+    models = inferencer.get_model_paths()
+
+    assert "my-finetune" in models
+    assert ".download-large-v1" not in models

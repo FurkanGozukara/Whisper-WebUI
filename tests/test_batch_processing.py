@@ -656,3 +656,23 @@ def test_transcribe_auto_disables_conditioning_for_long_standard_audio():
     assert isinstance(captured["audio"], np.ndarray)
     assert len(segments) == 1
     assert elapsed_time >= 0
+
+
+def test_batch_output_folder_mirrors_input_subfolders(tmp_path):
+    # Flat outputs made sub1/part_a.mp3 and sub2/part_a.mp3 share part_a.srt; the second was skipped.
+    input_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.output_dir = str(tmp_path / "default")
+
+    def output_dir_for(relative_path, output_dir=str(output_root), batch_mode=True):
+        return inferencer._get_output_dir_for_file(output_dir, str(input_root / relative_path), batch_mode,
+                                                   str(input_root))
+
+    assert output_dir_for("part_a.mp3") == str(output_root)
+    assert output_dir_for("sub1/part_a.mp3") == str(output_root / "sub1")
+    assert output_dir_for("sub2/deeper/part_a.mp3") == str(output_root / "sub2" / "deeper")
+    # Without an output folder, batch outputs stay next to each input file.
+    assert output_dir_for("sub2/part_a.mp3", output_dir=None) == str(input_root / "sub2")
+    # Single-file jobs keep the app's output folder.
+    assert inferencer._get_output_dir_for_file(None, str(tmp_path / "clip.mp4"), False) == str(tmp_path / "default")

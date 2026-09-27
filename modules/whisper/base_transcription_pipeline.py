@@ -434,7 +434,7 @@ class BaseTranscriptionPipeline(ABC):
 
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
-                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
+                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
                 output_specs = self._build_output_specs(file_name, file_formats, writer_options)
                 existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
@@ -641,7 +641,7 @@ class BaseTranscriptionPipeline(ABC):
 
             for file in files:
                 file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
-                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode)
+                target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
                 output_specs = self._build_output_specs(file_name, file_formats, writer_options)
                 existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
@@ -1379,8 +1379,20 @@ class BaseTranscriptionPipeline(ABC):
         normalized = file_format.strip().lower().replace(".", "")
         return "vtt" if normalized == "webvtt" else normalized
 
-    def _get_output_dir_for_file(self, output_dir: Optional[str], input_file: str, batch_mode: bool) -> str:
-        """Decide which output directory to use for a given file."""
+    def _get_output_dir_for_file(self, output_dir: Optional[str], input_file: str, batch_mode: bool,
+                                 input_root: Optional[str] = None) -> str:
+        """Decide which output directory to use for a given file.
+
+        A batch with an output folder mirrors the input subfolders into it: written flat, two inputs with
+        the same name in different subfolders shared one output, and the second was skipped as "already exists".
+        """
+        if output_dir and batch_mode and input_root and input_file:
+            try:
+                relative_dir = os.path.relpath(os.path.dirname(os.path.abspath(input_file)), os.path.abspath(input_root))
+            except ValueError:  # different drive
+                relative_dir = "."
+            if relative_dir != "." and not relative_dir.startswith(".."):
+                output_dir = os.path.join(output_dir, relative_dir)
         target_output_dir = output_dir or (os.path.dirname(input_file) if batch_mode and input_file else None) or self.output_dir
         os.makedirs(target_output_dir, exist_ok=True)
         return target_output_dir
