@@ -10,7 +10,6 @@ import torch
 import gc
 import gradio as gr
 from datetime import datetime
-import traceback
 
 from modules.utils.paths import UVR_MODELS_DIR, UVR_OUTPUT_DIR
 from modules.utils.files_manager import is_video
@@ -18,17 +17,31 @@ from modules.diarize.audio_loader import load_audio
 from modules.utils.logger import get_logger
 logger = get_logger()
 
-try:
-    import uvr.models as uvr_models
-    from uvr.models import MDX, Demucs, VrNetwork, MDXC
-except Exception as e:
-    logger.warning(
-        "Failed to import uvr. BGM separation feature will not work. "
-        "Please open an issue on GitHub if you encounter this error. "
-        f"Error: {type(e).__name__}: {traceback.format_exc()}"
-    )
-else:
-    _uvr_download_model = uvr_models.download_model
+_UVR_MDX = None
+
+
+def load_uvr_mdx():
+    """Import uvr on first use and return its MDX class.
+
+    uvr.models imports pytorch_lightning: importing it with this module cost 3-4 seconds on every app
+    start and every transcription job (about 13 seconds on the first start), while only BGM separation
+    and the Background Music Remover Filter use it.
+    """
+    global _UVR_MDX
+    if _UVR_MDX is not None:
+        return _UVR_MDX
+
+    try:
+        import uvr.models as uvr_models
+        from uvr.models import MDX
+    except Exception as e:
+        raise RuntimeError(
+            "Failed to import uvr, so BGM separation cannot run. "
+            "Please open an issue on GitHub if you encounter this error. "
+            f"Error: {type(e).__name__}: {e}"
+        ) from e
+
+    uvr_download_model = uvr_models.download_model
 
     def _download_model_if_missing(model_name, model_arch, model_path=None, save_path=None, logger=None):
         # uvr looks for an existing copy only inside its own package folder, so a model already in
@@ -37,10 +50,12 @@ else:
             files = [os.path.join(save_path, path.split("/")[-1]) for path in model_path]
             if all(os.path.isfile(file) and os.path.getsize(file) > 0 for file in files):
                 return save_path
-        return _uvr_download_model(model_name=model_name, model_arch=model_arch, model_path=model_path,
-                                   save_path=save_path, logger=logger)
+        return uvr_download_model(model_name=model_name, model_arch=model_arch, model_path=model_path,
+                                  save_path=save_path, logger=logger)
 
     uvr_models.download_model = _download_model_if_missing
+    _UVR_MDX = MDX
+    return MDX
 
 
 class MusicSeparator:
@@ -84,6 +99,7 @@ class MusicSeparator:
             "segment": segment_size,
             "split": True
         }
+        MDX = load_uvr_mdx()
         # Some UVR checkpoints can be loaded via torch.load internally; make it robust on torch>=2.6.
         with torch_load_safe_globals():
             self.model = MDX(name=model_name,

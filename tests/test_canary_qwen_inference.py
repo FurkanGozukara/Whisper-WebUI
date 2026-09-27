@@ -1,3 +1,4 @@
+import os
 import sys
 import types
 
@@ -348,6 +349,7 @@ def test_canary_update_model_emits_download_and_load_status(tmp_path, monkeypatc
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(inferencer, "import_salm", lambda: DummySalm)
+    hub_cache_before = os.environ.get("HF_HUB_CACHE")
 
     inferencer.update_model(
         CanaryQwenInference.DEFAULT_MODEL_ID,
@@ -361,6 +363,8 @@ def test_canary_update_model_emits_download_and_load_status(tmp_path, monkeypatc
     assert any("Canary-Qwen model download finished." == status for status in statuses)
     assert any("Loading Canary-Qwen model from" in status for status in statuses)
     assert statuses[-1] == "Canary-Qwen model loaded. Starting transcription.."
+    # The Canary folder is the Hugging Face cache only while the model loads, not for the rest of the worker
+    assert os.environ.get("HF_HUB_CACHE") == hub_cache_before
 
 
 def test_canary_patches_missing_lightning_neptune_logger(monkeypatch):

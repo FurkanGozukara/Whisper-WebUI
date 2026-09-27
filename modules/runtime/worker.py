@@ -110,10 +110,13 @@ def whisper_metadata_payload(whisper_inf, gpu_total_memory_gb=None, gpu_name=Non
 
 
 def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
+    from modules.utils.startup_log import startup_log
+
     args = build_args_namespace(request["args"])
 
     gpu_total_memory_gb = None
     gpu_name = None
+    startup_log("Loading PyTorch..")
     try:
         import torch
 
@@ -134,6 +137,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         gpu_total_memory_gb = None
         gpu_name = None
+    startup_log(f"PyTorch loaded. GPU: {gpu_name or 'none detected'}. Loading the transcription engines..")
 
     from modules.whisper.data_classes import WhisperImpl
 
@@ -155,6 +159,7 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
     whisper_payload = dict(implementation_metadata[selected_type])
     whisper_payload["implementations"] = implementation_metadata
 
+    startup_log("Transcription engines loaded. Loading the translation module..")
     from modules.translation.nllb_inference import NLLBInference
 
     nllb_inf = NLLBInference(

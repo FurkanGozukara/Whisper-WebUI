@@ -93,7 +93,10 @@ def test_whisper_lang_is_normalized_for_ui_and_runtime():
     assert defaults["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.FASTER_WHISPER.value
     assert defaults["file_tab"]["whisper"]["model_size"] == "large-v3-int8-convrot"
     assert defaults["file_tab"]["whisper"]["lang"] == "english"
-    assert defaults["file_tab"]["whisper"]["offload_to_ram"] is False
+    # Default: jobs run in the app process and the models wait in RAM between jobs
+    assert defaults["file_tab"]["whisper"]["offload_to_ram"] is True
+    assert defaults["file_tab"]["whisper"]["enable_offload"] is False
+    assert defaults["file_tab"]["whisper"]["start_as_subprocess"] is False
     assert defaults["file_tab"]["whisper"]["beam_size"] == 5
     assert defaults["file_tab"]["whisper"]["repetition_penalty"] == 1.0
     assert defaults["file_tab"]["whisper"]["word_timestamps"] is True

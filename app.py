@@ -1,4 +1,5 @@
 import argparse
+import ast
 import html
 import json
 import os
@@ -20,6 +21,13 @@ from modules.utils.paths import configure_model_cache_env
 
 # Before gradio/huggingface_hub are imported: every model download stays in Whisper-WebUI/models.
 configure_model_cache_env()
+
+from modules.utils.startup_log import is_first_start, startup_log
+
+startup_log("Starting Whisper WebUI. Loading the interface libraries..")
+if is_first_start():
+    startup_log("First start after an install or update: Python prepares its libraries once, which can take "
+                "a few minutes. Later starts take seconds.")
 
 from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
 
@@ -70,12 +78,13 @@ from modules.utils.text import repair_blocks_text, repair_component_text
 from modules.utils.youtube_manager import get_ytmetas
 from modules.whisper.data_classes import *
 
+startup_log("Interface libraries loaded.")
 
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_NAME = "Whisper TTS Premium App by SECourses"
-APP_VERSION = "12.7"
+APP_VERSION = "12.8"
 APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
 APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
 TIMESTAMP_INFO = (
@@ -135,7 +144,10 @@ class App:
             title=self.title,
             delete_cache=(3600, 86400),
         )
+        startup_log("Detecting the GPU and the available models in a background process "
+                    "(loads PyTorch and the transcription engines)..")
         self.whisper_inf, self.nllb_inf = build_runtime_proxies(self.args)
+        startup_log("GPU and model lists are ready.")
         self.deepl_api = DeepLAPI(
             output_dir=os.path.join(self.args.output_dir, "translations"),
         )
@@ -146,12 +158,7 @@ class App:
         self.default_params = self.apply_implementation_defaults(self.default_params)
         self.ui_default_config = build_default_ui_config(default_params=self.default_params)
 
-        user_allowed = []
-        if self.args.allowed_paths:
-            try:
-                user_allowed = list(eval(self.args.allowed_paths))
-            except Exception:
-                user_allowed = []
+        user_allowed = self.parse_allowed_paths(self.args.allowed_paths)
 
         combined_paths = self.detect_allowed_paths() + user_allowed + [self.args.output_dir]
         seen = set()
@@ -166,6 +173,25 @@ class App:
             f'The Base Model UI selection can override this per job.\n'
             f'Device "{self.whisper_inf.device}" is detected'
         )
+
+    @staticmethod
+    def parse_allowed_paths(value):
+        """--allowed_paths as a list literal ("['C:/a', 'D:/b']"), one path or comma separated paths.
+
+        It was read with eval(), which runs any Python code given on the command line.
+        """
+        if not value:
+            return []
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            parsed = value.split(",")
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        try:
+            return [str(path).strip() for path in parsed if str(path).strip()]
+        except TypeError:
+            return []
 
     @staticmethod
     def detect_allowed_paths():
@@ -704,6 +730,16 @@ class App:
 
         bundle_dir = os.path.join(self.args.output_dir, "_download_bundles")
         os.makedirs(bundle_dir, exist_ok=True)
+        # Every multi-file job adds a zip and none were ever deleted. Gradio serves its own cached copy,
+        # so zips older than a day are no longer needed.
+        cutoff = time.time() - 86400
+        for name in os.listdir(bundle_dir):
+            bundle_path = os.path.join(bundle_dir, name)
+            try:
+                if name.startswith("whisper_outputs_") and name.endswith(".zip") and os.path.getmtime(bundle_path) < cutoff:
+                    os.remove(bundle_path)
+            except OSError:
+                pass
 
         with tempfile.NamedTemporaryFile(
             prefix="whisper_outputs_",
@@ -713,10 +749,20 @@ class App:
         ) as temp_zip:
             zip_path = temp_zip.name
 
+        # Paths relative to the common folder keep the subfolders of a batch (partA/segment.srt,
+        # partB/segment.srt); files on different drives fall back to unique flat names.
+        try:
+            common_root = os.path.commonpath([os.path.dirname(path) for path in valid_paths])
+        except ValueError:
+            common_root = None
         used_names = set()
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for file_path in valid_paths:
-                archive.write(file_path, arcname=self._unique_archive_name(used_names, file_path))
+                if common_root:
+                    arcname = os.path.relpath(file_path, common_root).replace(os.sep, "/")
+                else:
+                    arcname = self._unique_archive_name(used_names, file_path)
+                archive.write(file_path, arcname=arcname)
 
         return gr.update(value=zip_path, visible=True)
 
@@ -764,7 +810,10 @@ class App:
                                       progress=gr.Progress(),
                                       *pipeline_params):
         last_live_output = ""
+        last_result_str = ""
+        last_paths = []
         try:
+            first_update = True
             for live_output, result_str, collected_paths in self.whisper_inf.transcribe_file_with_live_output(
                 files,
                 batch_mode,
@@ -777,8 +826,13 @@ class App:
                 progress,
                 *pipeline_params,
             ):
-                last_live_output = live_output
-                yield live_output, result_str, self.prepare_download_output(collected_paths)
+                last_live_output, last_result_str, last_paths = live_output, result_str, collected_paths
+                # The download is prepared once, after the last file: preparing it on every live update wrote
+                # a new, bigger zip into outputs/_download_bundles for each segment of a multi-file job.
+                download_update = gr.update(value=None, visible=False) if first_update else gr.update()
+                first_update = False
+                yield live_output, result_str, download_update
+            yield last_live_output, last_result_str, self.prepare_download_output(last_paths)
         except Exception as exc:
             self.log_persistent_error("File transcription", exc)
             yield last_live_output, self.format_persistent_error("File transcription", exc), self.prepare_download_output([])
@@ -1615,6 +1669,13 @@ class App:
             defaults["word_timestamps"] = False
         return defaults
 
+    def batch_size_panel_for_whisper_type(self, whisper_type):
+        whisper_type = self.normalize_primary_whisper_type(whisper_type)
+        return (
+            gr.update(visible=WhisperParams.supports_batch_size(whisper_type)),
+            gr.update(value=self.batch_help_for_whisper_type(whisper_type)),
+        )
+
     def update_primary_model_ui(self, whisper_type):
         whisper_type = self.normalize_primary_whisper_type(whisper_type)
         defaults = self.defaults_for_primary_whisper_type(whisper_type)
@@ -1821,10 +1882,21 @@ class App:
                 device=self.whisper_inf.diarizer.device,
             )
 
-        model_type_radio.change(
+        # Choosing an engine resets this tab to its defaults, and launch() chains the engine's built-in preset
+        # after it. .input fires for user clicks only: preset loads also change this radio, and a reset bound
+        # to .change raced with them and replaced preset values (a saved preset lost its settings).
+        engine_reset_event = model_type_radio.input(
             fn=self.update_primary_model_ui,
             inputs=[model_type_radio],
             outputs=[dd_model, dd_lang, cb_translate, batch_size_column, batch_size_help] + whisper_inputs,
+            queue=False,
+            show_progress="hidden",
+        )
+        # Panels that only follow the engine, also when a preset changes it
+        model_type_radio.change(
+            fn=self.batch_size_panel_for_whisper_type,
+            inputs=[model_type_radio],
+            outputs=[batch_size_column, batch_size_help],
             queue=False,
             show_progress="hidden",
         )
@@ -1839,6 +1911,7 @@ class App:
         return {
             "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + [model_type_radio] + vad_inputs + diarization_inputs + uvr_inputs,
             "model_type_radio": model_type_radio,
+            "engine_reset_event": engine_reset_event,
             "model_type_info": model_type_info,
             "file_formats": cg_file_formats,
             "add_timestamp": cb_timestamp,
@@ -1848,6 +1921,7 @@ class App:
         }
 
     def launch(self, prevent_thread_lock: bool = False, quiet: bool = False):
+        startup_log("Building the interface..")
         remembered_preset_name = get_last_used_ui_preset()
         startup_preset_name = remembered_preset_name or get_default_startup_ui_preset()
         default_ui_config = merge_ui_config(self.ui_default_config, default_params=self.default_params)
@@ -1881,6 +1955,7 @@ class App:
                 visible=False,
             )
             cancel_confirmed = gr.Checkbox(value=False, visible=False)
+            delete_preset_confirmed = gr.Checkbox(value=False, visible=False)
             with Translate(self.i18n):
                 with gr.Row(elem_classes=["app-header"]):
                     gr.Markdown(
@@ -2764,6 +2839,10 @@ class App:
                         return (gr.update(), *values, f"Save failed: {exc}")
 
                 def _load_preset_ui(preset_name: str):
+                    if not preset_name:
+                        # An empty selection (Delete clears it) keeps the current settings and the status
+                        # message: it used to load the defaults and replace "Deleted preset" at once.
+                        return (*[gr.update() for _ in config_components], gr.update())
                     values, status = _load_preset_values_and_status(preset_name)
                     return (*values, status)
 
@@ -2809,13 +2888,15 @@ class App:
                     values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
                     return (*values, "Reset to defaults")
 
-                def _delete_preset_ui(preset_name: str):
+                def _delete_preset_ui(preset_name: str, confirmed: bool = True):
                     if not preset_name:
                         return gr.update(), "No preset selected"
                     if is_locked_ui_preset(preset_name):
                         return gr.update(choices=list_ui_presets(), value=preset_name), (
                             f"Preset **{preset_name}** is built in and cannot be deleted."
                         )
+                    if confirmed is False:
+                        return gr.update(), f"Preset **{preset_name}** was not deleted."
                     ok = delete_ui_preset(preset_name)
                     presets = list_ui_presets()
                     if ok:
@@ -2844,15 +2925,26 @@ class App:
                     queue=False,
                     show_progress="hidden",
                 )
+                locked_preset_names = [name for name in list_ui_presets() if is_locked_ui_preset(name)]
                 ui_preset_delete_btn.click(
                     fn=_delete_preset_ui,
-                    inputs=[ui_preset_dropdown],
+                    inputs=[ui_preset_dropdown, delete_preset_confirmed],
                     outputs=[ui_preset_dropdown, ui_preset_status],
+                    # Deleting a saved preset cannot be undone; built-in presets are refused without asking.
+                    js=f"""
+(presetName, _confirmed) => {{
+    if (!presetName || {json.dumps(locked_preset_names)}.includes(presetName)) {{
+        return [presetName, true];
+    }}
+    return [presetName, window.confirm(`Delete the preset "${{presetName}}"? This cannot be undone.`)];
+}}
+""",
                     queue=False,
                     show_progress="hidden",
                 )
                 for transcription_ui in (file_transcription_ui, youtube_transcription_ui, mic_transcription_ui):
-                    transcription_ui["model_type_radio"].change(
+                    # After the engine defaults, in order (both on .change used to race on every preset load)
+                    transcription_ui["engine_reset_event"].then(
                         fn=_autoload_preset_for_model_type,
                         inputs=[transcription_ui["model_type_radio"], ui_preset_dropdown],
                         outputs=[ui_preset_dropdown] + config_components + config_info_components + [ui_preset_status],
@@ -2861,6 +2953,7 @@ class App:
                     )
 
         repair_blocks_text(self.app)
+        startup_log("Interface built. Starting the web server..")
         args = self.args
         return self.app.queue(api_open=args.api_open).launch(
             share=args.share,
@@ -2906,7 +2999,7 @@ class App:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--whisper_type", type=str, default=WhisperImpl.CANARY_QWEN.value, choices=[item.value for item in WhisperImpl])
+parser.add_argument("--whisper_type", type=str, default=WhisperImpl.FASTER_WHISPER.value, choices=[item.value for item in WhisperImpl])
 parser.add_argument("--share", type=str2bool, default=False, nargs="?", const=True)
 parser.add_argument("--server_name", type=str, default=None)
 parser.add_argument("--server_port", type=int, default=None)

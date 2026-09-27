@@ -238,6 +238,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             # only shows "waiting for the first segment" meanwhile.
             downloading_model = self.model_to_download(params.model_size)
             if downloading_model:
+                self.live_phase = self.LIVE_PHASE_DOWNLOADING
                 self.emit_status_callback(
                     progress_callback,
                     f"Downloading model '{downloading_model}' to {self.model_dir} (first use only; "

@@ -12,6 +12,29 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 28 September 2026 - Version 12.8
+
+- New defaults in all built-in presets: Offload Models to RAM When Idle is on, Start As Sub Process and Offload model when finished are off
+  - Jobs run inside the app and the models wait in RAM between jobs: from the second job on, a 5 minute file takes 7 seconds instead of about 20 seconds per job before (RTX 5090)
+  - Cancel Generation can only stop a running job when Start As Sub Process is enabled
+- Faster app start, and CMD now shows every startup step with its time instead of staying empty until the web address appears
+  - Normal start: 9.2 → 5.6 seconds; first start after an install or update: 21.6 → 11.7 seconds (RTX 5090 test PC)
+  - The Background Music Remover, Insanely Fast Whisper (Transformers) and NLLB libraries are loaded only when they are used
+  - The installers now compile the Python libraries during install, so the first start no longer looks frozen: use the latest installer files and run Windows_Install_Update.bat to update
+- Batch processing keeps the models loaded until the whole batch is done: before, the Whisper model (and the Background Music Remover and Diarization models when enabled) was unloaded and reloaded for every file
+- Download Transcription
+  - The zip is made once, when the job finishes: before, a new and bigger zip was written into outputs\_download_bundles on every live update of a batch, and none were ever deleted (zips older than a day are now removed)
+  - The zip keeps the batch subfolders (partA/segment.srt and partB/segment.srt instead of segment.srt and segment_2.srt)
+- The first download of an Insanely Fast Whisper or NLLB model now shows its progress in CMD (before, up to 17.6 GB were downloaded with no output)
+- While a model downloads or loads, Live Transcription says so ("Still working... downloading the model") instead of "waiting for the first segment", and these lines no longer break the download bar in CMD
+- Presets
+  - Deleting a preset asks for confirmation, keeps your current settings and shows "Deleted preset" (before, every setting was reset to the defaults and the message was replaced by "No preset selected")
+  - Loading a saved preset of another Base Model keeps its settings (its model was reset to the default of that Base Model)
+  - Choosing a Base Model or a preset no longer starts several competing updates, which could leave a setting such as Condition On Previous Text different from the preset
+- Canary-Qwen no longer moves the Hugging Face cache of the other models into its own folder
+- The startup message names the real default Base Model (faster-whisper), the classic console no longer shows "�" instead of emoji, and --allowed_paths is no longer read with eval()
+- YouTube: ffmpeg no longer prints about 50 lines of build information into CMD for every video
+
 ### 27 September 2026 - Version 12.7
 
 - Fixed the installer stopping with `CERTIFICATE_VERIFY_FAILED ... self-signed certificate in certificate chain` while downloading the diarization models, on PCs with antivirus HTTPS scanning (for example Kaspersky) or a company proxy

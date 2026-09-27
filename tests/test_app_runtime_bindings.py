@@ -226,9 +226,10 @@ def test_file_transcription_wrapper_preserves_pipeline_order(monkeypatch):
 
     assert progress_index == 8
 
-    live_text, result_text, download_update = next(
-        app_instance.transcribe_file_with_download(*processed_inputs)
-    )
+    outputs = list(app_instance.transcribe_file_with_download(*processed_inputs))
+    # Live updates hide the previous download; it is prepared once, after the last update.
+    assert outputs[0][2] == gr.update(value=None, visible=False)
+    live_text, result_text, download_update = outputs[-1]
 
     assert live_text == "live text"
     assert result_text == "done"

@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import BinaryIO, Union, Tuple, List, Callable, Optional, Dict
 import torch
 from faster_whisper.audio import decode_audio
-from transformers import pipeline
-from transformers.utils import is_flash_attn_2_available
 import gradio as gr
 from huggingface_hub import hf_hub_download, snapshot_download
 import whisper
@@ -20,6 +18,7 @@ from modules.utils.paths import (INSANELY_FAST_WHISPER_MODELS_DIR, DIARIZATION_M
                                  MODELS_DIR)
 from modules.whisper.data_classes import *
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
+from modules.utils.download_progress import DownloadProgressTqdm
 from modules.utils.logger import get_logger
 
 logger = get_logger()
@@ -136,6 +135,7 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
             # only shows "waiting for the first segment" meanwhile.
             downloading_model = self.model_to_download(params.model_size)
             if downloading_model:
+                self.live_phase = self.LIVE_PHASE_DOWNLOADING
                 self.emit_status_callback(
                     progress_callback,
                     f"Downloading model '{downloading_model}' to {self.model_dir} (first use only; "
@@ -667,6 +667,9 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
             resolved_model=model_path,
             compute_type=compute_type,
         )
+        # Imported here: transformers.pipeline pulls in torchvision and took about 2.5 seconds on every app
+        # start and every job, also for faster-whisper and Canary-Qwen, which never use it.
+        from transformers import pipeline
         self.model = pipeline(
             "automatic-speech-recognition",
             model=model_path,
@@ -746,6 +749,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
 
     @staticmethod
     def model_kwargs_for_torch_dtype(torch_dtype) -> Dict:
+        from transformers.utils import is_flash_attn_2_available
+
         supports_flash_dtype = torch_dtype in (torch.float16, torch.bfloat16)
         if supports_flash_dtype and is_flash_attn_2_available():
             return {"attn_implementation": "flash_attention_2"}
@@ -753,6 +758,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
 
     @staticmethod
     def pipeline_dtype_kwargs(torch_dtype) -> Dict:
+        from transformers import pipeline
+
         if "dtype" in inspect.signature(pipeline).parameters:
             return {"dtype": torch_dtype}
         return {"torch_dtype": torch_dtype}
@@ -810,7 +817,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         os.makedirs(download_root, exist_ok=True)
         for item in cls.REQUIRED_DOWNLOAD_FILES + cls.OPTIONAL_DOWNLOAD_FILES:
             try:
-                hf_hub_download(repo_id=repo_id, filename=item, local_dir=download_root)
+                hf_hub_download(repo_id=repo_id, filename=item, local_dir=download_root,
+                                tqdm_class=DownloadProgressTqdm)
             except Exception as exc:
                 if item in cls.OPTIONAL_DOWNLOAD_FILES and cls.is_hf_entry_not_found(exc):
                     logger.debug('Optional Hugging Face file "%s" is not present in %s.', item, repo_id)
@@ -833,7 +841,8 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         """
         repo_id, subfolder = cls.HOSTED_MODELS[model_size]
         staging = os.path.join(os.path.dirname(os.path.abspath(download_root)), f".download-{model_size}")
-        snapshot_download(repo_id=repo_id, allow_patterns=[f"{subfolder}/*"], local_dir=staging)
+        snapshot_download(repo_id=repo_id, allow_patterns=[f"{subfolder}/*"], local_dir=staging,
+                          tqdm_class=DownloadProgressTqdm)
         downloaded = os.path.join(staging, *subfolder.split("/"))
         if not cls.has_transformers_model_files(downloaded):
             raise RuntimeError(

@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from typing import BinaryIO, Callable, List, Optional, Tuple, Union
 
 import gradio as gr
@@ -164,28 +165,28 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     ):
         progress(0.02, desc="Initializing Canary-Qwen model..")
         self.emit_status_callback(progress_callback, "Initializing Canary-Qwen model..")
-        self.configure_hf_cache()
         dtype = self.torch_dtype_for_compute_type(compute_type)
-        model_target = self.resolve_model_target(model_size, progress=progress, progress_callback=progress_callback)
-        self.emit_status_callback(
-            progress_callback,
-            f"Loading Canary-Qwen model from {model_target}. This can take a while..",
-        )
-        salm_cls = self.import_salm()
-        logger.info("Loading Canary-Qwen model '%s' into %s with %s.", model_target, self.device, compute_type)
-        self.log_model_load_start(
-            implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
-            selected_model=model_size,
-            resolved_model=model_target,
-            compute_type=compute_type,
-        )
+        with self.hf_cache_scope():
+            model_target = self.resolve_model_target(model_size, progress=progress, progress_callback=progress_callback)
+            self.emit_status_callback(
+                progress_callback,
+                f"Loading Canary-Qwen model from {model_target}. This can take a while..",
+            )
+            salm_cls = self.import_salm()
+            logger.info("Loading Canary-Qwen model '%s' into %s with %s.", model_target, self.device, compute_type)
+            self.log_model_load_start(
+                implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
+                selected_model=model_size,
+                resolved_model=model_target,
+                compute_type=compute_type,
+            )
 
-        model = salm_cls.from_pretrained(
-            model_target,
-            cache_dir=self.get_hf_hub_cache_dir(),
-            torch_dtype=dtype,
-            token=os.environ.get("HF_TOKEN") or None,
-        )
+            model = salm_cls.from_pretrained(
+                model_target,
+                cache_dir=self.get_hf_hub_cache_dir(),
+                torch_dtype=dtype,
+                token=os.environ.get("HF_TOKEN") or None,
+            )
         model.eval()
         model.to(self.device)
         if dtype != torch.float32:
@@ -572,6 +573,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     ) -> str:
         if progress is not None:
             progress(0.02, desc=f"Downloading Canary-Qwen model to {target_dir}..")
+        self.live_phase = self.LIVE_PHASE_DOWNLOADING
         self.emit_status_callback(progress_callback, f"Downloading Canary-Qwen model to {target_dir}..")
 
         logger.info("Downloading Canary-Qwen model '%s' to '%s'.", model_size, target_dir)
@@ -669,6 +671,45 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 transformers_hub.TRANSFORMERS_CACHE = transformers_cache
         except Exception:
             pass
+
+    @contextmanager
+    def hf_cache_scope(self):
+        """Use the Canary folder as the Hugging Face cache while the model downloads and loads, then restore it.
+
+        configure_hf_cache() changes process-wide settings (NeMo fetches the Qwen3 config and tokenizer by
+        name). Left in place, every later download of the same worker process looked in and wrote to the
+        Canary folder, and Offload Models to RAM When Idle keeps one worker for all jobs.
+        """
+        env_names = ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE")
+        saved_env = {name: os.environ.get(name) for name in env_names}
+        try:
+            import huggingface_hub.constants as hf_constants
+        except Exception:
+            hf_constants = None
+        saved_constants = {
+            name: getattr(hf_constants, name)
+            for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE")
+            if hf_constants is not None and hasattr(hf_constants, name)
+        }
+        try:
+            import transformers.utils.hub as transformers_hub
+        except Exception:
+            transformers_hub = None
+        saved_transformers_cache = getattr(transformers_hub, "TRANSFORMERS_CACHE", None)
+
+        self.configure_hf_cache()
+        try:
+            yield
+        finally:
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            for name, value in saved_constants.items():
+                setattr(hf_constants, name, value)
+            if saved_transformers_cache is not None:
+                transformers_hub.TRANSFORMERS_CACHE = saved_transformers_cache
 
     def get_hf_hub_cache_dir(self) -> str:
         return os.path.join(self.model_dir, "hub")

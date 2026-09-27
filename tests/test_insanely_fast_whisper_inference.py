@@ -451,8 +451,10 @@ def test_insanely_fast_whisper_downloads_hosted_model_into_its_folder(tmp_path, 
 
     calls = []
 
-    def fake_snapshot_download(repo_id, allow_patterns, local_dir):
+    def fake_snapshot_download(repo_id, allow_patterns, local_dir, tqdm_class=None):
         calls.append((repo_id, allow_patterns))
+        # Hugging Face hides its own bars in the worker (stderr is a pipe), so the download passes one
+        assert tqdm_class is ifw_module.DownloadProgressTqdm
         write_complete_transformers_model(Path(local_dir) / "Whisper_Transformers" / "large-v1")
         return local_dir
 

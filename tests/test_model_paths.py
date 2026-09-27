@@ -81,8 +81,10 @@ def test_insanely_fast_whisper_never_loads_from_global_hf_caches(monkeypatch, tm
 
 
 def test_uvr_model_in_models_dir_is_not_downloaded_again(monkeypatch, tmp_path):
-    import modules.uvr.music_separator  # noqa: F401  (installs the local-first download)
+    from modules.uvr.music_separator import load_uvr_mdx
     import uvr.models as uvr_models
+
+    load_uvr_mdx()  # imports uvr on first use and installs the local-first download
 
     (tmp_path / "UVR-MDX-NET-Inst_HQ_4.onnx").write_bytes(b"onnx")
 

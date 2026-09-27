@@ -25,9 +25,11 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,
-      "start_as_subprocess": true,
+      "start_as_subprocess": false,
       "canary_generation_kwargs": null,
-      "canary_enable_thinking": false
+      "canary_enable_thinking": false,
+      "enable_offload": false,
+      "offload_to_ram": true
     }
   },
   "youtube_tab": {
@@ -49,9 +51,11 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,
-      "start_as_subprocess": true,
+      "start_as_subprocess": false,
       "canary_generation_kwargs": null,
-      "canary_enable_thinking": false
+      "canary_enable_thinking": false,
+      "enable_offload": false,
+      "offload_to_ram": true
     }
   },
   "mic_tab": {
@@ -73,9 +77,11 @@
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,
-      "start_as_subprocess": true,
+      "start_as_subprocess": false,
       "canary_generation_kwargs": null,
-      "canary_enable_thinking": false
+      "canary_enable_thinking": false,
+      "enable_offload": false,
+      "offload_to_ram": true
     }
   }
 }

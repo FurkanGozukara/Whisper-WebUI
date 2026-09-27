@@ -86,8 +86,9 @@ def get_ytaudio(ytdata: YouTube):
     audio_path = os.path.join(download_dir, "yt_tmp.wav")
 
     try:
+        # -hide_banner/-loglevel error: without them ffmpeg prints about 50 lines of build info into CMD
         subprocess.run([
-            'ffmpeg', '-y',
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
             '-i', source_path,
             audio_path
         ], check=True)

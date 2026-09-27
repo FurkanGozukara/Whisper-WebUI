@@ -1,10 +1,11 @@
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from huggingface_hub import snapshot_download
 import gradio as gr
 import os
 import re
 import torch
 
 from modules.utils.paths import TRANSLATION_OUTPUT_DIR, NLLB_MODELS_DIR
+from modules.utils.download_progress import DownloadProgressTqdm
 from modules.translation.translation_base import TranslationBase
 
 # Diarized subtitles start with "SPEAKER_00|"; NLLB drops or mangles it, so it is kept out of the model input.
@@ -74,6 +75,16 @@ class NLLBInference(TranslationBase):
             progress(0, desc="Initializing NLLB Model..")
             self.current_model_size = model_size
             local_files_only = self.is_model_exists(self.current_model_size)
+            if not local_files_only:
+                # from_pretrained downloads without a progress bar here (up to 17.6 GB for nllb-200-3.3B):
+                # fetch the files into the same cache first, with the download progress shown in CMD.
+                print(f"Downloading NLLB model '{model_size}' to '{self.model_dir}' (first use only)..")
+                progress(0, desc=f"Downloading NLLB model {model_size} (first use only, progress in CMD)..")
+                snapshot_download(repo_id=model_size, cache_dir=self.model_dir,
+                                  allow_patterns=["*.json", "*.bin", "*.model"],
+                                  tqdm_class=DownloadProgressTqdm)
+            # Imported here: the app start only needs the language lists of this module, not transformers
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
             self.model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=model_size,
                                                                cache_dir=self.model_dir,
                                                                local_files_only=local_files_only)
