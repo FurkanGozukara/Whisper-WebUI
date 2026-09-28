@@ -38,7 +38,7 @@
 - Jobs with several files end with a summary ("Done! 3 files, 10 segments in 11 seconds. Saved to ...") instead of the last file's message
 - Load From File Path shows "File not found: ..." for a wrong path instead of doing nothing
 - `start-webui.sh` and `Install.sh` are executable again on Linux (`./start-webui.sh` gave "Permission denied")
-- faster-whisper is pinned to 1.2.1, the version the app's decoding changes are built on
+- Installer requirements pin faster-whisper to 1.2.1, the version the app's decoding changes are built on: use the latest installer files and run Windows_Install_Update.bat to update
 
 ### 28 September 2026 - Version 12.10
 

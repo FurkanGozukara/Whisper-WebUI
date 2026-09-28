@@ -2,8 +2,9 @@
 
 These files are maintained copies of the installer bundle distributed alongside
 Whisper-WebUI. They include the Windows/Linux launcher and installer fixes from
-the verification work, plus the dependency files and offline model downloader
-that those installers require.
+the verification work, plus the offline model downloader. The dependency files
+(`requirements_whisper.txt`, `uv_build_constraints.txt`) come with the installer
+download and are not kept in this repository.
 
 For a release archive, copy this directory's files one level above the
 `Whisper-WebUI` checkout, preserving this layout:
@@ -15,8 +16,8 @@ release/
   Runpod_Install_Whisper.sh
   Massed_Compute_Install.sh
   DownloadModels.py
-  requirements_whisper.txt
-  uv_build_constraints.txt
+  requirements_whisper.txt      (from the installer download)
+  uv_build_constraints.txt      (from the installer download)
   Whisper-WebUI/
     Install.bat
     Install.sh

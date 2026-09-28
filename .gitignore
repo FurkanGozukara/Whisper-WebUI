@@ -24,3 +24,6 @@ presets/
 !modules/ui/defaults/presets/
 !modules/ui/defaults/presets/*.json
 *.log
+# dependency files come with the installer download, not the repository
+installer_bundle/requirements_whisper.txt
+installer_bundle/uv_build_constraints.txt

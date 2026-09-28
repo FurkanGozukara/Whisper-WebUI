@@ -17,7 +17,7 @@ portable APIs, not by running the Windows installer.
 | Linux launcher | `./start-webui.sh` failed with "Permission denied": `start-webui.sh` and `Install.sh` were stored in git without the executable bit (fixed) |
 | English accuracy, speed and VRAM | 2,700 short clips and 120 long recordings through the app, see [English benchmarks](english-benchmarks.md) |
 | Smaller GPUs | Canary-Qwen INT8 1,402-file sessions on simulated 6, 8, 10, 12 and 16 GB cards (PyTorch memory capped) without a failed file; out-of-memory recovery added |
-| faster-whisper version | pinned to 1.2.1 in `requirements_whisper.txt` (used by the Windows and the Linux installers): the app runs its own copy of faster-whisper's decoding loop for the end-of-file check and the INT8 engine |
+| faster-whisper version | pinned to 1.2.1 in the installer's `requirements_whisper.txt` (it comes with the installer, not this repository; used on Windows and Linux): the app runs its own copy of faster-whisper's decoding loop for the end-of-file check and the INT8 engine |
 
 ## Portability of the 12.11 changes
 

@@ -1,3 +1,0 @@
-# Some legacy setup.py builds in the dependency chain import pkg_resources.
-# Newer setuptools releases no longer provide it in uv's isolated build env.
-setuptools<81
