@@ -1,68 +1,43 @@
-# Compatibility verification
+# Compatibility verification (version 12.11)
 
-Verified on Linux x86-64 on 2026-09-28 with Python 3.12.14, Gradio 6.28.0,
-PyTorch 2.13.0+cu130 and installed Google Chrome 135.0.7049.52.
-**Windows was reviewed and tested through portable-path/DLL mocks; it was not
-run on native Windows. No fresh installer was executed during this audit.**
+Verified on Linux x86-64 (Ubuntu 22.04) on 28 September 2026 with Python 3.12.14, Gradio 6.28.0, PyTorch
+2.13.0+cu130, faster-whisper 1.2.1, CTranslate2 4.8.2, ONNX Runtime 1.30.0, Transformers 5.17.0, NVIDIA driver
+580.65.06 on RTX A6000 GPUs, Node.js 22 and installed Google Chrome 135.0.7049.52. **Native Windows was not
+available**: Windows behaviour is covered by the path, launcher and DLL tests below and by keeping the new code to
+portable APIs, not by running the Windows installer.
 
-## Measured checks
+## Checks in this release
 
 | Check | Result |
 | --- | --- |
-| CPU regression suite | 320 passed; 22 CUDA-dependent cases skipped. Includes presets/VRAM tiers, English context boundaries, reference auditing, audio, subtitles, translation filenames, runtime, VAD, UVR and path handling. |
-| Final digital-silence cleanup check | 14 targeted tests passed after adding cached-model offload checks; this run is separate from the 320-test sweep. |
-| Recorder JavaScript suite | 5 passed: every PCM sample retained, full/recent WAV contents, stalled preview uploads, retry and denied permissions. |
-| Chrome live microphone | Auto-off capture saved 12.92s / 206,720 samples at 16k; auto-on capture saved the full 32.936s, updated previews and generated final subtitles. |
-| Linux launcher from another directory | Real `start-webui.sh --help` succeeded from `/tmp`. An isolated installation path containing spaces preserved arguments and propagated child exit code 7. |
-| Model/cache placement | Seven cache roots resolved below the installation's `models/`. Fourteen model/cache directories were inspected; no model symlink escaped that directory. |
-| Standalone API | CPU transcription and VAD requests passed. BGM upload, task polling and ZIP download passed. Default SQLite database remained in `backend/records.db` when launched from `/tmp`. |
-| Optional local models | Cached Silero VAD, offline diarization, UVR HQ4 and NLLB distilled 600M loaded and ran on CPU. Same-language English translation preserves source cues verbatim. |
-| UVR rate/duration | Real 16k and 48k WAVs both produced exactly 11s at 44.1k; MP4 duration was retained within one output sample. Both stems were finite and the subsequent 16k ASR resample retained duration. |
-| No-speech VAD | Real nonzero background noise returned no words, wrote empty SRT/TXT files and completed cleanup without invoking the transcription decoder. |
-| Final Chrome translation/BGM checks | All six English subtitle formats remained downloadable and matched the source words. CUDA UVR HQ4 and Inst3 produced finite 44.1k stereo outputs of 11s with playback/download. |
+| Test suite (`pytest tests/`, one RTX A6000 visible) | 388 passed, 4 skipped: the opt-in real-file batching test (`WHISPERWEBUI_RUN_REAL_TESTS=1`), a test that needs two GPUs, and two DeepL tests without an API key |
+| Recorder JavaScript suite (`node tests/test_live_microphone.mjs`) | 5 passed |
+| Every UI feature in Google Chrome | see [Chrome verification](chrome-verification.md) |
+| Model downloads | large-v3 and large-v1 (original FP16 and ConvRot INT8) and Canary-Qwen (original NeMo and INT8) download into the installation's own `models` folder on first use |
+| Linux launcher | `./start-webui.sh` failed with "Permission denied": `start-webui.sh` and `Install.sh` were stored in git without the executable bit (fixed) |
+| English accuracy, speed and VRAM | 2,700 short clips and 120 long recordings through the app, see [English benchmarks](english-benchmarks.md) |
+| Smaller GPUs | Canary-Qwen INT8 1,402-file sessions on simulated 6, 8, 10, 12 and 16 GB cards (PyTorch memory capped) without a failed file; out-of-memory recovery added |
+| faster-whisper version | pinned to 1.2.1 in `requirements_whisper.txt` (used by the Windows and the Linux installers): the app runs its own copy of faster-whisper's decoding loop for the end-of-file check and the INT8 engine |
 
-Detailed logs, XML results, the exact CPU test selection and environment versions
-are retained in `output/verification/`. GPU/model quality and speed results are
-described in [English benchmarks](english-benchmarks.md).
+## Portability of the 12.11 changes
 
-## Distribution fixes covered
-
-- Linux and Windows launchers/installers anchor paths to their own directory,
-  handle missing environments and preserve failure status. Repository installers
-  reference the actual distribution requirements/build constraints and check
-  Python 3.12.
-- Model downloads and framework caches resolve inside the installation. Backend
-  database paths no longer depend on the caller's current directory. Task
-  timestamps use timezone-aware UTC for current SQLModel.
-- Bundled diarization checkpoints resolve after the installation is moved,
-  including saved paths using Windows separators. Output filenames handle Windows
-  reserved names and trailing dots/spaces.
-- TXT/SRT/VTT/LRC/TSV/JSON handling covers empty results and round trips; adjacent
-  VTT cues retain their text, and English-to-English translation preserves words,
-  punctuation and cue timing. NLLB and DeepL return every translated file when
-  stems match across formats; duplicate names in different directories and prior
-  plain exports receive distinct filenames instead of being overwritten.
-- Live recording uses a repository-shipped AudioWorklet and supported Gradio HTML
-  events/uploads. Complete audio remains in the browser independently of preview
-  requests, with local download and upload retry. Stock streaming previously lost
-  about two thirds of the captured audio in Chrome.
-- UVR receives actual 44.1k resampled PCM for its trained frequency bins, preserves
-  video stereo and labels output rates correctly. Empty VAD results do not fall
-  back to transcribing the rejected noise.
-- YouTube requests have bounded socket timeouts and clear metadata errors;
-  failures clean up temporary downloads. Missing channel IDs no longer generate
-  a misleading request to `/channel/None`. Output-less Cancel buttons discard
-  their internal boolean result while retaining session-specific cancellation.
+* Audio decoding is faster-whisper's PyAV decoder without its per-file `gc.collect()` (bit-identical samples);
+  PyAV ships wheels for Windows and Linux.
+* Voice detection (Canary chunk cuts, the Whisper end-of-file check) uses the Silero ONNX model bundled with
+  faster-whisper on ONNX Runtime's CPU provider, in a daemon thread that stops when a transcription ends, fails or
+  is cancelled. It is loaded once per process with at most 4 threads.
+* The Canary out-of-memory recovery only uses PyTorch APIs (`torch.cuda.empty_cache`, dropping CUDA graphs) and
+  recognizes both PyTorch's `OutOfMemoryError` and CUDA "out of memory" runtime errors.
+* The VRAM tiers read `torch.cuda.mem_get_info()` at startup, so the Windows desktop's own VRAM use counts as used
+  memory.
 
 ## Remaining verification limits
 
-Native Windows installation, NVIDIA driver loading, Chrome microphone capture and
-CUDA inference still require a Windows machine. Linux tests cover Windows path
-forms, reserved filenames and the `nvcuda.dll`/`WinDLL` ABI branch; these do not
-establish native Windows execution.
-
-YouTube rejected live requests with `BotDetection`; metadata/channel error paths
-were verified, but a successful live download cannot be claimed. No DeepL API
-credential was available. Diarization and BGM checks establish execution/output
-validity, not multi-speaker accuracy or separation quality. Tests here exercised
-English only.
+* Native Windows installation, NVIDIA driver loading, Chrome microphone capture and CUDA inference still need a
+  Windows machine. Linux tests cover Windows path forms, reserved file names and the `nvcuda.dll`/`WinDLL` branch.
+* Physical 6-16 GB GPUs were not available; they were simulated by limiting PyTorch's allocator to the card's size
+  minus 0.9 GB. Memory outside PyTorch's allocator (CUDA context, graph executables) measured about 0.4 GB
+  here, on a server without a desktop.
+* YouTube refused this server's address ("Sign in to confirm you're not a bot"), so a successful YouTube download
+  could not be tested; no DeepL API key was available.
+* Only English was tested.

@@ -9,6 +9,31 @@ from modules.utils.logger import get_logger
 logger = get_logger()
 
 
+def decode_audio(input_file: Any, sampling_rate: int = 16000) -> np.ndarray:
+    """faster_whisper.audio.decode_audio (PyAV, mono, s16 at sampling_rate, as float32) without the full
+    garbage collection it runs after every file for a resampler leak that PyAV no longer has: in the app's
+    process that collection took about 0.26 s per file, more than decoding a 30 second clip."""
+    import io
+
+    import av
+    from faster_whisper.audio import _group_frames, _ignore_invalid_frames, _resample_frames
+
+    resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=sampling_rate)
+    raw_buffer = io.BytesIO()
+    dtype = None
+    with av.open(input_file, mode="r", metadata_errors="ignore") as container:
+        frames = _resample_frames(_group_frames(_ignore_invalid_frames(container.decode(audio=0)), 500000), resampler)
+        for frame in frames:
+            array = frame.to_ndarray()
+            dtype = array.dtype
+            raw_buffer.write(array)
+    del resampler
+    if dtype is None:
+        return np.zeros(0, dtype=np.float32)
+    audio = np.frombuffer(raw_buffer.getbuffer(), dtype=dtype)
+    return audio.astype(np.float32) / 32768.0
+
+
 def is_digital_silence(audio: Any) -> bool:
     """Recognize exactly zero samples without classifying quiet speech as silence.
 

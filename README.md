@@ -4,14 +4,11 @@
 
 > https://www.patreon.com/posts/145395299
 
-## English presets and verification — 28 September 2026
+## English accuracy and verification — 28 September 2026 (version 12.11)
 
-- Whisper large-v3 automatically disables previous-text context for explicitly selected English recordings longer than 30 seconds. Short clips keep the selected context setting; large-v1 keeps its existing policy. Both retain beam 5 and standard batch 1.
-- Canary-Qwen's built-in preset uses automatic chunk length (`0`): 10-second windows for recordings up to 30 seconds and 12-second windows for longer recordings. Positive values remain manual overrides.
-- Canary ConvRot INT8 batches adapt to the detected 6/8/10/12/16/24/32 GB VRAM tier and free memory at startup. Original Canary starts at batch 1; saved user presets retain their values.
-- Fixed incomplete live microphone recordings, silent/no-speech hallucinations, UVR input resampling, CUDA graph lifetime errors, and missing translation downloads when filenames collide.
-
-Measured accuracy, punctuation, speed, tradeoffs and reproduction: [Whisper English benchmarks](docs/english-benchmarks.md) and [Canary English benchmarks](docs/canary-english-benchmarks.md). See [Chrome feature verification](docs/chrome-verification.md) and [distribution compatibility](docs/compatibility-verification.md) for coverage and remaining limits. Native Windows and smaller physical GPUs were not available for execution; successful YouTube/DeepL service access remains unverified here.
+- Tested through the app on 14 public English test sets with human transcripts (2,700 short clips and 120 long recordings, 48 hours, many accents). With 12.11 the INT8 models reach the published accuracy of the original models: average WER on the Open ASR Leaderboard sets Canary-Qwen 5.62% (published 5.63%), Whisper large-v3 7.22% (7.44%), large-v1 7.87% (7.94%)
+- Presets: Whisper beam 5 with word timestamps; large-v3 turns previous-text context off for English recordings over 30 seconds, large-v1 keeps it. Canary-Qwen uses automatic chunks and a batch size chosen from the GPU's VRAM at startup (6 GB: 2, 8 GB: 4, 10-12 GB: 8, 16 GB and more: 16)
+- Results, method and reproduction: [English benchmarks](docs/english-benchmarks.md). Coverage and limits: [Chrome feature verification](docs/chrome-verification.md) and [distribution compatibility](docs/compatibility-verification.md). Native Windows, physical 6-16 GB GPUs, YouTube downloads and DeepL could not be tested here
 
 ## Quick Info
 - This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.12 venv, best quality presets fully ready):
@@ -20,6 +17,28 @@ Measured accuracy, punctuation, speed, tradeoffs and reproduction: [Whisper Engl
 -   Full tutorial video (2 May 2026) : [https://www.youtube.com/watch?v=4lAk6sf1qF8](https://www.youtube.com/watch?v=4lAk6sf1qF8)
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
+
+### 28 September 2026 - Version 12.11
+
+- Much lower word error rate (WER), measured through the app on 14 public English test sets (LibriSpeech, Common Voice, VoxPopuli, TED-LIUM, Earnings-21/22, AMI, GigaSpeech, SPGISpeech, Rev16 podcasts, Colbert monologues), on a half of the files that was not used for tuning:
+  - Whisper large-v3 INT8: short clips 8.37% → 7.45% (LibriSpeech test-other 9.02% → 3.40%), long recordings 8.88% → 8.84%
+  - Whisper large-v1 INT8: short clips 8.03% → 7.99%, long recordings 9.55% → 9.46%
+  - Canary-Qwen INT8: short clips 5.89% → 5.62%, long recordings 10.47% → 8.59%, with much better punctuation on long recordings (F1 44 → 55)
+  - The INT8 models now reach the published WER of the original models on the same test sets (see the section above)
+- Whisper no longer invents words at the end of files ("you", "Thank you.", "For more information visit www.fema.org"): the last fraction of a second after the final window is only transcribed when it contains speech
+- Canary-Qwen
+  - Recordings up to 40 seconds are transcribed in one piece, as the model was trained (they were cut into 10-second pieces, which lost words and punctuation at every cut); longer recordings are cut at the clearest pause into 15-30 second pieces
+  - A piece that starts repeating itself ("Kwame Kwame Kwame ...") is transcribed again in two halves
+  - Running out of VRAM (for example when another program takes GPU memory) no longer makes every following file fail: Canary-Qwen frees its cached GPU graphs and continues, with a smaller batch size if needed
+  - 6 GB GPUs now use batch 2 (about 1.3x faster than batch 1); every VRAM tier completed a 1,400-file session on simulated 6-16 GB GPUs without a failed file
+  - Long recordings take about 20% longer than in 12.10 because the pieces are longer (in exchange for 18% fewer word errors); short files are faster
+- Whisper large-v1 keeps the previous-text context on recordings over 30 minutes (turning it off there cost accuracy)
+- Use Batched Inference loses fewer words: speech that Whisper left out at the end of a window is transcribed again (long recordings 9.5% → 8.9% word errors; the default standard mode has 7.9%)
+- Short files are about 1.7x faster with every model: each file started with a 0.2-0.3 second Python garbage collection in faster-whisper's audio loading
+- Jobs with several files end with a summary ("Done! 3 files, 10 segments in 11 seconds. Saved to ...") instead of the last file's message
+- Load From File Path shows "File not found: ..." for a wrong path instead of doing nothing
+- `start-webui.sh` and `Install.sh` are executable again on Linux (`./start-webui.sh` gave "Permission denied")
+- faster-whisper is pinned to 1.2.1, the version the app's decoding changes are built on
 
 ### 28 September 2026 - Version 12.10
 

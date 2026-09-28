@@ -66,10 +66,19 @@ def test_short_audio_with_custom_chunks_keeps_context():
     assert resolve(20 * 16000, chunk=10)[1].condition_on_previous_text is True
 
 
-def test_legacy_long_form_guard_is_preserved_for_v1():
+def test_english_large_v1_keeps_context_on_hour_long_audio():
     # A tiny sample rate keeps this boundary test lightweight.
     inference = object.__new__(FasterWhisperInference)
-    params = WhisperParams(model_size="large-v1", lang="en", condition_on_previous_text=True, chunk_length=30)
+    for model in ("large-v1", "large-v1-int8-convrot"):
+        params = WhisperParams(model_size=model, lang="en", condition_on_previous_text=True, chunk_length=30)
+        _, resolved = inference.resolve_standard_audio_and_params(np.zeros(7200, dtype=np.float32), params, sampling_rate=1, log_console=False)
+        assert resolved.condition_on_previous_text is True
+
+
+@pytest.mark.parametrize("model,lang", [("large-v2", "en"), ("large-v1", "de")])
+def test_legacy_long_form_guard_is_preserved_for_other_models_and_languages(model, lang):
+    inference = object.__new__(FasterWhisperInference)
+    params = WhisperParams(model_size=model, lang=lang, condition_on_previous_text=True, chunk_length=30)
     _, before = inference.resolve_standard_audio_and_params(np.zeros(1770, dtype=np.float32), params, sampling_rate=1, log_console=False)
     _, after = inference.resolve_standard_audio_and_params(np.zeros(1771, dtype=np.float32), params, sampling_rate=1, log_console=False)
     assert before.condition_on_previous_text is True

@@ -7,13 +7,13 @@ import inspect
 from pathlib import Path
 from typing import BinaryIO, Union, Tuple, List, Callable, Optional, Dict
 import torch
-from faster_whisper.audio import decode_audio
 import gradio as gr
 from huggingface_hub import hf_hub_download, snapshot_download
 import whisper
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 from argparse import Namespace
 
+from modules.utils.audio_manager import decode_audio
 from modules.utils.paths import (INSANELY_FAST_WHISPER_MODELS_DIR, DIARIZATION_MODELS_DIR, UVR_MODELS_DIR, OUTPUT_DIR,
                                  MODELS_DIR)
 from modules.whisper.data_classes import *

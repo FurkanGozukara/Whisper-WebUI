@@ -1,7 +1,14 @@
 """Conservative preset batches from measured Canary ConvRot memory use.
 
-The tiers are capacity estimates, not a claim of testing every GPU model. Other
-engines retain batch one: increasing Whisper encoder batches can change words.
+Peak process memory (CUDA context included) of the INT8 model with automatic chunking (up to 40 s in one
+piece, 15-30 s pieces for long recordings), over a mix of short and hour-long English recordings on an RTX
+A6000: batch 1/2/4/8/16 = 4.9/5.3/6.0/8.2/11.5 GiB, at 44/64/90/101/110x real time on long recordings (batch
+24 was no faster). Its cached CUDA graphs grow with the number of different recordings; each tier's batch ran a
+1,402-file English session (14.8 hours) without a failed file with PyTorch capped to the card's size minus 0.9
+GiB (6 GB: batch 2 at 48x real time, batch 1 at 36x; the engine frees its graphs and retries when memory runs
+out). The free-memory checks are compared with the memory free at startup, so the desktop and other
+applications count. These are capacity estimates, not a claim of testing every GPU model. Other engines retain
+batch one: batched Whisper decoding lost words in English testing.
 """
 
 from dataclasses import dataclass
@@ -9,10 +16,10 @@ import math
 
 
 VRAM_TIERS_GIB = (6, 8, 10, 12, 16, 24, 32)
-CANARY_TIER_BATCHES = {6: 1, 8: 2, 10: 4, 12: 8, 16: 8, 24: 16, 32: 16}
-# Full-process NVML peaks on mixed-length English, plus working headroom.
+CANARY_TIER_BATCHES = {6: 2, 8: 4, 10: 8, 12: 8, 16: 16, 24: 16, 32: 16}
+# Full-process NVML peaks on mixed-length English, plus working headroom (batch 2: the simulated 6 GB card).
 # Free memory can be much lower than capacity when another application is open.
-CANARY_REQUIRED_FREE_GIB = {1: 5.5, 2: 7.0, 4: 8.5, 8: 10.5, 16: 16.0}
+CANARY_REQUIRED_FREE_GIB = {2: 5.0, 4: 6.6, 8: 8.9, 16: 12.3}
 
 
 @dataclass(frozen=True)

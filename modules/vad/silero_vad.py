@@ -3,14 +3,136 @@
 from faster_whisper.vad import VadOptions, get_vad_model
 import numpy as np
 from typing import BinaryIO, Union, List, Optional, Tuple
+import os
+import threading
 import warnings
 import bisect
 import faster_whisper
+import faster_whisper.vad
 from faster_whisper.transcribe import SpeechTimestampsMap
 import gradio as gr
 
 from modules.whisper.data_classes import *
+from modules.utils.audio_manager import decode_audio
 from modules.utils.torch_compat import torch_load_safe_globals
+
+
+_SILERO_MODEL = None
+_SILERO_LOCK = threading.Lock()
+
+
+def load_silero_vad_model():
+    """faster-whisper's Silero VAD model, loaded once per process with up to 4 CPU threads.
+
+    faster-whisper builds a new single-threaded ONNX session on every call; with 4 threads an hour of audio
+    takes about 8 s instead of 16 s, with identical speech probabilities.
+    """
+    global _SILERO_MODEL
+    with _SILERO_LOCK:
+        if _SILERO_MODEL is None:
+            try:
+                import onnxruntime
+                from faster_whisper.utils import get_assets_path
+                from faster_whisper.vad import SileroVADModel
+
+                options = onnxruntime.SessionOptions()
+                options.inter_op_num_threads = 1
+                options.intra_op_num_threads = max(1, min(4, os.cpu_count() or 1))
+                options.enable_cpu_mem_arena = False
+                options.log_severity_level = 4
+                model = SileroVADModel.__new__(SileroVADModel)
+                model.session = onnxruntime.InferenceSession(
+                    os.path.join(get_assets_path(), "silero_vad_v6.onnx"),
+                    providers=["CPUExecutionProvider"],
+                    sess_options=options,
+                )
+                _SILERO_MODEL = model
+            except Exception:
+                with torch_load_safe_globals():
+                    _SILERO_MODEL = get_vad_model()
+        return _SILERO_MODEL
+
+
+# faster-whisper's own voice detection (batched inference, vad_filter) looks the loader up when it runs
+faster_whisper.vad.get_vad_model = load_silero_vad_model
+
+
+class SpeechProbabilityStream:
+    """Silero speech probability of every 512-sample frame of a recording, computed in a background thread.
+
+    The probabilities are exactly those of faster-whisper's model call on the whole recording (same frames, and
+    the detector's state carried from block to block; restarting it changed probabilities for minutes), but
+    ``wait`` returns as soon as the requested frames are known, so the first part of a recording can be
+    transcribed while the rest is analysed (an hour takes several seconds of CPU time).
+    """
+
+    FRAME_SAMPLES = 512
+    CONTEXT_SAMPLES = 64
+    BLOCK_FRAMES = 1000
+
+    def __init__(self, model, audio: np.ndarray):
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        self.frame_count = -(-audio.shape[0] // self.FRAME_SAMPLES)
+        self.probs = np.zeros(self.frame_count, dtype=np.float32)
+        self.ready = 0
+        self.error = None
+        self._stopped = False
+        self._condition = threading.Condition()
+        self._thread = threading.Thread(target=self._run, args=(model, audio), name="speech-probabilities",
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self, model, audio: np.ndarray):
+        try:
+            frame, context = self.FRAME_SAMPLES, self.CONTEXT_SAMPLES
+            frames = np.zeros((self.frame_count, frame), dtype=np.float32)
+            frames.reshape(-1)[:audio.shape[0]] = audio
+            session = getattr(model, "session", None)
+            if session is None:  # another detector implementation: one call for the whole recording
+                self._publish(0, np.asarray(model(frames.reshape(-1)), dtype=np.float32).reshape(-1))
+                return
+            h = np.zeros((1, 1, 128), dtype=np.float32)
+            c = np.zeros((1, 1, 128), dtype=np.float32)
+            for start in range(0, self.frame_count, self.BLOCK_FRAMES):
+                if self._stopped:
+                    return
+                end = min(start + self.BLOCK_FRAMES, self.frame_count)
+                # each frame with the last samples of the frame before it, as faster-whisper's SileroVADModel
+                block = np.empty((end - start, context + frame), dtype=np.float32)
+                block[:, context:] = frames[start:end]
+                block[1:, :context] = frames[start:end - 1, -context:]
+                block[0, :context] = frames[start - 1, -context:] if start else 0.0
+                if end == self.frame_count:
+                    block[-1, -context:] = 0.0  # faster-whisper zeroes the end of the last frame
+                out, h, c = session.run(None, {"input": block, "h": h, "c": c})
+                self._publish(start, np.asarray(out, dtype=np.float32).reshape(-1))
+        except Exception as exc:
+            with self._condition:
+                self.error = exc
+                self._condition.notify_all()
+
+    def _publish(self, start: int, probs: np.ndarray):
+        with self._condition:
+            self.probs[start:start + probs.shape[0]] = probs
+            self.ready = start + probs.shape[0]
+            self._condition.notify_all()
+
+    def wait(self, frame_index: Optional[int] = None) -> np.ndarray:
+        """All probabilities, once the frames before frame_index (every frame by default) are known."""
+        target = self.frame_count if frame_index is None else min(int(frame_index), self.frame_count)
+        with self._condition:
+            while self.ready < target and self.error is None and not self._stopped:
+                self._condition.wait()
+            if self.error is not None:
+                raise self.error
+            if self.ready < target:
+                raise RuntimeError("speech detection was stopped")
+        return self.probs
+
+    def close(self):
+        with self._condition:
+            self._stopped = True
+            self._condition.notify_all()
 
 
 class SileroVAD:
@@ -47,7 +169,7 @@ class SileroVAD:
         sampling_rate = self.sampling_rate
 
         if not isinstance(audio, np.ndarray):
-            audio = faster_whisper.decode_audio(audio, sampling_rate=sampling_rate)
+            audio = decode_audio(audio, sampling_rate=sampling_rate)
         audio = self.normalize_audio(audio)
 
         duration = audio.shape[0] / sampling_rate
@@ -216,8 +338,7 @@ class SileroVAD:
     def update_model(self):
         # `get_vad_model()` may use torch.load internally depending on faster-whisper version.
         # Wrap it to stay compatible with torch>=2.6 weights-only loading behavior.
-        with torch_load_safe_globals():
-            self.model = get_vad_model()
+        self.model = load_silero_vad_model()
 
     @staticmethod
     def collect_chunks(audio: np.ndarray, chunks: List[dict]) -> np.ndarray:

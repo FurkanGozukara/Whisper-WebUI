@@ -187,6 +187,15 @@ class CanaryConvRot:
             torch.cuda.empty_cache()
         return self
 
+    def release_cuda_graphs(self):
+        """Drop the cached CUDA graphs and KV caches; generate() captures the ones it needs again.
+
+        Every graph keeps its own activation memory, which no other allocation can use while the graph exists.
+        """
+        with self._lock:
+            self._sessions.clear()
+            self.encoder.release_graphs()
+
     # ------------------------------------------------------------------------------------------
     # prompts and inputs
     # ------------------------------------------------------------------------------------------

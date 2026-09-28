@@ -87,7 +87,7 @@ logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_NAME = "Whisper TTS Premium App by SECourses"
-APP_VERSION = "12.9"
+APP_VERSION = "12.11"
 APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
 APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
 TIMESTAMP_INFO = (
@@ -2188,18 +2188,18 @@ class App:
                             queue=False,
                             show_progress="hidden",
                         )
+                        # Queued: an unqueued event that raises gr.Error ends in HTTP 500 and the page showed
+                        # nothing for a mistyped path; queued events show the reason in an error box.
                         btn_load_file_path.click(
                             fn=self.load_media_from_path,
                             inputs=[tb_load_file_path],
                             outputs=[input_file, tb_load_file_path, upload_media_summary, upload_media_preview],
-                            queue=False,
                             show_progress="hidden",
                         )
                         tb_load_file_path.submit(
                             fn=self.load_media_from_path,
                             inputs=[tb_load_file_path],
                             outputs=[input_file, tb_load_file_path, upload_media_summary, upload_media_preview],
-                            queue=False,
                             show_progress="hidden",
                         )
                         file_run_event = file_transcription_ui["run_button"].click(

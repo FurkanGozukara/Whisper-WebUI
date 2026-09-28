@@ -318,6 +318,9 @@ class EncoderRuntime:
             for n in ("ff1_l1", "ff1_l2", "qkv", "att_out", "pw1", "pw2", "ff2_l1", "ff2_l2"):
                 yield getattr(L, n)
 
+    def release_graphs(self):
+        self._graphs.clear()
+
     def set_mode(self, w8a8: bool, group_scales: bool):
         """Quantized linears: W8A8 (dynamic INT8 activations) or weight-only INT8."""
         self._graphs.clear()
@@ -487,22 +490,34 @@ class EncoderRuntime:
         more than the whole encoder, and the graph removes about a thousand kernel launches per chunk.
         """
         b, n = audios.shape
-        nb = max(1, (n + self.BUCKET_SAMPLES - 1) // self.BUCKET_SAMPLES) * self.BUCKET_SAMPLES
+        # 1 s buckets for short inputs (live microphone previews grow second by second); 5 s above 15 s, where
+        # every new length of a batch of recordings captured another graph and reserved about 200 MB more
+        bucket = self.BUCKET_SAMPLES if n <= self.FINE_BUCKET_LIMIT_SAMPLES else self.COARSE_BUCKET_SAMPLES
+        nb = max(1, (n + bucket - 1) // bucket) * bucket
         if not use_graph or self.device.type != "cuda":
             padded = torch.zeros((b, nb), device=self.device, dtype=torch.float32)
             padded[:, :n] = audios.to(self.device, torch.float32)
             with torch.backends.cudnn.flags(enabled=True, benchmark=False):
                 return self._audio_forward(padded, lengths.to(self.device), always_mask=True)
-        key = (b, nb)
+        # Rows are rounded up to a power of two (silent rows): the last, partial batch of every recording had
+        # its own row count, and each count captured another graph holding its own activation memory.
+        rows = 1 << max(0, b - 1).bit_length()
+        if rows != b:
+            audios = torch.cat([audios, audios.new_zeros((rows - b, n))], dim=0)
+            lengths = torch.cat([lengths, lengths.new_full((rows - b,), n)], dim=0)
+        key = (rows, nb)
         g = self._graphs.pop(key, None)
         if g is None:
             while len(self._graphs) >= self.MAX_GRAPHS:
                 self._graphs.pop(next(iter(self._graphs)))
-            g = _EncoderGraph(self, b, nb)
+            g = _EncoderGraph(self, rows, nb)
         self._graphs[key] = g  # most recently used last
-        return g(audios, lengths)
+        out, out_lens = g(audios, lengths)
+        return out[:b], out_lens[:b]
 
     BUCKET_SAMPLES = 16000
+    FINE_BUCKET_LIMIT_SAMPLES = 15 * 16000
+    COARSE_BUCKET_SAMPLES = 5 * 16000
     MAX_GRAPHS = 16  # live microphone previews grow a buffer up to 15 s, one bucket per second
 
 

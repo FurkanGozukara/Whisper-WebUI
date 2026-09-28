@@ -33,7 +33,9 @@ hf_transfer
 
 matplotlib
 git+https://github.com/SECourses/jhj0517-whisper.git
-faster-whisper
+# The app runs its own copy of faster-whisper's decoding loop (end-of-file guard, ConvRot INT8 engine), which
+# depends on faster-whisper internals: keep the tested release.
+faster-whisper==1.2.1
 transformers==5.17.0
 gradio-i18n
 pytubefix

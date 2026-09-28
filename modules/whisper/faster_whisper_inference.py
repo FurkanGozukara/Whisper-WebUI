@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from typing import BinaryIO, Union, Tuple, List, Callable, Optional, Dict
 import faster_whisper
-from faster_whisper.audio import decode_audio, pad_or_trim
+from faster_whisper.audio import pad_or_trim
 from faster_whisper.transcribe import Segment as FasterWhisperSegment, Word as FasterWhisperWord
 from faster_whisper.utils import format_timestamp, get_end
 from faster_whisper.vad import VadOptions
@@ -36,6 +36,7 @@ from modules.whisper.convrot.registry import (CONVROT_FALLBACK_MODELS, HOSTED_CO
                                              is_convrot_model_dir)
 from modules.whisper.data_classes import *
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
+from modules.utils.audio_manager import decode_audio
 from modules.utils.logger import get_logger
 
 logger = get_logger()
@@ -158,6 +159,15 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     TRANSCRIPTION_PROGRESS_START = 0.3
     TRANSCRIPTION_PROGRESS_END = 0.98
     LONG_FORM_CONDITIONING_WINDOW_THRESHOLD = 60
+    # The last window already showed the model the end of the audio. When it ends its text before the end,
+    # Whisper went back and decoded the few remaining tenths of a second of silence on their own, which
+    # invented a word ("you", "the", "yes") or repeated the last sentence at the end of almost every file.
+    # A tail in which the voice detector hears speech is still decoded: the window can also stop before the
+    # last words ("... for opinion's sake." ended at "for"). The first half second of a tail is not counted:
+    # it holds the end of the last word, and the detector needs a moment to notice speech has stopped.
+    END_OF_AUDIO_TAIL_GUARD_SECONDS = 2.0
+    END_OF_AUDIO_TAIL_IGNORED_SECONDS = 0.5
+    END_OF_AUDIO_TAIL_SPEECH_SECONDS = 0.3
     ENGLISH_LARGE_V3_CONTEXT_LIMIT_SECONDS = 30.0
     WHISPER_TOKEN_LIMIT_FALLBACK = 448
     PROMPT_TOKEN_RESERVE = 16
@@ -373,12 +383,12 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         sampling_rate: Optional[int] = None,
         log_console: bool = True,
     ) -> Tuple[Union[str, BinaryIO, np.ndarray], WhisperParams]:
-        if not params.condition_on_previous_text:
-            return audio, params
-
         if sampling_rate is None:
             sampling_rate = self.model.feature_extractor.sampling_rate
+        # decoded here in every case: faster-whisper's own decoder spends about 0.26 s per file in gc.collect()
         audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        if not params.condition_on_previous_text:
+            return audio_array, params
         duration_seconds = float(audio_array.shape[-1]) / float(sampling_rate) if sampling_rate > 0 else 0.0
         language = str(params.lang or "").strip().casefold()
         if (
@@ -393,6 +403,11 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                     duration_seconds,
                 )
             return audio_array, params.model_copy(update={"condition_on_previous_text": False})
+
+        # English large-v1 keeps its context however long the recording is: turning it off after 30 minutes
+        # raised the word error rate of 30-75 minute calls and podcasts from 9.0% to 10.1% and lost punctuation.
+        if language in {"en", "english"} and self.is_large_v1_selection(params.model_size):
+            return audio_array, params
 
         estimated_windows = self.estimate_chunk_windows(
             audio=audio_array,
@@ -411,6 +426,17 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 estimated_windows,
             )
         return audio_array, params.model_copy(update={"condition_on_previous_text": False})
+
+    @staticmethod
+    def is_large_v1_selection(model_size: str) -> bool:
+        """Recognize large-v1 aliases and model folders (original or INT8 ConvRot)."""
+        selected = str(model_size or "").strip().replace("\\", "/").rstrip("/").casefold()
+        parts = selected.split("/")
+        names = {
+            "large-v1", "large-v1-int8-convrot", "faster-whisper-large-v1",
+            "systran--faster-whisper-large-v1", "models--systran--faster-whisper-large-v1",
+        }
+        return bool(parts and parts[-1] in names) or "models--systran--faster-whisper-large-v1" in parts
 
     @classmethod
     def is_large_v3_selection(cls, model_size: str) -> bool:
@@ -488,9 +514,9 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
     @staticmethod
     @contextmanager
-    def standard_encoder_batching_context(model, batch_size: int):
+    def standard_encoder_batching_context(model, batch_size: int, audio: Optional[np.ndarray] = None):
         batch_size = max(1, int(batch_size))
-        if batch_size <= 1:
+        if batch_size <= 1 and not FasterWhisperInference.END_OF_AUDIO_TAIL_GUARD_SECONDS:
             yield
             return
 
@@ -515,6 +541,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 log_progress=log_progress,
                 batch_size=batch_size,
                 encoder_output=encoder_output,
+                audio=audio,
             )
 
         model.generate_segments = MethodType(wrapped_generate_segments, model)
@@ -532,6 +559,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         log_progress: bool,
         batch_size: int,
         encoder_output: Optional[ctranslate2.StorageView] = None,
+        audio: Optional[np.ndarray] = None,
     ):
         content_frames = features.shape[-1] - 1
         content_duration = float(content_frames * model.feature_extractor.time_per_frame)
@@ -811,12 +839,62 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
                     prompt_reset_since = len(all_tokens)
 
+                seek = FasterWhisperInference.guard_end_of_audio_tail(
+                    seek=seek,
+                    window_end=previous_seek + segment_size,
+                    seek_clip_end=seek_clip_end,
+                    time_per_frame=model.feature_extractor.time_per_frame,
+                    audio=audio,
+                )
+
                 pbar.update(
                     (min(content_frames, seek) - previous_seek)
                     * model.feature_extractor.time_per_frame,
                 )
         finally:
             pbar.close()
+
+    @classmethod
+    def guard_end_of_audio_tail(cls, seek: int, window_end: int, seek_clip_end: int, time_per_frame: float,
+                                audio: Optional[np.ndarray] = None) -> int:
+        """End the clip instead of decoding a short tail that the window just decoded already contained, unless
+        the tail of ``audio`` (the 16 kHz samples the features were computed from) holds speech."""
+        tail_guard = cls.END_OF_AUDIO_TAIL_GUARD_SECONDS
+        if (
+            tail_guard
+            and tail_guard > 0
+            and window_end >= seek_clip_end
+            and seek < seek_clip_end
+            and (seek_clip_end - seek) * time_per_frame <= tail_guard
+        ):
+            if audio is not None and cls.tail_has_speech(audio, seek * time_per_frame,
+                                                         seek_clip_end * time_per_frame):
+                return seek
+            return seek_clip_end
+        return seek
+
+    @classmethod
+    def tail_has_speech(cls, audio: np.ndarray, start_seconds: float, end_seconds: float,
+                        sampling_rate: int = 16000) -> bool:
+        """Whether the voice detector hears END_OF_AUDIO_TAIL_SPEECH_SECONDS of speech in the tail between the
+        two times, after its first END_OF_AUDIO_TAIL_IGNORED_SECONDS."""
+        try:
+            from modules.vad.silero_vad import SpeechProbabilityStream, load_silero_vad_model
+
+            start = int(start_seconds * sampling_rate)
+            end = min(int(audio.shape[-1]), int(end_seconds * sampling_rate))
+            counted = start + int(cls.END_OF_AUDIO_TAIL_IGNORED_SECONDS * sampling_rate)
+            if end - counted < cls.END_OF_AUDIO_TAIL_SPEECH_SECONDS * sampling_rate:
+                return False
+            # a couple of seconds before the tail let the detector settle on the recording's noise level
+            first = max(0, start - 2 * sampling_rate)
+            probs = SpeechProbabilityStream(load_silero_vad_model(), audio[first:end]).wait()
+            frame = SpeechProbabilityStream.FRAME_SAMPLES
+            speech_frames = int(np.count_nonzero(probs[(counted - first) // frame:] >= 0.5))
+            return speech_frames * frame / float(sampling_rate) >= cls.END_OF_AUDIO_TAIL_SPEECH_SECONDS
+        except Exception as exc:
+            logger.debug("Voice detection of the audio's last %.1fs failed: %s", end_seconds - start_seconds, exc)
+            return False
 
     def _transcribe_with_batching(
         self,
@@ -832,19 +910,21 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         sampling_rate = self.model.feature_extractor.sampling_rate
         audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
         progress(self.AUDIO_PREPARED_PROGRESS, desc="Audio loaded. Preparing chunks..")
-        clip_timestamps = self.build_clip_timestamps(
+        clip_timestamps, speech = self.build_vad_clip_timestamps(
             audio=audio_array,
             chunk_length=params.chunk_length,
             sampling_rate=sampling_rate,
         )
+        if not clip_timestamps:
+            logger.info("The voice detector found no speech; nothing to transcribe.")
+            return iter([]), Namespace(duration=audio_array.shape[-1] / float(sampling_rate))
         progress(self.CHUNKS_PREPARED_PROGRESS, desc=f"Prepared {len(clip_timestamps) or 1} chunks. Starting transcription..")
 
         batch_pipeline = batch_pipeline_cls(model=self.model)
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
         # The batched pipeline puts the initial prompt in front of every batch by itself, so Repeat Initial
         # Prompt Every Window needs no patch here (the patch was removed before the lazy segments were decoded).
-        return batch_pipeline.transcribe(
-            audio=audio_array,
+        transcribe_kwargs = dict(
             language=params.lang,
             task="translate" if params.is_translate else "transcribe",
             beam_size=params.beam_size,
@@ -868,7 +948,6 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             append_punctuations=params.append_punctuations,
             max_new_tokens=params.max_new_tokens,
             chunk_length=params.chunk_length,
-            clip_timestamps=clip_timestamps,
             hallucination_silence_threshold=params.hallucination_silence_threshold,
             batch_size=max(1, int(params.batch_size)),
             hotwords=params.hotwords,
@@ -877,6 +956,47 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             condition_on_previous_text=params.condition_on_previous_text,
             prompt_reset_on_temperature=params.prompt_reset_on_temperature,
         )
+        segments, info = batch_pipeline.transcribe(audio=audio_array, clip_timestamps=clip_timestamps,
+                                                   **transcribe_kwargs)
+        segments = list(segments)
+        # Each window is decoded once: when Whisper ended its text early (at a pause), the rest of the window
+        # was lost, whole sentences in about one window in five of a long call. A remaining stretch that still
+        # holds speech is decoded again, like the sequential decoder does by continuing from the last timestamp.
+        windows = clip_timestamps
+        for _ in range(self.BATCHED_TAIL_PASSES):
+            tails = self.uncovered_speech_tails(windows, segments, speech, sampling_rate)
+            if not tails:
+                break
+            logger.info("Transcribing again %d window end(s) where speech was left out.", len(tails))
+            extra, _ = batch_pipeline.transcribe(audio=audio_array, clip_timestamps=tails, **transcribe_kwargs)
+            segments.extend(extra)
+            windows = tails
+        segments.sort(key=lambda segment: (segment.start, segment.end))
+        return iter(segments), info
+
+    BATCHED_TAIL_PASSES = 2
+    BATCHED_MIN_TAIL_SECONDS = 1.0
+    BATCHED_MIN_TAIL_SPEECH_SECONDS = 0.5
+
+    @classmethod
+    def uncovered_speech_tails(cls, windows: List[dict], segments, speech: List[dict], sampling_rate: int) -> List[dict]:
+        """The end of every window (seconds) after its last transcribed segment, when that end still contains
+        speech according to the voice detector."""
+        tails = []
+        for window in windows:
+            start, end = float(window["start"]), float(window["end"])
+            inside = [segment.end for segment in segments if start - 0.2 <= segment.start < end]
+            tail_start = max(inside) if inside else start
+            if end - tail_start < cls.BATCHED_MIN_TAIL_SECONDS:
+                continue
+            overlap = 0.0
+            for region in speech:
+                region_start = region["start"] / float(sampling_rate)
+                region_end = region["end"] / float(sampling_rate)
+                overlap += max(0.0, min(end, region_end) - max(tail_start, region_start))
+            if overlap >= cls.BATCHED_MIN_TAIL_SPEECH_SECONDS:
+                tails.append({"start": tail_start, "end": end})
+        return tails
 
     def _transcribe_with_standard_pipeline(
         self,
@@ -924,6 +1044,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         contexts.enter_context(cls.standard_encoder_batching_context(
             model,
             encoder_batch_size if use_encoder_batching else 1,
+            audio=audio if isinstance(audio, np.ndarray) else None,
         ))
         try:
             segments, info = model.transcribe(
@@ -1610,28 +1731,38 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         return np.ascontiguousarray(audio_array.squeeze(), dtype=np.float32)
 
     @staticmethod
-    def build_clip_timestamps(
+    def build_vad_clip_timestamps(
         audio: np.ndarray,
         chunk_length: Optional[int],
         sampling_rate: int,
-    ) -> List[dict]:
-        # In seconds: BatchedInferencePipeline multiplies clip_timestamps by the sampling rate, and sample
-        # offsets made every batched run fail with "non-negative timestamp expected".
-        total_samples = int(audio.shape[-1]) if audio.size else 0
-        if total_samples <= 0:
-            return []
+    ) -> Tuple[List[dict], List[dict]]:
+        """Batched windows (seconds) of at most chunk_length (30) seconds that end only where the voice detector
+        hears a pause, with the pauses inside a window kept (Whisper uses them for punctuation), and the detected
+        speech regions (samples). Fixed 30 s windows cut through words, which were then lost or garbled on both
+        sides of every cut. Both lists are empty when no speech is found."""
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-        if chunk_length is None or chunk_length <= 0:
-            return [{"start": 0.0, "end": total_samples / sampling_rate}]
-
-        chunk_samples = max(1, int(chunk_length * sampling_rate))
-        return [
-            {
-                "start": start / sampling_rate,
-                "end": min(start + chunk_samples, total_samples) / sampling_rate,
-            }
-            for start in range(0, total_samples, chunk_samples)
-        ]
+        max_seconds = float(chunk_length) if chunk_length and chunk_length > 0 else 30.0
+        max_seconds = min(max_seconds, 30.0)
+        speech = get_speech_timestamps(
+            audio,
+            VadOptions(max_speech_duration_s=max_seconds, min_silence_duration_ms=160),
+            sampling_rate=sampling_rate,
+        )
+        if not speech:
+            return [], []
+        limit = int(max_seconds * sampling_rate)
+        clips = []
+        start, end = speech[0]["start"], speech[0]["end"]
+        for segment in speech[1:]:
+            if segment["end"] - start <= limit:
+                end = segment["end"]
+            else:
+                clips.append((start, end))
+                start, end = segment["start"], segment["end"]
+        clips.append((start, end))
+        windows = [{"start": clip_start / sampling_rate, "end": clip_end / sampling_rate} for clip_start, clip_end in clips]
+        return windows, speech
 
     @staticmethod
     def temperature_schedule(temperature) -> Tuple[float, ...]:

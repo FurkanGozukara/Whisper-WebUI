@@ -3,7 +3,7 @@ import pytest
 from modules.ui.hardware import preset_batch_size, select_hardware_preset
 
 
-@pytest.mark.parametrize("capacity,batch", [(6, 1), (8, 2), (10, 4), (12, 8), (16, 8), (24, 16), (32, 16)])
+@pytest.mark.parametrize("capacity,batch", [(6, 2), (8, 4), (10, 8), (12, 8), (16, 16), (24, 16), (32, 16)])
 def test_tiers_keep_memory_headroom(capacity, batch):
     result = select_hardware_preset(capacity - 0.2, capacity - 0.3, True)
     assert result.tier_gib == capacity
@@ -13,8 +13,10 @@ def test_tiers_keep_memory_headroom(capacity, batch):
 def test_busy_gpu_uses_free_memory_instead_of_capacity():
     result = select_hardware_preset(48, 7.4, True)
     assert result.tier_gib == 32
-    assert result.canary_batch_size == 2
-    assert select_hardware_preset(48, 4, True).canary_batch_size == 1
+    assert result.canary_batch_size == 4
+    assert select_hardware_preset(48, 5.5, True).canary_batch_size == 2
+    assert select_hardware_preset(48, 4.8, True).canary_batch_size == 1
+    assert select_hardware_preset(6, 4.8, True).canary_batch_size == 1
     assert select_hardware_preset(4, 3.8, True).tier_gib is None
 
 

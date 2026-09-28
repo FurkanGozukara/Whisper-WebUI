@@ -35,23 +35,6 @@ def make_dummy_segment(segment_id, start, end, text):
     )
 
 
-def test_build_clip_timestamps_splits_fixed_windows():
-    audio = np.zeros(60 * 16000, dtype=np.float32)
-
-    clip_timestamps = FasterWhisperInference.build_clip_timestamps(
-        audio=audio,
-        chunk_length=15,
-        sampling_rate=16000,
-    )
-
-    assert clip_timestamps == [
-        {"start": 0.0, "end": 15.0},
-        {"start": 15.0, "end": 30.0},
-        {"start": 30.0, "end": 45.0},
-        {"start": 45.0, "end": 60.0},
-    ]
-
-
 def test_emit_progress_callback_supports_single_argument_callbacks():
     callback_values = []
 
@@ -407,6 +390,10 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
         "modules.whisper.faster_whisper_inference.faster_whisper.BatchedInferencePipeline",
         DummyBatchedInferencePipeline,
     )
+    windows = [{"start": 0.0, "end": 15.0}, {"start": 15.0, "end": 30.0}]
+    speech = [{"start": 0, "end": 30 * 16000}]
+    monkeypatch.setattr(FasterWhisperInference, "build_vad_clip_timestamps",
+                        staticmethod(lambda audio, chunk_length, sampling_rate: (windows, speech)))
 
     progress = DummyProgress()
     whisper_params = WhisperParams(
@@ -432,12 +419,8 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
     assert captured["batch_size"] == 4
     assert captured["without_timestamps"] is False
     assert captured["word_timestamps"] is True
-    assert captured["clip_timestamps"] == [
-        {"start": 0.0, "end": 15.0},
-        {"start": 15.0, "end": 30.0},
-        {"start": 30.0, "end": 45.0},
-        {"start": 45.0, "end": 60.0},
-    ]
+    # voice-detected windows, cut at pauses (fixed windows cut through words)
+    assert captured["clip_timestamps"] == windows
     assert callback_events == [
         (0.24666666666666667, "first chunk"),
         (0.49333333333333335, "second chunk"),
@@ -445,7 +428,7 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
     assert progress.events[0] == (0, "Loading audio..")
     assert progress.events[1] == (FasterWhisperInference.MODEL_READY_PROGRESS, "Loading audio..")
     assert progress.events[2] == (FasterWhisperInference.AUDIO_PREPARED_PROGRESS, "Audio loaded. Preparing chunks..")
-    assert progress.events[3] == (FasterWhisperInference.CHUNKS_PREPARED_PROGRESS, "Prepared 4 chunks. Starting transcription..")
+    assert progress.events[3] == (FasterWhisperInference.CHUNKS_PREPARED_PROGRESS, "Prepared 2 chunks. Starting transcription..")
     assert progress.events[4] == (FasterWhisperInference.TRANSCRIPTION_PROGRESS_START, "Transcribing..")
     assert progress.events[5][0] > FasterWhisperInference.TRANSCRIPTION_PROGRESS_START
 
@@ -493,6 +476,9 @@ def test_batched_pipeline_repeats_initial_prompt_every_window(monkeypatch):
         "modules.whisper.faster_whisper_inference.faster_whisper.BatchedInferencePipeline",
         DummyBatchedInferencePipeline,
     )
+    monkeypatch.setattr(FasterWhisperInference, "build_vad_clip_timestamps",
+                        staticmethod(lambda audio, chunk_length, sampling_rate: (
+                            [{"start": 0.0, "end": 15.0}], [{"start": 0, "end": 15 * 16000}])))
 
     progress = DummyProgress()
     whisper_params = WhisperParams(
@@ -716,3 +702,38 @@ def test_batch_output_folder_mirrors_input_subfolders(tmp_path):
     assert output_dir_for("sub2/part_a.mp3", output_dir=None) == str(input_root / "sub2")
     # Single-file jobs keep the app's output folder.
     assert inferencer._get_output_dir_for_file(None, str(tmp_path / "clip.mp4"), False) == str(tmp_path / "default")
+
+
+def test_batched_pipeline_transcribes_again_a_window_end_it_left_out(monkeypatch):
+    calls = []
+
+    class DummyBatchedInferencePipeline:
+        def __init__(self, model):
+            pass
+
+        def transcribe(self, **kwargs):
+            calls.append(kwargs["clip_timestamps"])
+            if len(calls) == 1:  # the first pass stops at 18 s of the 0-30 s window
+                return iter([make_dummy_segment(1, 0.0, 18.0, "first part")]), SimpleNamespace(duration=30.0)
+            return iter([make_dummy_segment(1, 18.0, 29.0, "recovered end")]), SimpleNamespace(duration=30.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=16000))
+    inferencer.current_model_size = "large-v3"
+    inferencer.current_compute_type = "float16"
+    inferencer.update_model = lambda *args, **kwargs: None
+    monkeypatch.setattr(
+        "modules.whisper.faster_whisper_inference.faster_whisper.BatchedInferencePipeline",
+        DummyBatchedInferencePipeline,
+    )
+    monkeypatch.setattr(FasterWhisperInference, "build_vad_clip_timestamps",
+                        staticmethod(lambda audio, chunk_length, sampling_rate: (
+                            [{"start": 0.0, "end": 30.0}], [{"start": 0, "end": 29 * 16000}])))
+
+    params = WhisperParams(model_size="large-v3", compute_type="float16", lang="en", chunk_length=30,
+                           use_batched_inference=True, batch_size=4).to_list()
+    segments, _ = FasterWhisperInference.transcribe(inferencer, np.zeros(30 * 16000, dtype=np.float32),
+                                                    DummyProgress(), None, *params)
+
+    assert calls[1] == [{"start": 18.0, "end": 30.0}]
+    assert [segment.text for segment in segments] == ["first part", "recovered end"]

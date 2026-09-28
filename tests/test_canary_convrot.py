@@ -184,3 +184,29 @@ def test_canary_graphs_survive_decoder_session_eviction():
                            max_new_tokens=8)
         outputs.append(ids[0].cpu())
     assert torch.equal(outputs[0], outputs[-1])
+
+
+@pytest.mark.skipif(not gpu_ok() or not is_canary_convrot_model_dir(MODEL_DIR),
+                    reason="needs an Ampere+ GPU and the converted model in the Canary model folder")
+def test_canary_released_graphs_free_memory_and_are_captured_again():
+    import gc
+    from modules.whisper.convrot.canary.engine import CanaryConvRot
+
+    eng = CanaryConvRot.from_folder(MODEL_DIR)
+    audio = torch.sin(torch.arange(16000 * 20, dtype=torch.float32) * .03).mul_(.1)
+    prompt = [{"role": "user", "content": f"Transcribe the following: {eng.audio_locator_tag}"}]
+
+    def run():
+        return eng.generate([prompt] * 4, audios=audio.repeat(4, 1), audio_lens=torch.full((4,), audio.numel()),
+                            max_new_tokens=16).cpu()
+
+    first = run()
+    gc.collect()
+    torch.cuda.empty_cache()
+    with_graphs = torch.cuda.memory_reserved()
+    eng.release_cuda_graphs()
+    gc.collect()
+    torch.cuda.empty_cache()
+    assert not eng._sessions and not eng.encoder._graphs
+    assert torch.cuda.memory_reserved() < with_graphs
+    assert torch.equal(first, run())

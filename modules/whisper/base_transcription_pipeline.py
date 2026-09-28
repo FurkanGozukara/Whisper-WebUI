@@ -517,6 +517,9 @@ class BaseTranscriptionPipeline(ABC):
 
             used_output_names = set()
             failures: List[str] = []
+            # totals for the final message of a multi-file job (the message showed only the last file before)
+            done_files, done_segments, done_seconds, skipped_files = 0, 0, 0.0, 0
+            output_dirs: List[str] = []
             with self.batch_offload_scope(len(files), params):
                 for file in files:
                     try:
@@ -536,6 +539,7 @@ class BaseTranscriptionPipeline(ABC):
                                 "",
                             )
                             result_str = f"Skipped {file_name}: outputs already present."
+                            skipped_files += 1
                             yield live_output, result_str, collected_paths
                             continue
 
@@ -656,6 +660,11 @@ class BaseTranscriptionPipeline(ABC):
                             "",
                         )
                         result_str = f"Done! {reported_segment_count} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
+                        done_files += 1
+                        done_segments += reported_segment_count
+                        done_seconds += time_for_task
+                        if target_output_dir not in output_dirs:
+                            output_dirs.append(target_output_dir)
 
                         yield live_output, result_str, collected_paths
                     except Exception as exc:
@@ -670,6 +679,13 @@ class BaseTranscriptionPipeline(ABC):
 
             if failures:
                 summary = self._batch_failure_summary(failures, len(files))
+                yield append_live_lines(summary), summary, collected_paths
+            elif len(files) > 1:
+                summary = f"Done! {done_files} files, {done_segments} segments in {self.format_time(done_seconds)}."
+                if skipped_files:
+                    summary += f" {skipped_files} skipped (outputs already present)."
+                if output_dirs:
+                    summary += f" Saved to {', '.join(output_dirs)}"
                 yield append_live_lines(summary), summary, collected_paths
 
         except Exception as e:

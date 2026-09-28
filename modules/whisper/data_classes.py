@@ -374,7 +374,7 @@ class WhisperParams(BaseParams):
         description="Punctuations to merge with previous word"
     )
     max_new_tokens: Optional[int] = Field(default=None, description="Maximum number of new tokens per chunk")
-    chunk_length: Optional[int] = Field(default=10, description="Audio window seconds; Canary 0 chooses 10s for short recordings and 12s for long recordings")
+    chunk_length: Optional[int] = Field(default=10, description="Audio window seconds; Canary 0 transcribes recordings up to 40s in one piece and cuts longer ones at pauses into 15-30s pieces")
     hallucination_silence_threshold: Optional[float] = Field(
         default=None,
         description="Threshold for skipping silent periods in hallucination detection"
@@ -635,9 +635,11 @@ class WhisperParams(BaseParams):
             label="Use Batched Inference",
             value=defaults.get("use_batched_inference", cls.__fields__["use_batched_inference"].default),
             info=(
-                "Speed-first faster-whisper path. It can process more chunks in parallel, but on long-form speech "
-                "it is noticeably less accurate and more prone to all-caps output, repetition, and subtitle drift. "
-                "Leave disabled for best subtitle quality."
+                "Speed-first faster-whisper path: 30-second windows cut at pauses are decoded in parallel (Batch Size "
+                "windows at once), about twice as fast on long recordings, but each window is decoded without the "
+                "text before it and Whisper sometimes stops early inside a window, so words are lost (English "
+                "tests: 8.9% vs 7.9% word errors on long recordings). Leave disabled for best subtitle quality; "
+                "batch 16 needs about 26 GB of VRAM, batch 8 about 14 GB, batch 4 about 8 GB."
             ),
         )
 
@@ -657,10 +659,10 @@ class WhisperParams(BaseParams):
                 cls.__fields__["condition_on_previous_text"].default,
             ),
             info=(
-                "Use earlier text as context. When English is selected, faster-whisper large-v3 "
-                "recordings longer than 30 seconds automatically disable this context to reduce repeated "
-                "passages; shorter clips retain your setting. Other models keep the existing long-audio "
-                "safeguard. Disable manually if you see repetition or subtitle drift."
+                "Use earlier text as context (keeps punctuation and names consistent). When English is "
+                "selected: large-v3 recordings longer than 30 seconds turn this context off (it repeated "
+                "passages), while large-v1 keeps it for any length (it lowered errors on hour-long calls). "
+                "Other models turn it off after about 30 minutes. Disable manually if you see repetition."
             ),
         )
 
@@ -888,8 +890,8 @@ class WhisperParams(BaseParams):
                 label="Chunk Length (s)",
                 value=defaults.get("chunk_length", cls.__fields__["chunk_length"].default),
                 info=("Length of each audio window in seconds. Canary-Qwen: 0 selects automatic windows "
-                      "(10 seconds for recordings up to 30 seconds, 12 seconds for longer recordings). "
-                      "Positive values set a fixed window.")
+                      "(a recording up to 40 seconds in one piece; longer recordings in 15-30 second pieces "
+                      "cut at pauses). Positive values set the longest window, cut at a pause.")
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Hallucination Silence Threshold (sec)",
@@ -950,7 +952,8 @@ class WhisperParams(BaseParams):
             for field_name, input_component in zip(faster_whisper_field_names, faster_whisper_inputs):
                 input_component.visible = field_name in canary_visible_fields
             faster_whisper_inputs[10].info = "Maximum generated text tokens per Canary-Qwen chunk."
-            faster_whisper_inputs[11].info = "Canary-Qwen ASR window size in seconds. Values above 40 are capped."
+            faster_whisper_inputs[11].info = ("Canary-Qwen ASR window in seconds. 0 = automatic: up to 40 s in one piece, "
+                                              "longer recordings in 15-30 s pieces cut at pauses. Values above 40 are capped.")
         elif whisper_type != WhisperImpl.FASTER_WHISPER.value:
             for input_component in faster_whisper_inputs:
                 input_component.visible = False
