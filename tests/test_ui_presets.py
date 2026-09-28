@@ -158,7 +158,7 @@ def test_builtin_backend_best_quality_presets_are_mapped_by_whisper_type():
     canary_cfg = load_ui_preset("Canary Qwen Best Quality")
     assert canary_cfg is not None
     assert canary_cfg["file_tab"]["whisper"]["whisper_type"] == WhisperImpl.CANARY_QWEN.value
-    assert canary_cfg["file_tab"]["whisper"]["model_size"] == "nvidia/canary-qwen-2.5b"
+    assert canary_cfg["file_tab"]["whisper"]["model_size"] == "canary-qwen-2.5b-int8-convrot"
     assert canary_cfg["file_tab"]["whisper"]["compute_type"] == "bfloat16"
 
 

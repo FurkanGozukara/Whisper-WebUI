@@ -113,7 +113,8 @@ class App:
         ("Insanely Fast Whisper (Transformers)", WhisperImpl.INSANELY_FAST_WHISPER.value),
         ("Canary-Qwen (NVIDIA NeMo)", WhisperImpl.CANARY_QWEN.value),
     ]
-    CANARY_DEFAULT_MODEL = "nvidia/canary-qwen-2.5b"
+    # INT8 ConvRot build; GPUs that cannot run it (below RTX 30 series, no CUDA) load nvidia/canary-qwen-2.5b
+    CANARY_DEFAULT_MODEL = "canary-qwen-2.5b-int8-convrot"
     CANARY_DEFAULTS = {
         "model_size": CANARY_DEFAULT_MODEL,
         "lang": "english",
@@ -400,7 +401,7 @@ class App:
         if self.is_canary_whisper_type(whisper_type):
             return (
                 "Controls how many 40-second-or-shorter Canary-Qwen chunks are generated in one "
-                "NeMo batch. Higher values can improve throughput on large GPUs but use more VRAM."
+                "batch. Higher values can improve throughput on large GPUs but use more VRAM."
             )
         if self.normalize_primary_whisper_type(whisper_type) == WhisperImpl.INSANELY_FAST_WHISPER.value:
             return (
@@ -432,7 +433,9 @@ class App:
                 "**Canary-Qwen**\n\n"
                 "Uses NVIDIA Canary-Qwen through NeMo SALM. It is English ASR only and returns chunk-level "
                 "timestamps. Use this when you specifically want Canary-Qwen output rather than Whisper-family "
-                "transcription."
+                "transcription. The default model, canary-qwen-2.5b-int8-convrot, is an INT8 ConvRot build that runs on "
+                "Triton kernels with CUDA graphs (RTX 30 series or newer); other GPUs load the original "
+                "nvidia/canary-qwen-2.5b instead."
             )
         return (
             "**Whisper (faster-whisper)**\n\n"

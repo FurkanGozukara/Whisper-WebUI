@@ -15,6 +15,10 @@ from faster_whisper.audio import decode_audio
 from modules.utils.constants import GRADIO_NONE_STR
 from modules.utils.logger import get_logger
 from modules.utils.paths import CANARY_QWEN_MODELS_DIR, DIARIZATION_MODELS_DIR, OUTPUT_DIR, UVR_MODELS_DIR
+from modules.whisper.convrot import triton_status
+from modules.whisper.convrot.registry import (CANARY_CONVROT_FALLBACK_MODELS, HOSTED_CANARY_CONVROT_MODELS,
+                                             convrot_runtime_supported, download_convrot_model,
+                                             is_canary_convrot_model_dir)
 from modules.whisper.base_transcription_pipeline import BaseTranscriptionPipeline
 from modules.whisper.data_classes import Segment, WhisperImpl, WhisperParams
 
@@ -84,10 +88,16 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             self.update_model(params.model_size, params.compute_type, progress, progress_callback=progress_callback)
 
         if log_model_banner:
-            logger.info(
-                "Using NVIDIA Canary-Qwen through NeMo SALM. "
-                "The model is English ASR only and returns chunk-level timestamps."
-            )
+            if self.is_convrot_engine():
+                logger.info(
+                    "Using NVIDIA Canary-Qwen INT8 ConvRot (INT8 weights, Triton kernels, CUDA graphs). "
+                    "The model is English ASR only and returns chunk-level timestamps."
+                )
+            else:
+                logger.info(
+                    "Using NVIDIA Canary-Qwen through NeMo SALM. "
+                    "The model is English ASR only and returns chunk-level timestamps."
+                )
 
         self.emit_status_callback(progress_callback, "Preparing audio for Canary-Qwen transcription..")
         progress(0.05, desc="Loading audio..")
@@ -101,6 +111,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         segments: List[Segment] = []
         total_duration = len(audio_array) / float(self.SAMPLE_RATE)
         previous_text = ""
+        triton_counts = triton_status.counts()
 
         for batch_start in range(0, len(chunks), batch_size):
             batch_chunks = chunks[batch_start : batch_start + batch_size]
@@ -113,7 +124,10 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             progress_value = self.map_transcription_progress(batch_start / float(len(chunks)))
             progress(progress_value, desc=f"Transcribing Canary-Qwen chunks {batch_start + 1}-{batch_start + len(batch_chunks)}..")
 
-            with torch.inference_mode():
+            # The ConvRot engine's first-run Triton tuning is reported in the Live Transcription box.
+            with torch.inference_mode(), triton_status.report_to(
+                lambda message: self.emit_status_callback(progress_callback, message)
+            ):
                 output_ids = self.model.generate(
                     prompts=prompts,
                     audios=audios.to(self.device, non_blocking=True),
@@ -155,6 +169,11 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                     raw_progress = (batch_start + offset + 1) / float(len(chunks))
                     self.emit_progress_callback(progress_callback, raw_progress, None)
 
+        triton_summary = triton_status.summary_since(triton_counts)
+        if triton_summary:
+            logger.info(triton_summary)
+            self.emit_status_callback(progress_callback, triton_summary)
+
         elapsed_time = time.time() - start_time
         return segments, elapsed_time
 
@@ -170,6 +189,22 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     ):
         progress(0.02, desc="Initializing Canary-Qwen model..")
         self.emit_status_callback(progress_callback, "Initializing Canary-Qwen model..")
+        selected_model = model_size
+        fallback_model = CANARY_CONVROT_FALLBACK_MODELS.get(model_size)
+        if fallback_model is not None:
+            supported, reason = convrot_runtime_supported()
+            if not supported:
+                message = (
+                    f"INT8 ConvRot model '{model_size}' cannot run on this system ({reason}); "
+                    f"loading '{fallback_model}' instead."
+                )
+                logger.warning(message)
+                self.emit_status_callback(progress_callback, message)
+                model_size = fallback_model
+        convrot_path = self.resolve_convrot_model(model_size, progress=progress, progress_callback=progress_callback)
+        if convrot_path is not None:
+            self.load_convrot_model(selected_model, convrot_path, compute_type, progress, progress_callback)
+            return
         dtype = self.torch_dtype_for_compute_type(compute_type)
         with self.hf_cache_scope():
             model_target = self.resolve_model_target(model_size, progress=progress, progress_callback=progress_callback)
@@ -202,13 +237,98 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             model.to(self.device)
 
         self.model = model
-        self.current_model_size = model_size
+        # the selection, which may be an INT8 ConvRot model this system replaced with its NeMo fallback
+        self.current_model_size = selected_model
         self.current_compute_type = compute_type
         self.log_model_load_complete(
             implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
             selected_model=model_size,
             active_model=self.current_model_size,
             compute_type=self.current_compute_type,
+        )
+        self.emit_status_callback(progress_callback, "Canary-Qwen model loaded. Starting transcription..")
+        progress(0.1, desc="Canary-Qwen model loaded.")
+
+    def is_convrot_engine(self) -> bool:
+        return type(self.model).__name__ == "CanaryConvRot"
+
+    def resolve_convrot_model(
+        self,
+        model_size: str,
+        progress: gr.Progress = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> Optional[str]:
+        """Folder of the INT8 ConvRot model selected by ``model_size`` (a hosted model is downloaded on first
+        use), or None for NeMo models."""
+        name = str(model_size or "")
+        if name in HOSTED_CANARY_CONVROT_MODELS:
+            target = os.path.join(self.model_dir, name)
+            if not is_canary_convrot_model_dir(target):
+                self.download_convrot_snapshot(name, target, progress=progress, progress_callback=progress_callback)
+            return target
+        candidate = name if os.path.isabs(name) else os.path.join(self.model_dir, name)
+        if not is_canary_convrot_model_dir(candidate):
+            return None
+        supported, reason = convrot_runtime_supported()
+        if not supported:
+            raise RuntimeError(
+                "INT8 ConvRot Canary-Qwen models need an NVIDIA Ampere (RTX 30 series) or newer GPU with Triton "
+                f"and flash-attn ({reason}). Select {self.DEFAULT_MODEL_ID} instead."
+            )
+        return candidate
+
+    def download_convrot_snapshot(
+        self,
+        name: str,
+        target_dir: str,
+        progress: gr.Progress = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> None:
+        repo_id, subfolder = HOSTED_CANARY_CONVROT_MODELS[name]
+        if progress is not None:
+            progress(0.02, desc=f"Downloading Canary-Qwen INT8 ConvRot model to {target_dir}..")
+        self.live_phase = self.LIVE_PHASE_DOWNLOADING
+        self.emit_status_callback(progress_callback, f"Downloading Canary-Qwen INT8 ConvRot model to {target_dir}..")
+        logger.info("Downloading INT8 ConvRot model '%s' from '%s/%s' to '%s'.", name, repo_id, subfolder, target_dir)
+        download_convrot_model(
+            name,
+            target_dir,
+            tqdm_class=self.make_download_tqdm_class(progress_callback),
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+        self.available_models = self.get_model_paths()
+        self.emit_status_callback(progress_callback, "Canary-Qwen model download finished.")
+
+    def load_convrot_model(
+        self,
+        selected_model: str,
+        model_path: str,
+        compute_type: str,
+        progress: gr.Progress = gr.Progress(),
+        progress_callback: Optional[Callable] = None,
+    ) -> None:
+        from modules.whisper.convrot.canary.engine import CanaryConvRot
+
+        self.emit_status_callback(progress_callback, f"Loading Canary-Qwen INT8 ConvRot model from {model_path}..")
+        logger.info(
+            "INT8 ConvRot Canary-Qwen model: running the ConvRot engine (INT8 weights, Triton kernels, CUDA "
+            "graphs); the compute type does not apply to it."
+        )
+        self.log_model_load_start(
+            implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
+            selected_model=selected_model,
+            resolved_model=model_path,
+            compute_type="int8 ConvRot",
+        )
+        self.release_model_before_load()
+        self.model = CanaryConvRot.from_folder(model_path, device_index=torch.cuda.current_device())
+        self.current_model_size = selected_model
+        self.current_compute_type = compute_type
+        self.log_model_load_complete(
+            implementation=self.implementation_label(WhisperImpl.CANARY_QWEN.value),
+            selected_model=selected_model,
+            active_model=model_path,
+            compute_type="int8 ConvRot",
         )
         self.emit_status_callback(progress_callback, "Canary-Qwen model loaded. Starting transcription..")
         progress(0.1, desc="Canary-Qwen model loaded.")
@@ -666,10 +786,10 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             "transformers",
             "canary_qwen_models_will_be_saved_here",
         }
-        models = [self.DEFAULT_MODEL_ID]
+        models = [self.DEFAULT_MODEL_ID, *HOSTED_CANARY_CONVROT_MODELS]
         if os.path.isdir(self.model_dir):
             for item in os.listdir(self.model_dir):
-                if item in ignored:
+                if item in ignored or item.startswith("."):  # .download-<name>: unfinished download
                     continue
                 if os.path.isdir(os.path.join(self.model_dir, item)):
                     models.append(item)

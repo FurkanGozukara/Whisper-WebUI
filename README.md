@@ -12,6 +12,19 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 28 September 2026 - Version 12.10
+
+- New INT8 ConvRot Canary-Qwen model: `canary-qwen-2.5b-int8-convrot`
+  - About 10x faster than the NeMo model with the same accuracy: 5 hours of test videos took 158 seconds instead of 1679 seconds (28 minutes), with 10.82% WER instead of 10.80% (RTX 5090, Canary Qwen Best Quality preset)
+  - A 10 second chunk takes about 0.07 seconds instead of 1.1 seconds, and a 1 hour video about 40 seconds
+  - Closer to the full-precision model than the BF16 model used before (next-token KL divergence against FP32: 0.00003 instead of 0.00024)
+  - Model file is 2.9 GB instead of 5.1 GB
+  - Automatically downloaded from Hugging Face the first time you select it
+  - Canary Qwen Best Quality preset and the Canary-Qwen default model now use it
+  - Needs an RTX 3000 series (Ampere) or newer GPU; on older GPUs the app automatically uses `nvidia/canary-qwen-2.5b`
+  - Beam search, sampling and Canary Generation Kwargs keep working
+  - The first transcription on a new PC compiles and tunes its GPU kernels once (about 30 seconds, shown in CMD and Live Transcription); later runs reuse them
+
 ### 28 September 2026 - Version 12.9
 
 - Starting two jobs at once (two tabs, two users, or a new job right after Cancel) no longer crashes: all GPU jobs (File, YouTube, Mic, BGM Separation, NLLB translation) now wait in one queue and run one after another

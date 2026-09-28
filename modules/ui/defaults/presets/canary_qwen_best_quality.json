@@ -9,7 +9,7 @@
   "file_tab": {
     "whisper": {
       "whisper_type": "canary-qwen",
-      "model_size": "nvidia/canary-qwen-2.5b",
+      "model_size": "canary-qwen-2.5b-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 1,
@@ -35,7 +35,7 @@
   "youtube_tab": {
     "whisper": {
       "whisper_type": "canary-qwen",
-      "model_size": "nvidia/canary-qwen-2.5b",
+      "model_size": "canary-qwen-2.5b-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 1,
@@ -61,7 +61,7 @@
   "mic_tab": {
     "whisper": {
       "whisper_type": "canary-qwen",
-      "model_size": "nvidia/canary-qwen-2.5b",
+      "model_size": "canary-qwen-2.5b-int8-convrot",
       "lang": "english",
       "is_translate": false,
       "beam_size": 1,
