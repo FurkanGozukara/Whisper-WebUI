@@ -374,7 +374,7 @@ class WhisperParams(BaseParams):
         description="Punctuations to merge with previous word"
     )
     max_new_tokens: Optional[int] = Field(default=None, description="Maximum number of new tokens per chunk")
-    chunk_length: Optional[int] = Field(default=10, description="Length of audio segments in seconds")
+    chunk_length: Optional[int] = Field(default=10, description="Audio window seconds; Canary 0 chooses 10s for short recordings and 12s for long recordings")
     hallucination_silence_threshold: Optional[float] = Field(
         default=None,
         description="Threshold for skipping silent periods in hallucination detection"
@@ -618,8 +618,9 @@ class WhisperParams(BaseParams):
                 cls.__fields__["start_as_subprocess"].default,
             ),
             info=(
-                "Recommended ON. Runs the job in a dedicated subprocess so torch, VRAM, and RAM are fully released "
-                "when the job finishes, and allows hard cancellation."
+                "Enable to allow Cancel Generation to stop a running job immediately. "
+                "A dedicated subprocess adds startup overhead. Leave disabled for faster repeated jobs; "
+                "Offload Models to RAM When Idle can free GPU memory between jobs."
             ),
         )
 
@@ -656,9 +657,10 @@ class WhisperParams(BaseParams):
                 cls.__fields__["condition_on_previous_text"].default,
             ),
             info=(
-                "Use previous transcription as context for the next segment. "
-                "Usually helps coherence across chunks. Important: if you see repetition, all-caps output, "
-                "or subtitle drift, try disabling this. In rare cases that can significantly improve quality."
+                "Use earlier text as context. When English is selected, faster-whisper large-v3 "
+                "recordings longer than 30 seconds automatically disable this context to reduce repeated "
+                "passages; shorter clips retain your setting. Other models keep the existing long-audio "
+                "safeguard. Disable manually if you see repetition or subtitle drift."
             ),
         )
 
@@ -885,7 +887,9 @@ class WhisperParams(BaseParams):
             faster_whisper_inputs.append(gr.Number(
                 label="Chunk Length (s)",
                 value=defaults.get("chunk_length", cls.__fields__["chunk_length"].default),
-                info="Length of each audio window in seconds."
+                info=("Length of each audio window in seconds. Canary-Qwen: 0 selects automatic windows "
+                      "(10 seconds for recordings up to 30 seconds, 12 seconds for longer recordings). "
+                      "Positive values set a fixed window.")
             ))
             faster_whisper_inputs.append(gr.Number(
                 label="Hallucination Silence Threshold (sec)",

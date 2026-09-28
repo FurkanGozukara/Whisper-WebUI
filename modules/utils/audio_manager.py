@@ -9,6 +9,33 @@ from modules.utils.logger import get_logger
 logger = get_logger()
 
 
+def is_digital_silence(audio: Any) -> bool:
+    """Recognize exactly zero samples without classifying quiet speech as silence.
+
+    Stop at the first nonzero frame for ordinary media. Do not decode an entire
+    long speech recording just to check for silence, and do not mask read errors.
+    """
+    if isinstance(audio, np.ndarray):
+        return audio.size > 0 and not np.any(audio)
+    path = coerce_audio_input_path(audio)
+    if path is None:
+        return False
+    try:
+        import av
+
+        has_samples = False
+        with av.open(path, mode="r", metadata_errors="ignore") as container:
+            for frame in container.decode(audio=0):
+                samples = frame.to_ndarray()
+                if np.any(samples):
+                    return False
+                has_samples = has_samples or samples.size > 0
+        return has_samples
+    except Exception:
+        # Normal validation/inference reports unreadable inputs to the user.
+        return False
+
+
 def coerce_audio_input_path(audio: Any) -> Optional[str]:
     """Best-effort normalization for Gradio audio inputs."""
     if audio is None or isinstance(audio, np.ndarray):

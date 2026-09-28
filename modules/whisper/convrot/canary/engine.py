@@ -168,6 +168,12 @@ class CanaryConvRot:
         if device.type == "cuda" and device.index is None:
             device = self._torch_device
         with self._lock, torch.cuda.device(self._torch_device):
+            # The beam/sampling adapter holds Parameters sharing the current
+            # CUDA embedding storage, plus copied norm weights. Moving the
+            # runtime replaces its tensors, so keeping the adapter both leaks
+            # VRAM while offloaded and leaves stale parameters on reload.
+            # Rebuild this inexpensive view on the next fallback generation.
+            self.__dict__.pop("_hf_model", None)
             self._sessions.clear()
             self.encoder.to(device)
             self.llm.to(device)

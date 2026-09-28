@@ -7,6 +7,7 @@ import builtins
 import importlib
 import inspect
 import threading
+import tempfile
 from contextlib import contextmanager
 from typing import Optional, Union
 import torch
@@ -137,6 +138,52 @@ def _read_pipeline_params(pipeline_config_path: str) -> dict:
 
 
 @contextmanager
+def _portable_pipeline_config(pipeline_config_path: str):
+    """Resolve the downloaded bundle after moving an installation or copying it to another OS.
+
+    The installer writes absolute checkpoint paths. Pyannote requires concrete paths, so rebase
+    bundled checkpoints for this load while leaving the user's saved config unchanged.
+    """
+    import yaml
+
+    with open(pipeline_config_path, encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file) or {}
+    params = config.get("pipeline", {}).get("params", {})
+    bundle_dir = os.path.dirname(os.path.abspath(pipeline_config_path))
+    changed = False
+    for key in ("segmentation", "embedding"):
+        value = params.get(key)
+        checkpoint = value.get("checkpoint") if isinstance(value, dict) else value
+        if not isinstance(checkpoint, str):
+            continue
+        # Windows separators may occur in a bundle copied to Linux (and vice versa).
+        parts = checkpoint.replace("\\", "/").split("/")
+        candidates = []
+        if len(parts) >= 2:
+            candidates.append(os.path.join(bundle_dir, parts[-2], parts[-1]))
+        candidates.append(os.path.join(bundle_dir, checkpoint))
+        resolved = next((candidate for candidate in candidates if os.path.isfile(candidate)), None)
+        if resolved is None or os.path.normcase(resolved) == os.path.normcase(checkpoint):
+            continue
+        if isinstance(value, dict):
+            value["checkpoint"] = resolved
+        else:
+            params[key] = {"checkpoint": resolved}
+        changed = True
+    if not changed:
+        yield pipeline_config_path
+        return
+    # Close before pyannote reopens it; Windows does not permit reopening an open temporary file.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", encoding="utf-8", delete=False) as temporary:
+        yaml.safe_dump(config, temporary, sort_keys=False)
+        temporary_path = temporary.name
+    try:
+        yield temporary_path
+    finally:
+        os.remove(temporary_path)
+
+
+@contextmanager
 def _optional_nemo_import_disabled(disabled: bool):
     """
     Make pyannote treat NeMo speaker embeddings as unavailable when unused.
@@ -241,7 +288,8 @@ def _load_pyannote_pipeline(
     with _PYANNOTE_LOAD_LOCK:
         with _optional_nemo_import_disabled(disable_optional_nemo):
             with _unused_pyannote_plda_skipped(skip_plda):
-                pipeline = pipeline_cls.from_pretrained(pipeline_config_path, **kwargs)
+                with _portable_pipeline_config(pipeline_config_path) as resolved_config:
+                    pipeline = pipeline_cls.from_pretrained(resolved_config, **kwargs)
 
     # pyannote.audio 4.x defaults to returning DiarizeOutput, while this app
     # expects the legacy Annotation result used by pyannote.audio 3.x.

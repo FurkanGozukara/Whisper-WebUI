@@ -44,8 +44,8 @@ def test_enable_cuda_runtime_autodiscovery_updates_windows_path_and_adds_dll_dir
     added_dirs = []
     loaded_libraries = []
 
-    monkeypatch.setattr(cuda_runtime.os, "add_dll_directory", lambda path: added_dirs.append(path) or path)
-    monkeypatch.setattr(cuda_runtime.ctypes, "WinDLL", lambda path: loaded_libraries.append(path) or path)
+    monkeypatch.setattr(cuda_runtime.os, "add_dll_directory", lambda path: added_dirs.append(path) or path, raising=False)
+    monkeypatch.setattr(cuda_runtime.ctypes, "WinDLL", lambda path: loaded_libraries.append(path) or path, raising=False)
     monkeypatch.setattr(cuda_runtime, "_CUDA_RUNTIME_CONFIGURED", False)
     cuda_runtime._DLL_DIRECTORY_HANDLES.clear()
     cuda_runtime._PRELOADED_LIBRARY_HANDLES.clear()

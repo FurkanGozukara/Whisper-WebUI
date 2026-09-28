@@ -108,6 +108,7 @@ if "modules.utils.audio_manager" not in sys.modules:
         return None
     fake_audio_manager.coerce_audio_input_path = _coerce_audio_input_path
     fake_audio_manager.validate_audio = lambda audio: audio
+    fake_audio_manager.is_digital_silence = lambda audio: False
     sys.modules["modules.utils.audio_manager"] = fake_audio_manager
 
 if "modules.utils.files_manager" not in sys.modules:

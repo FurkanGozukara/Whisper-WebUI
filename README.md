@@ -4,6 +4,15 @@
 
 > https://www.patreon.com/posts/145395299
 
+## English presets and verification — 28 September 2026
+
+- Whisper large-v3 automatically disables previous-text context for explicitly selected English recordings longer than 30 seconds. Short clips keep the selected context setting; large-v1 keeps its existing policy. Both retain beam 5 and standard batch 1.
+- Canary-Qwen's built-in preset uses automatic chunk length (`0`): 10-second windows for recordings up to 30 seconds and 12-second windows for longer recordings. Positive values remain manual overrides.
+- Canary ConvRot INT8 batches adapt to the detected 6/8/10/12/16/24/32 GB VRAM tier and free memory at startup. Original Canary starts at batch 1; saved user presets retain their values.
+- Fixed incomplete live microphone recordings, silent/no-speech hallucinations, UVR input resampling, CUDA graph lifetime errors, and missing translation downloads when filenames collide.
+
+Measured accuracy, punctuation, speed, tradeoffs and reproduction: [Whisper English benchmarks](docs/english-benchmarks.md) and [Canary English benchmarks](docs/canary-english-benchmarks.md). See [Chrome feature verification](docs/chrome-verification.md) and [distribution compatibility](docs/compatibility-verification.md) for coverage and remaining limits. Native Windows and smaller physical GPUs were not available for execution; successful YouTube/DeepL service access remains unverified here.
+
 ## Quick Info
 - This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.12 venv, best quality presets fully ready):
   -   Whisper from OpenAI : [https://github.com/openai/whisper](https://github.com/openai/whisper)
@@ -369,7 +378,6 @@
 ### Full Page Screenshot
 
 <img height="1200" alt="screencapture-127-0-0-1-7861-2026-05-02-05_09_06" src="https://github.com/user-attachments/assets/78cffef8-e3d1-42dc-a58b-e346cd74dc7e" />
-
 
 
 

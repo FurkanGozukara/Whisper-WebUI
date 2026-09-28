@@ -8,7 +8,6 @@ import gradio as gr
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 from fastapi.responses import FileResponse
 from typing import List, Dict, Tuple
-from datetime import datetime
 import os
 
 from modules.whisper.data_classes import *
@@ -18,7 +17,7 @@ from backend.common.audio import read_audio
 from backend.common.models import QueueResponse
 from backend.common.config_loader import load_server_config
 from backend.common.compresser import get_file_hash, find_file_by_hash
-from backend.db.task.models import TaskStatus, TaskType, ResultType
+from backend.db.task.models import TaskStatus, TaskType, ResultType, utc_now
 from backend.db.task.dao import add_task_to_db, update_task_status_in_db
 from .models import BGMSeparationResult
 
@@ -49,11 +48,11 @@ def run_bgm_separation(
         update_data={
             "uuid": identifier,
             "status": TaskStatus.IN_PROGRESS,
-            "updated_at": datetime.utcnow()
+            "updated_at": utc_now()
         }
     )
 
-    start_time = datetime.utcnow()
+    start_time = utc_now()
     instrumental, vocal, filepaths = get_bgm_separation_inferencer().separate(
         audio=audio,
         model_name=params.uvr_model_size,
@@ -63,7 +62,7 @@ def run_bgm_separation(
         progress=gr.Progress()
     )
     instrumental_path, vocal_path = filepaths
-    elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+    elapsed_time = (utc_now() - start_time).total_seconds()
 
     update_task_status_in_db(
         identifier=identifier,
@@ -75,7 +74,7 @@ def run_bgm_separation(
                 vocal_hash=get_file_hash(vocal_path)
             ).model_dump(),
             "result_type": ResultType.FILEPATH,
-            "updated_at": datetime.utcnow(),
+            "updated_at": utc_now(),
             "duration": elapsed_time
         }
     )
@@ -115,5 +114,4 @@ async def bgm_separation(
     )
 
     return QueueResponse(identifier=identifier, status=TaskStatus.QUEUED, message="BGM Separation task has queued")
-
 

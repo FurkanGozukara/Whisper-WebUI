@@ -40,6 +40,8 @@ import soundfile as sf
 from modules.translation.deepl_api import DeepLAPI
 from modules.runtime.subprocess_client import build_runtime_proxies
 from modules.ui.htmls import *
+from modules.ui.live_microphone import live_microphone
+from modules.ui.hardware import preset_batch_size, select_hardware_preset
 from modules.ui.presets import (
     build_default_ui_config,
     clear_last_used_ui_preset,
@@ -127,7 +129,7 @@ class App:
         "word_timestamps": False,
         "normalize_word_timestamps": True,
         "max_new_tokens": 256,
-        "chunk_length": 10,
+        "chunk_length": 0,
         "use_batched_inference": False,
         "batch_size": 1,
         "condition_on_previous_text": False,
@@ -154,6 +156,11 @@ class App:
         startup_log("Detecting the GPU and the available models in a background process "
                     "(loads PyTorch and the transcription engines)..")
         self.whisper_inf, self.nllb_inf = build_runtime_proxies(self.args)
+        self.hardware_preset = select_hardware_preset(
+            getattr(self.whisper_inf, "gpu_total_memory_gb", None),
+            getattr(self.whisper_inf, "gpu_free_memory_gb", None),
+            getattr(self.whisper_inf, "convrot_supported", False),
+        )
         startup_log("GPU and model lists are ready.")
         self.deepl_api = DeepLAPI(
             output_dir=os.path.join(self.args.output_dir, "translations"),
@@ -321,8 +328,29 @@ class App:
         if whisper_type == WhisperImpl.CANARY_QWEN.value:
             for key, value in self.CANARY_DEFAULTS.items():
                 whisper_defaults[key] = value
+            whisper_defaults["batch_size"] = self.hardware_batch_size(whisper_type, whisper_defaults["model_size"])
 
         return default_params
+
+    def hardware_batch_size(self, whisper_type, model_size):
+        hardware = getattr(self, "hardware_preset", None) or select_hardware_preset()
+        return preset_batch_size(hardware, whisper_type, model_size)
+
+    def load_hardware_ui_preset(self, preset_name):
+        """Adapt shipped presets at load time; saved user values remain exact."""
+        cfg = load_ui_preset(preset_name, default_params=self.default_params)
+        if cfg and is_locked_ui_preset(preset_name):
+            for section in ("file_tab", "youtube_tab", "mic_tab"):
+                whisper = cfg.get(section, {}).get("whisper", {})
+                whisper["batch_size"] = self.hardware_batch_size(
+                    whisper.get("whisper_type"), whisper.get("model_size")
+                )
+        return cfg
+
+    def update_model_batch_size(self, whisper_type, model_size, preset_name):
+        if is_user_ui_preset(preset_name):
+            return gr.update()
+        return gr.update(value=self.hardware_batch_size(whisper_type, model_size))
 
     @staticmethod
     def normalize_primary_whisper_type(whisper_type):
@@ -399,9 +427,13 @@ class App:
 
     def batch_help_for_whisper_type(self, whisper_type):
         if self.is_canary_whisper_type(whisper_type):
+            hardware = getattr(self, "hardware_preset", None) or select_hardware_preset()
+            tier = f"{hardware.tier_gib} GB tier" if hardware.tier_gib else "conservative fallback"
             return (
-                "Controls how many 40-second-or-shorter Canary-Qwen chunks are generated in one "
-                "batch. Higher values can improve throughput on large GPUs but use more VRAM."
+                "Controls how many audio chunks are generated together. The built-in INT8 preset "
+                f"uses batch {hardware.canary_batch_size} ({tier}), based on GPU capacity and free memory "
+                "at startup. The original model starts at batch 1. Higher batches use more VRAM; "
+                "you can change this value or save your own preset."
             )
         if self.normalize_primary_whisper_type(whisper_type) == WhisperImpl.INSANELY_FAST_WHISPER.value:
             return (
@@ -411,9 +443,9 @@ class App:
             )
         return (
             "When Use Batched Inference is disabled, this controls the standard faster-whisper "
-            "encoder prefetch batch size on a single model instance. Higher values can improve "
-            "throughput with much lower quality risk than the batched decoder path, but the gain "
-            "depends on your audio and GPU. When Use Batched Inference is enabled, it controls "
+            "encoder prefetch batch size on a single model instance. The quality preset keeps batch 1: "
+            "larger batches changed some words in English testing without a consistent speed gain. "
+            "When Use Batched Inference is enabled, it controls "
             "the faster-whisper batched decoder path instead."
         )
 
@@ -1039,6 +1071,14 @@ class App:
             sample_rate, audio = mic_audio
         elif isinstance(mic_audio, dict):
             sample_rate = mic_audio.get("sample_rate") or mic_audio.get("sr")
+            if mic_audio.get("capture_mode") in ("preview_window", "complete_recording") and mic_audio.get("path"):
+                # gr.HTML's upload() returns a cached file instead of Audio's numpy payload.
+                # Only read files uploaded into Gradio's cache, as Audio.preprocess does.
+                upload_path = Path(mic_audio["path"]).resolve()
+                upload_root = Path(gr.processing_utils.get_upload_folder()).resolve()
+                if not upload_path.is_relative_to(upload_root):
+                    raise ValueError("The live microphone audio is not an uploaded recording.")
+                audio, sample_rate = sf.read(upload_path, dtype="float32")
             for key in ("data", "audio", "array"):
                 if key in mic_audio and mic_audio[key] is not None:
                     audio = mic_audio[key]
@@ -1134,7 +1174,8 @@ class App:
     @classmethod
     def build_live_mic_status(cls, auto_live_enabled: bool, captured_seconds: float = 0.0, suffix: str = ""):
         if not auto_live_enabled:
-            return "Live auto-transcribe is off. Enable the checkbox to start previewing while recording."
+            base = f"Live auto-transcribe is off. Recorded audio: {captured_seconds:.1f}s."
+            return f"{base} {suffix}" if suffix else f"{base} Enable the checkbox to preview while recording."
 
         base = (
             f"Live auto-transcribe is ON. Recording buffer: {captured_seconds:.1f}s. "
@@ -1381,11 +1422,11 @@ class App:
             progress_message,
         )
 
-    @staticmethod
-    def refresh_record_mic_ready_state(mic_audio):
+    @classmethod
+    def refresh_record_mic_ready_state(cls, mic_audio):
         if coerce_audio_input_path(mic_audio) is None:
             return (
-                "The recorded microphone clip is not ready yet.",
+                cls.build_record_mic_idle_status(),
                 gr.update(interactive=False),
             )
 
@@ -1471,33 +1512,45 @@ class App:
         if not isinstance(existing_full_audio, np.ndarray):
             existing_full_audio = np.array([], dtype=np.float32)
 
-        stream_mode = self.detect_live_mic_stream_mode(
-            existing_full_audio if existing_full_audio.size else existing_preview_audio,
-            incoming_audio,
-            sample_rate,
-            str(state.get("stream_mode") or self.LIVE_MIC_STREAM_MODE_UNKNOWN),
-        )
-
-        if stream_mode == self.LIVE_MIC_STREAM_MODE_CUMULATIVE:
-            full_audio = np.ascontiguousarray(incoming_audio, dtype=np.float32)
+        is_preview_window = isinstance(mic_audio, dict) and mic_audio.get("capture_mode") == "preview_window"
+        if is_preview_window:
+            # Each browser update is a complete recent window. Missed preview requests do
+            # not lose audio: the browser keeps the entire recording for its final upload.
+            recording_id = mic_audio.get("recording_id")
+            if recording_id and state.get("recording_id") not in (None, recording_id):
+                self.live_preview_job_for(state, remove=True)
+                state = self.create_live_mic_state()
+            state["recording_id"] = recording_id
+            full_audio = np.array([], dtype=np.float32)
+            combined_audio, _ = self.trim_live_mic_audio(incoming_audio, sample_rate, self.LIVE_MIC_MAX_BUFFER_SECONDS)
+            stream_mode = "preview_window"
+            stream_total_samples = max(
+                combined_audio.shape[0],
+                round(int(mic_audio.get("total_samples") or 0) * sample_rate / float(incoming_sample_rate or sample_rate)),
+            )
         else:
-            full_audio = self.append_live_mic_audio(existing_full_audio, incoming_audio)
-            if stream_mode == self.LIVE_MIC_STREAM_MODE_UNKNOWN:
-                stream_mode = self.LIVE_MIC_STREAM_MODE_DELTA
+            stream_mode = self.detect_live_mic_stream_mode(
+                existing_full_audio if existing_full_audio.size else existing_preview_audio,
+                incoming_audio,
+                sample_rate,
+                str(state.get("stream_mode") or self.LIVE_MIC_STREAM_MODE_UNKNOWN),
+            )
+            if stream_mode == self.LIVE_MIC_STREAM_MODE_CUMULATIVE:
+                full_audio = np.ascontiguousarray(incoming_audio, dtype=np.float32)
+            else:
+                full_audio = self.append_live_mic_audio(existing_full_audio, incoming_audio)
+                if stream_mode == self.LIVE_MIC_STREAM_MODE_UNKNOWN:
+                    stream_mode = self.LIVE_MIC_STREAM_MODE_DELTA
+            combined_audio, _ = self.trim_live_mic_audio(full_audio, sample_rate, self.LIVE_MIC_MAX_BUFFER_SECONDS)
+            stream_total_samples = int(full_audio.shape[0]) if full_audio.size else 0
 
-        combined_audio, _ = self.trim_live_mic_audio(
-            full_audio,
-            sample_rate,
-            self.LIVE_MIC_MAX_BUFFER_SECONDS,
-        )
         state["audio"] = combined_audio
         state["full_audio"] = full_audio
         state["sample_rate"] = sample_rate
         state["stream_mode"] = stream_mode
-        state["stream_total_samples"] = int(full_audio.shape[0]) if full_audio.size else 0
+        state["stream_total_samples"] = stream_total_samples
 
         preview_total_samples = int(combined_audio.shape[0]) if combined_audio.size else 0
-        stream_total_samples = int(full_audio.shape[0]) if full_audio.size else 0
         captured_seconds = (
             float(stream_total_samples) / float(sample_rate)
             if sample_rate and stream_total_samples
@@ -1505,15 +1558,12 @@ class App:
         )
 
         if not auto_live_enabled:
-            # The audio is still collected, so Stop saves the whole recording.
-            return state, state.get("transcript", ""), self.build_live_mic_status(False)
+            return state, state.get("transcript", ""), self.build_live_mic_status(False, captured_seconds)
 
         min_preview_samples = int(sample_rate * self.LIVE_MIC_MIN_PREVIEW_SECONDS)
         refresh_samples = int(sample_rate * self.LIVE_MIC_REFRESH_SECONDS)
 
-        # The preview runs in a background thread and this handler returns at once: every stream chunk
-        # (about 10 per second) is queued with concurrency_limit=1, so a handler that waited for the
-        # transcription would build a growing backlog.
+        # Preview inference runs in a background thread, leaving capture and upload responsive.
         job = self.live_preview_job_for(state)
         if job is not None:
             state["transcript"] = job["transcript"]
@@ -1586,6 +1636,10 @@ class App:
             )
             gr.Info("No running subprocess was found. If Start as subprocess is disabled, hard cancellation is unavailable.")
             return False
+
+    def cancel_generation_from_ui(self, confirmed: bool = True, request: gr.Request = None) -> None:
+        """Cancel without returning a value to buttons that have no output components."""
+        self.cancel_active_generation(confirmed, request)
 
     def create_whisper_inputs_3col(self, whisper_params):
         inputs = []
@@ -1686,6 +1740,7 @@ class App:
 
         if whisper_type == WhisperImpl.CANARY_QWEN.value:
             defaults.update(self.CANARY_DEFAULTS)
+            defaults["batch_size"] = self.hardware_batch_size(whisper_type, defaults["model_size"])
             defaults["compute_type"] = self.current_compute_type_for_whisper_type(whisper_type)
             return defaults
 
@@ -1775,7 +1830,7 @@ class App:
         model_metadata = self.get_whisper_metadata(selected_whisper_type)
         model_choices = list(model_metadata.get("available_models", []) or [])
         model_value = whisper_params.get("model_size")
-        if is_canary_qwen or (model_choices and model_value not in model_choices):
+        if model_choices and model_value not in model_choices:
             model_value = self.default_model_for_whisper_type(selected_whisper_type)
         language_choices = self.language_choices_for_whisper_type(selected_whisper_type)
         lang_value = "english" if is_canary_qwen else WhisperParams.normalize_lang_choice(whisper_params["lang"])
@@ -1946,6 +2001,8 @@ class App:
         return {
             "pipeline": [dd_model, dd_lang, cb_translate] + whisper_inputs + [model_type_radio] + vad_inputs + diarization_inputs + uvr_inputs,
             "model_type_radio": model_type_radio,
+            "model_input": dd_model,
+            "batch_size_input": batch_size_input,
             "engine_reset_event": engine_reset_event,
             "model_type_info": model_type_info,
             "file_formats": cg_file_formats,
@@ -1962,7 +2019,7 @@ class App:
         default_ui_config = merge_ui_config(self.ui_default_config, default_params=self.default_params)
         startup_preset_status = ""
         if startup_preset_name:
-            startup_cfg = load_ui_preset(startup_preset_name, default_params=self.default_params)
+            startup_cfg = self.load_hardware_ui_preset(startup_preset_name)
             if startup_cfg:
                 default_ui_config = startup_cfg
                 if remembered_preset_name:
@@ -2153,7 +2210,7 @@ class App:
                             concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         file_transcription_ui["cancel_button"].click(
-                            fn=self.cancel_active_generation,
+                            fn=self.cancel_generation_from_ui,
                             inputs=[cancel_confirmed],
                             outputs=None,
                             js=CANCEL_CONFIRM_JS,
@@ -2227,7 +2284,7 @@ class App:
                             concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         youtube_transcription_ui["cancel_button"].click(
-                            fn=self.cancel_active_generation,
+                            fn=self.cancel_generation_from_ui,
                             inputs=[cancel_confirmed],
                             outputs=None,
                             js=CANCEL_CONFIRM_JS,
@@ -2261,17 +2318,7 @@ class App:
                                     value=True,
                                     info="When enabled, starting the recorder below begins live preview automatically.",
                                 )
-                                live_mic_input = gr.Microphone(
-                                    label="Live microphone preview",
-                                    type="numpy",
-                                    streaming=True,
-                                    interactive=True,
-                                    elem_id="live-mic-recorder",
-                                    elem_classes=["mic-recorder-frame", "mic-recorder-live"],
-                                    waveform_options=gr.WaveformOptions(
-                                        show_recording_waveform=True,
-                                    ),
-                                )
+                                live_mic_input = live_microphone()
                                 live_mic_status = gr.Markdown(
                                     self.build_live_mic_status(
                                         True,
@@ -2346,18 +2393,15 @@ class App:
                             queue=False,
                             show_progress="hidden",
                         )
-                        # Queued stream with Gradio's default trigger mode ("multiple"): the browser keeps one
-                        # stream open and every 100 ms chunk reaches the handler in order. With queue=False and
-                        # "always_last" each chunk was a new request, the recorder showed "Waiting" and about
-                        # half of the audio never arrived (7 s of a 14 s recording). The handler returns at once;
-                        # the preview transcription runs in a background thread.
-                        live_mic_stream_event = live_mic_input.stream(
+                        # Complete rolling windows use ordinary input events. Final audio is uploaded
+                        # separately on Stop, so transport backpressure cannot truncate the recording.
+                        live_mic_stream_event = live_mic_input.input(
                             fn=self.transcribe_live_mic_chunk,
                             inputs=live_mic_stream_inputs + mic_transcription_ui["pipeline"],
                             outputs=[live_mic_state, live_mic_transcription, live_mic_status],
                             show_progress="hidden",
                             concurrency_limit=1,
-                            stream_every=1.0,
+                            trigger_mode="always_last",
                         )
                         live_mic_stop_event = live_mic_input.stop_recording(
                             fn=self.prepare_live_mic_capture_for_generation,
@@ -2864,7 +2908,7 @@ class App:
                         values = _ui_config_to_values(build_default_ui_config(default_params=self.default_params))
                         return values, "No preset selected. Showing defaults."
 
-                    cfg = load_ui_preset(preset_name, default_params=self.default_params)
+                    cfg = self.load_hardware_ui_preset(preset_name)
                     if not cfg:
                         if get_last_used_ui_preset() == preset_name:
                             clear_last_used_ui_preset()
@@ -2923,7 +2967,7 @@ class App:
                     if not preset_name:
                         return (*unchanged, gr.update(), "No built-in preset is available for the selected base model.")
 
-                    cfg = load_ui_preset(preset_name, default_params=self.default_params)
+                    cfg = self.load_hardware_ui_preset(preset_name)
                     if not cfg:
                         return (*unchanged, gr.update(), f"Preset **{preset_name}** could not be loaded.")
 
@@ -2998,6 +3042,13 @@ class App:
                     ("youtube_tab", youtube_transcription_ui),
                     ("mic_tab", mic_transcription_ui),
                 ):
+                    transcription_ui["model_input"].input(
+                        fn=self.update_model_batch_size,
+                        inputs=[transcription_ui["model_type_radio"], transcription_ui["model_input"], ui_preset_dropdown],
+                        outputs=[transcription_ui["batch_size_input"]],
+                        queue=False,
+                        show_progress="hidden",
+                    )
                     def _autoload_for_section(selected_whisper_type, current_preset_name, section_key=section_key):
                         return _autoload_preset_for_model_type(section_key, selected_whisper_type, current_preset_name)
 

@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from pathlib import Path
+import yaml
+import pytest
 
 from modules.diarize.diarizer import Diarizer
 from modules.diarize import diarize_pipeline
@@ -129,3 +132,25 @@ def test_diarizer_failure_message_points_to_offline_bundle(monkeypatch, capsys):
     assert "offline diarization bundle" in output
     assert "DownloadModels.py" in output
     assert "token" not in output.lower()
+
+
+@pytest.mark.parametrize("old_root", ["/old/install", "C:\\old\\install"])
+def test_offline_diarization_bundle_can_move_between_installations(tmp_path, old_root):
+    bundle = tmp_path / "bundle"
+    checkpoint = bundle / "speaker-model" / "pytorch_model.bin"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"checkpoint")
+    separator = "\\" if old_root.startswith("C:") else "/"
+    old_checkpoint = separator.join([old_root, "speaker-model", "pytorch_model.bin"])
+    config = {"pipeline": {"params": {"embedding": {"checkpoint": old_checkpoint}}}}
+    original = yaml.safe_dump(config)
+    config_path = bundle / "config.yaml"
+    config_path.write_text(original, encoding="utf-8")
+
+    with diarize_pipeline._portable_pipeline_config(str(config_path)) as resolved_path:
+        assert resolved_path != str(config_path)
+        resolved = yaml.safe_load(Path(resolved_path).read_text())
+        assert resolved["pipeline"]["params"]["embedding"]["checkpoint"] == str(checkpoint)
+
+    assert not Path(resolved_path).exists()
+    assert config_path.read_text(encoding="utf-8") == original

@@ -18,6 +18,7 @@ import math
 from dataclasses import dataclass, asdict
 
 import torch
+from modules.whisper.convrot.cuda_graph import CudaGraph
 import torch.nn.functional as F
 
 from . import kernels as K
@@ -516,8 +517,8 @@ class DecodeSession:
         # Capture records the kernels without executing them, so the decoding
         # state (cache, ids, positions) is untouched by the capture itself.
         torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
+        graph = CudaGraph()
+        with graph.capture():
             self._step_impl()
         torch.cuda.synchronize()
         self.graph = graph

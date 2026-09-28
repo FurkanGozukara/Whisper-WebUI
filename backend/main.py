@@ -8,6 +8,10 @@ import os
 import time
 import threading
 
+from modules.utils.paths import configure_model_cache_env
+
+configure_model_cache_env()
+
 from modules.utils.cuda_runtime import enable_cuda_runtime_autodiscovery
 
 enable_cuda_runtime_autodiscovery()

@@ -9,7 +9,6 @@ import gradio as gr
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
-from datetime import datetime
 from modules.whisper.data_classes import *
 from modules.utils.paths import BACKEND_CACHE_DIR
 from modules.whisper.whisper_factory import WhisperFactory
@@ -21,7 +20,7 @@ from backend.db.task.dao import (
     get_db_session,
     update_task_status_in_db
 )
-from backend.db.task.models import TaskStatus, TaskType
+from backend.db.task.models import TaskStatus, TaskType, utc_now
 
 transcription_router = APIRouter(prefix="/transcription", tags=["Transcription"])
 
@@ -34,7 +33,7 @@ def create_progress_callback(identifier: str):
                 "uuid": identifier,
                 "status": TaskStatus.IN_PROGRESS,
                 "progress": round(progress_value, 2),
-                "updated_at": datetime.utcnow()
+                "updated_at": utc_now()
             },
         )
     return progress_callback
@@ -60,7 +59,7 @@ def run_transcription(
         update_data={
             "uuid": identifier,
             "status": TaskStatus.IN_PROGRESS,
-            "updated_at": datetime.utcnow()
+            "updated_at": utc_now()
         },
     )
 
@@ -81,7 +80,7 @@ def run_transcription(
             "uuid": identifier,
             "status": TaskStatus.COMPLETED,
             "result": segments,
-            "updated_at": datetime.utcnow(),
+            "updated_at": utc_now(),
             "duration": elapsed_time,
             "progress": 1.0,
         },
@@ -133,5 +132,4 @@ async def transcription(
     )
 
     return QueueResponse(identifier=identifier, status=TaskStatus.QUEUED, message="Transcription task has queued")
-
 

@@ -9,6 +9,7 @@ from datetime import datetime
 from modules.whisper.data_classes import *
 from modules.utils.subtitle_manager import *
 from modules.utils.paths import NLLB_MODELS_DIR, TRANSLATION_OUTPUT_DIR
+from modules.translation.file_outputs import existing_translation_names, reserve_translation_name
 
 
 class TranslationBase(ABC):
@@ -80,21 +81,25 @@ class TranslationBase(ABC):
             if fileobjs and isinstance(fileobjs[0], gr.utils.NamedString):
                 fileobjs = [file.name for file in fileobjs]
 
-            self.update_model(model_size=model_size,
-                              src_lang=src_lang,
-                              tgt_lang=tgt_lang,
-                              progress=progress)
+            same_language = str(src_lang).strip().casefold() == str(tgt_lang).strip().casefold()
+            if not same_language:
+                self.update_model(model_size=model_size,
+                                  src_lang=src_lang,
+                                  tgt_lang=tgt_lang,
+                                  progress=progress)
 
-            files_info = {}
+            files_info = []
+            used_names = existing_translation_names(self.output_dir, add_timestamp)
             for fileobj in fileobjs:
-                file_name = safe_filename(os.path.splitext(os.path.basename(fileobj))[0])
-                file_ext = os.path.splitext(os.path.basename(fileobj))[1]
+                file_name, file_ext = reserve_translation_name(fileobj, used_names)
                 writer = get_writer(file_ext, self.output_dir)
                 segments = writer.to_segments(fileobj)
                 for i, segment in enumerate(segments):
                     progress(i / len(segments), desc="Translating..")
-                    translated_text = self.translate(segment.text, max_length=max_length)
-                    segment.text = translated_text
+                    # Sending English to English through NLLB can drop greetings or paraphrase
+                    # subtitle text. An unchanged language needs no generative transformation.
+                    if not same_language:
+                        segment.text = self.translate(segment.text, max_length=max_length)
 
                 subtitle, file_path = generate_file(
                     output_dir=self.output_dir,
@@ -104,16 +109,16 @@ class TranslationBase(ABC):
                     add_timestamp=add_timestamp
                 )
 
-                files_info[file_name] = {"subtitle": subtitle, "path": file_path}
+                files_info.append({"subtitle": subtitle, "path": file_path})
 
             total_result = ''
-            for file_name, info in files_info.items():
+            for info in files_info:
                 total_result += '------------------------------------\n'
-                total_result += f'{file_name}\n\n'
+                total_result += f'{os.path.basename(info["path"])}\n\n'
                 total_result += f'{info["subtitle"]}'
-            gr_str = f"Done! Subtitle is in the outputs/translation folder.\n\n{total_result}"
+            gr_str = f"Done! {len(files_info)} subtitle file(s) saved to {self.output_dir}.\n\n{total_result}"
 
-            output_file_paths = [item["path"] for key, item in files_info.items()]
+            output_file_paths = [item["path"] for item in files_info]
             print(f"Translation finished: {len(output_file_paths)} file(s) saved to {self.output_dir}")
             return [gr_str, output_file_paths]
 

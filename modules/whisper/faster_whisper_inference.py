@@ -158,6 +158,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
     TRANSCRIPTION_PROGRESS_START = 0.3
     TRANSCRIPTION_PROGRESS_END = 0.98
     LONG_FORM_CONDITIONING_WINDOW_THRESHOLD = 60
+    ENGLISH_LARGE_V3_CONTEXT_LIMIT_SECONDS = 30.0
     WHISPER_TOKEN_LIMIT_FALLBACK = 448
     PROMPT_TOKEN_RESERVE = 16
 
@@ -378,6 +379,21 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if sampling_rate is None:
             sampling_rate = self.model.feature_extractor.sampling_rate
         audio_array = self.prepare_audio_array(audio=audio, sampling_rate=sampling_rate)
+        duration_seconds = float(audio_array.shape[-1]) / float(sampling_rate) if sampling_rate > 0 else 0.0
+        language = str(params.lang or "").strip().casefold()
+        if (
+            language in {"en", "english"}
+            and self.is_large_v3_selection(params.model_size)
+            and duration_seconds > self.ENGLISH_LARGE_V3_CONTEXT_LIMIT_SECONDS
+        ):
+            if log_console:
+                logger.info(
+                    "Auto-disabling condition_on_previous_text for English large-v3 audio longer than "
+                    "30 seconds (%.1f seconds) to reduce repeated passages. Short clips retain the selected setting.",
+                    duration_seconds,
+                )
+            return audio_array, params.model_copy(update={"condition_on_previous_text": False})
+
         estimated_windows = self.estimate_chunk_windows(
             audio=audio_array,
             chunk_length=params.chunk_length,
@@ -387,10 +403,6 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         if estimated_windows < self.LONG_FORM_CONDITIONING_WINDOW_THRESHOLD:
             return audio_array, params
 
-        duration_seconds = 0.0
-        if sampling_rate > 0:
-            duration_seconds = float(audio_array.shape[-1]) / float(sampling_rate)
-
         if log_console:
             logger.info(
                 "Auto-disabling condition_on_previous_text for long-form audio "
@@ -399,6 +411,20 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 estimated_windows,
             )
         return audio_array, params.model_copy(update={"condition_on_previous_text": False})
+
+    @classmethod
+    def is_large_v3_selection(cls, model_size: str) -> bool:
+        """Recognize full large-v3 aliases/folders without matching turbo or distilled variants."""
+        selected = str(model_size or "").strip().replace("\\", "/").rstrip("/").casefold()
+        if selected == "large":
+            # faster-whisper's moving alias currently resolves to full large-v3.
+            selected = str(cls.hf_repo_id_for_model_size("large") or "").casefold()
+        parts = selected.split("/")
+        names = {
+            "large-v3", "large-v3-int8-convrot", "faster-whisper-large-v3",
+            "systran--faster-whisper-large-v3", "models--systran--faster-whisper-large-v3",
+        }
+        return bool(parts and parts[-1] in names) or "models--systran--faster-whisper-large-v3" in parts
 
     @staticmethod
     def should_repeat_initial_prompt(params: WhisperParams) -> bool:

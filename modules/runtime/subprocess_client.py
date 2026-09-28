@@ -428,6 +428,8 @@ class SubprocessWhisperProxy:
         self.current_compute_type = metadata["current_compute_type"]
         self.gpu_total_memory_gb = metadata.get("gpu_total_memory_gb")
         self.gpu_name = metadata.get("gpu_name")
+        self.gpu_free_memory_gb = metadata.get("gpu_free_memory_gb")
+        self.convrot_supported = metadata.get("convrot_supported", False)
         self.music_separator = _MusicSeparatorProxy(self._client, metadata["music_separator"])
         self.diarizer = _DiarizerProxy(metadata["diarizer"])
 

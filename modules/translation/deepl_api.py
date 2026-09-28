@@ -7,6 +7,7 @@ import gradio as gr
 from modules.utils.paths import TRANSLATION_OUTPUT_DIR
 from modules.utils.constants import AUTOMATIC_DETECTION
 from modules.utils.subtitle_manager import *
+from modules.translation.file_outputs import existing_translation_names, reserve_translation_name
 
 """
 This is written with reference to the DeepL API documentation.
@@ -129,10 +130,10 @@ class DeepLAPI:
         if fileobjs and isinstance(fileobjs[0], gr.utils.NamedString):
             fileobjs = [fileobj.name for fileobj in fileobjs]
 
-        files_info = {}
+        files_info = []
+        used_names = existing_translation_names(self.output_dir, add_timestamp)
         for file_path in fileobjs:
-            file_name = safe_filename(os.path.splitext(os.path.basename(file_path))[0])
-            file_ext = os.path.splitext(os.path.basename(file_path))[1]
+            file_name, file_ext = reserve_translation_name(file_path, used_names)
             writer = get_writer(file_ext, self.output_dir)
             segments = writer.to_segments(file_path)
 
@@ -153,16 +154,16 @@ class DeepLAPI:
                 add_timestamp=add_timestamp
             )
 
-            files_info[file_name] = {"subtitle": subtitle, "path": output_path}
+            files_info.append({"subtitle": subtitle, "path": output_path})
 
         total_result = ''
-        for file_name, info in files_info.items():
+        for info in files_info:
             total_result += '------------------------------------\n'
-            total_result += f'{file_name}\n\n'
+            total_result += f'{os.path.basename(info["path"])}\n\n'
             total_result += f'{info["subtitle"]}'
-        gr_str = f"Done! Subtitle is in the outputs/translation folder.\n\n{total_result}"
+        gr_str = f"Done! {len(files_info)} subtitle file(s) saved to {self.output_dir}.\n\n{total_result}"
 
-        output_file_paths = [item["path"] for key, item in files_info.items()]
+        output_file_paths = [item["path"] for item in files_info]
         return [gr_str, output_file_paths]
 
     def request_deepl_translate(self,

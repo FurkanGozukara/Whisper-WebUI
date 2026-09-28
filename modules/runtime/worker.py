@@ -104,7 +104,8 @@ def args_for_request(request: Dict[str, Any]) -> Namespace:
     return args
 
 
-def whisper_metadata_payload(whisper_inf, gpu_total_memory_gb=None, gpu_name=None) -> Dict[str, Any]:
+def whisper_metadata_payload(whisper_inf, gpu_total_memory_gb=None, gpu_name=None,
+                             gpu_free_memory_gb=None, convrot_supported=False) -> Dict[str, Any]:
     return {
         "device": whisper_inf.device,
         "available_models": list(whisper_inf.available_models),
@@ -113,6 +114,8 @@ def whisper_metadata_payload(whisper_inf, gpu_total_memory_gb=None, gpu_name=Non
         "current_compute_type": whisper_inf.current_compute_type,
         "gpu_total_memory_gb": gpu_total_memory_gb,
         "gpu_name": gpu_name,
+        "gpu_free_memory_gb": gpu_free_memory_gb,
+        "convrot_supported": convrot_supported,
         "music_separator": {
             "device": whisper_inf.music_separator.device,
             "available_devices": list(whisper_inf.music_separator.available_devices),
@@ -132,6 +135,8 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
 
     gpu_total_memory_gb = None
     gpu_name = None
+    gpu_free_memory_gb = None
+    convrot_supported = False
     startup_log("Loading PyTorch..")
     try:
         import torch
@@ -141,6 +146,8 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
             device_properties = torch.cuda.get_device_properties(device_index)
             gpu_total_memory_gb = device_properties.total_memory / (1024 ** 3)
             gpu_name = getattr(device_properties, "name", None)
+            gpu_free_memory_gb = torch.cuda.mem_get_info(device_index)[0] / (1024 ** 3)
+            convrot_supported = torch.cuda.get_device_capability(device_index)[0] >= 8
         else:
             xpu = getattr(torch, "xpu", None)
             if xpu is not None and xpu.is_available():
@@ -169,6 +176,8 @@ def query_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
             create_whisper_inferencer(typed_args),
             gpu_total_memory_gb=gpu_total_memory_gb,
             gpu_name=gpu_name,
+            gpu_free_memory_gb=gpu_free_memory_gb,
+            convrot_supported=convrot_supported,
         )
 
     selected_type = args.whisper_type if args.whisper_type in implementation_metadata else WhisperImpl.FASTER_WHISPER.value

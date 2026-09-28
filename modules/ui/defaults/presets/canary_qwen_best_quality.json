@@ -4,7 +4,7 @@
     "format": "whisper_webui_ui",
     "locked": true,
     "display_name": "Canary Qwen Best Quality",
-    "description": "Best overall Canary-Qwen ASR preset using English-only chunked generation."
+    "description": "English INT8 preset validated on short and long human-reference speech. Batch size adapts to available GPU memory."
   },
   "file_tab": {
     "whisper": {
@@ -21,7 +21,7 @@
       "word_timestamps": false,
       "normalize_word_timestamps": true,
       "max_new_tokens": 256,
-      "chunk_length": 10,
+      "chunk_length": 0,
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,
@@ -47,7 +47,7 @@
       "word_timestamps": false,
       "normalize_word_timestamps": true,
       "max_new_tokens": 256,
-      "chunk_length": 10,
+      "chunk_length": 0,
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,
@@ -73,7 +73,7 @@
       "word_timestamps": false,
       "normalize_word_timestamps": true,
       "max_new_tokens": 256,
-      "chunk_length": 10,
+      "chunk_length": 0,
       "use_batched_inference": false,
       "batch_size": 1,
       "condition_on_previous_text": false,

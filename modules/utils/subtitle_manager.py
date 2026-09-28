@@ -1,6 +1,7 @@
 # Ported from https://github.com/openai/whisper/blob/main/whisper/utils.py
 
 import json
+import csv
 import os
 import re
 import sys
@@ -91,8 +92,14 @@ def _parse_cue_blocks(file_path: str, strip_markup: bool = False) -> List[Segmen
         timing = _cue_timing(line)
         if timing is not None:
             if current is not None:
-                # the line right before a timing line is the number or id of the new cue
-                if current_last_text_index == index - 1 and current["lines"]:
+                # A numbered cue, or an identifier after a blank separator, belongs to the new cue.
+                # Adjacent timing lines without a separator are also common: their preceding speech
+                # must not be mistaken for an identifier and silently dropped.
+                previous_is_id = index > 0 and (
+                    lines[index - 1].strip().isdecimal()
+                    or (index > 1 and not lines[index - 2].strip())
+                )
+                if current_last_text_index == index - 1 and current["lines"] and previous_is_id:
                     current["lines"].pop()
                 segments.append(current)
             current = {"start": timing[0], "end": timing[1], "lines": []}
@@ -325,7 +332,7 @@ class ResultWriter:
         self, result: Union[dict, List[Segment]], output_file_name: str,
             options: Optional[dict] = None, **kwargs
     ):
-        if isinstance(result, List) and result and isinstance(result[0], Segment):
+        if isinstance(result, list) and (not result or isinstance(result[0], Segment)):
             result = {"segments": [seg.model_dump() for seg in result]}
 
         output_path = os.path.join(
@@ -359,7 +366,7 @@ class WriteTXT(ResultWriter):
     def to_segments(self, file_path: str):
         segments = []
 
-        blocks = read_file(file_path).split('\n')
+        blocks = _read_subtitle_text(file_path).splitlines()
 
         for block in blocks:
             segments.append(Segment(
@@ -607,7 +614,18 @@ class WriteTSV(ResultWriter):
                 continue
             print(round(1000 * segment["start"]), file=file, end="\t")
             print(round(1000 * segment["end"]), file=file, end="\t")
-            print(segment["text"].strip().replace("\t", " "), file=file, flush=True)
+            print(re.sub(r"[\t\r\n]+", " ", segment["text"].strip()), file=file, flush=True)
+
+    def to_segments(self, file_path: str) -> List[Segment]:
+        rows = csv.DictReader(_read_subtitle_text(file_path).splitlines(), delimiter="\t")
+        if not rows.fieldnames:
+            return []
+        if not {"start", "end", "text"}.issubset(rows.fieldnames):
+            raise ValueError("TSV subtitles require start, end and text columns (times in milliseconds).")
+        return [
+            Segment(start=float(row["start"]) / 1000, end=float(row["end"]) / 1000, text=row["text"])
+            for row in rows
+        ]
 
 
 class WriteJSON(ResultWriter):
@@ -617,6 +635,13 @@ class WriteJSON(ResultWriter):
         self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
     ):
         json.dump(result, file, indent=2, ensure_ascii=False)
+
+    def to_segments(self, file_path: str) -> List[Segment]:
+        result = json.loads(_read_subtitle_text(file_path))
+        segments = result.get("segments") if isinstance(result, dict) else result
+        if not isinstance(segments, list):
+            raise ValueError("JSON subtitles require a segments list.")
+        return [Segment(**segment) for segment in segments]
 
 
 def get_writer(
@@ -678,6 +703,10 @@ def safe_filename(name):
     INVALID_FILENAME_CHARS = r'[<>:"/\\|?*\x00-\x1f]'
     MAX_FILENAME_LENGTH = 200
     safe_name = re.sub(INVALID_FILENAME_CHARS, '_', name)
+    safe_name = safe_name.rstrip(" .") or "untitled"
+    # Windows device names remain reserved even with an extension, including on NTFS.
+    if re.match(r"^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CONIN\$|CONOUT\$)(?:\.|$)", safe_name, re.IGNORECASE):
+        safe_name = "_" + safe_name
     # Truncate the filename if it exceeds the max_length (MAX_FILENAME_LENGTH)
     if len(safe_name) > MAX_FILENAME_LENGTH:
         file_extension = safe_name.split('.')[-1]
@@ -686,4 +715,4 @@ def safe_filename(name):
             safe_name = truncated_name + '.' + file_extension
         else:
             safe_name = safe_name[:MAX_FILENAME_LENGTH]
-    return safe_name
+    return safe_name.rstrip(" .") or "untitled"

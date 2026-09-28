@@ -112,6 +112,25 @@ def test_insanely_fast_defaults_never_fall_back_to_canary_model(monkeypatch):
     assert defaults["max_new_tokens"] is None
 
 
+def test_builtin_hardware_batches_preserve_user_presets(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    from modules.ui.hardware import select_hardware_preset
+    app_instance = app_module.App.__new__(app_module.App)
+    app_instance.hardware_preset = select_hardware_preset(24, 20, True)
+    app_instance.default_params = {}
+    from copy import deepcopy
+    config = {section: {"whisper": {"whisper_type": "canary-qwen", "model_size":
+              "canary-qwen-2.5b-int8-convrot", "batch_size": 3}}
+              for section in ("file_tab", "youtube_tab", "mic_tab")}
+    monkeypatch.setattr(app_module, "load_ui_preset", lambda *a, **kw: deepcopy(config))
+    monkeypatch.setattr(app_module, "is_locked_ui_preset", lambda name: name == "builtin")
+    monkeypatch.setattr(app_module, "is_user_ui_preset", lambda name: name == "custom")
+    assert app_instance.load_hardware_ui_preset("builtin")["file_tab"]["whisper"]["batch_size"] == 16
+    assert app_instance.load_hardware_ui_preset("custom")["file_tab"]["whisper"]["batch_size"] == 3
+    assert app_instance.update_model_batch_size("canary-qwen", "nvidia/canary-qwen-2.5b", "builtin")["value"] == 1
+    assert "value" not in app_instance.update_model_batch_size("canary-qwen", "nvidia/canary-qwen-2.5b", "custom")
+
+
 def test_cancel_active_generation_runs_without_confirmation_input(monkeypatch):
     app_module = load_app_module(monkeypatch)
     app_instance = app_module.App.__new__(app_module.App)
@@ -161,6 +180,18 @@ def test_cancel_active_generation_passes_the_callers_session(monkeypatch):
 
     assert app_instance.cancel_active_generation(True, DummyRequest()) is True
     assert sessions == ["session-a"]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_cancel_ui_callback_preserves_request_and_returns_no_component_value(monkeypatch, confirmed):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+    request = gr.Request(session_hash="test-session")
+    calls = []
+    app_instance.cancel_active_generation = lambda accepted, req: calls.append((accepted, req)) or True
+    args, _, _, _ = special_args(app_instance.cancel_generation_from_ui, inputs=[confirmed], request=request)
+    assert app_instance.cancel_generation_from_ui(*args) is None
+    assert calls == [(confirmed, request)]
 
 
 def test_cancel_confirm_js_returns_frontend_confirmation_payload(monkeypatch):
@@ -322,7 +353,7 @@ def test_youtube_transcription_wrapper_logs_and_returns_persistent_error(monkeyp
     assert files_update == {"visible": False, "value": []}
 
 
-def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch):
+def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch, tmp_path):
     app_module = load_app_module(monkeypatch)
     app_instance = app_module.App.__new__(app_module.App)
     captured = {}
@@ -341,8 +372,10 @@ def test_mic_transcription_wrapper_preserves_pipeline_order(monkeypatch):
         staticmethod(lambda prefix, timestamp=None: f"{prefix}_2026_04_15_10_11_12"),
     )
 
+    mic_audio = tmp_path / "recording.wav"
+    mic_audio.write_bytes(b"test recording")
     ui_inputs = [
-        "tests/jfk.wav",
+        str(mic_audio),
         ["SRT"],
         False,
         "large-v3",
@@ -726,7 +759,7 @@ def test_refresh_record_mic_ready_state_reflects_attached_audio(tmp_path, monkey
     waiting_status, waiting_update = app_module.App.refresh_record_mic_ready_state(None)
     ready_status, ready_update = app_module.App.refresh_record_mic_ready_state({"path": str(audio_file)})
 
-    assert "not ready yet" in waiting_status
+    assert waiting_status == app_module.App.build_record_mic_idle_status()
     assert waiting_update["interactive"] is False
     assert "Recording saved." in ready_status
     assert ready_update["interactive"] is True

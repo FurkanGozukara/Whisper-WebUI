@@ -9,11 +9,13 @@ from sqlmodel import SQLModel
 from dotenv import load_dotenv
 
 from backend.common.config_loader import read_env
+from modules.utils.paths import BACKEND_DIR_PATH
 
 
 @functools.lru_cache
 def init_db():
-    db_url = read_env("DB_URL", "sqlite:///backend/records.db")
+    database_path = os.path.join(BACKEND_DIR_PATH, "records.db").replace("\\", "/")
+    db_url = read_env("DB_URL", f"sqlite:///{database_path}")
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)

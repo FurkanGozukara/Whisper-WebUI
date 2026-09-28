@@ -30,6 +30,9 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     DEFAULT_MODEL_ID = "nvidia/canary-qwen-2.5b"
     SAMPLE_RATE = 16000
     MAX_CHUNK_SECONDS = 40.0
+    AUTO_SHORT_AUDIO_SECONDS = 30.0
+    AUTO_SHORT_CHUNK_SECONDS = 10.0
+    AUTO_LONG_CHUNK_SECONDS = 12.0
     MIN_CHUNK_SECONDS = 0.1
     MIN_CHUNK_SAMPLES = int(SAMPLE_RATE * MIN_CHUNK_SECONDS)
     # A chunk ends at the quietest moment of its last seconds (at most a third of the chunk) instead of exactly
@@ -103,6 +106,10 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
         progress(0.05, desc="Loading audio..")
         audio_array = self.prepare_audio_array(audio)
         chunks = self.build_audio_chunks(audio_array, params.chunk_length)
+        # The generative decoder otherwise invents words such as "Okay" for
+        # an exactly silent recording. Only drop digital zero; quiet speech
+        # and real background noise remain available to the model/VAD.
+        chunks = [chunk for chunk in chunks if np.any(chunk["audio"])]
         if not chunks:
             return [], time.time() - start_time
 
@@ -133,6 +140,17 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                     audios=audios.to(self.device, non_blocking=True),
                     audio_lens=audio_lens.to(self.device, non_blocking=True),
                     **generation_kwargs,
+                )
+
+            # Hugging Face returns a structured output when the advanced JSON
+            # requests return_dict_in_generate. Transcription still needs its
+            # token sequences, one row per input chunk.
+            if hasattr(output_ids, "sequences"):
+                output_ids = output_ids.sequences
+            if len(output_ids) != len(batch_chunks):
+                raise ValueError(
+                    "Canary-Qwen must return one transcript per audio chunk. "
+                    "Set num_return_sequences to 1 in Canary Generation Kwargs."
                 )
 
             for offset, (chunk, token_ids) in enumerate(zip(batch_chunks, output_ids)):
@@ -373,6 +391,15 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     @classmethod
     def sanitize_generation_kwargs(cls, kwargs: dict) -> dict:
         sanitized = dict(kwargs)
+        generation_config = sanitized.get("generation_config")
+        num_return_sequences = sanitized.get(
+            "num_return_sequences", getattr(generation_config, "num_return_sequences", 1)
+        )
+        if num_return_sequences not in (None, 1):
+            raise ValueError(
+                "Canary-Qwen transcription requires num_return_sequences=1 so each transcript "
+                "matches its audio chunk."
+            )
         sanitized["max_new_tokens"] = cls.clamp_int(
             sanitized.get("max_new_tokens"),
             default=cls.DEFAULT_MAX_NEW_TOKENS,
@@ -537,7 +564,18 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             )
             return []
 
-        requested_chunk_seconds = float(chunk_length or self.MAX_CHUNK_SECONDS)
+        if chunk_length is not None and float(chunk_length) == 0:
+            duration_seconds = total_samples / float(self.SAMPLE_RATE)
+            requested_chunk_seconds = (
+                self.AUTO_SHORT_CHUNK_SECONDS if duration_seconds <= self.AUTO_SHORT_AUDIO_SECONDS
+                else self.AUTO_LONG_CHUNK_SECONDS
+            )
+            logger.info(
+                "Canary-Qwen automatic chunk length: %.0fs for %.3fs of audio.",
+                requested_chunk_seconds, duration_seconds,
+            )
+        else:
+            requested_chunk_seconds = float(self.MAX_CHUNK_SECONDS if chunk_length is None else chunk_length)
         if requested_chunk_seconds <= 0:
             requested_chunk_seconds = self.MAX_CHUNK_SECONDS
         if requested_chunk_seconds < self.MIN_CHUNK_SECONDS:

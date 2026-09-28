@@ -155,3 +155,32 @@ def test_canary_convrot_engine_transcribes_and_survives_ram_offload():
     out3 = eng.generate([prompt], audios=audios[:1], audio_lens=lens[:1], max_new_tokens=16, num_beams=2)
     assert out3.shape[0] == 1
     assert isinstance(eng.tokenizer.ids_to_text(out1[0]), str)
+    # The HF beam/sampling adapter shares GPU embeddings. Offloading must drop
+    # it too, otherwise it retains the old CUDA storage after llm.to("cpu").
+    eng.to("cpu")
+    assert getattr(eng, "_hf_model", None) is None
+    eng.to("cuda")
+    out4 = eng.generate([prompt], audios=audios[:1], audio_lens=lens[:1], max_new_tokens=16, num_beams=2)
+    assert torch.equal(out3.cpu(), out4.cpu())
+
+
+@pytest.mark.skipif(not gpu_ok() or not is_canary_convrot_model_dir(MODEL_DIR),
+                    reason="needs an Ampere+ GPU and the converted model in the Canary model folder")
+def test_canary_graphs_survive_decoder_session_eviction():
+    """Switching batch sizes must not free another live graph's cuBLAS workspace."""
+    import gc
+    from modules.whisper.convrot.canary.engine import CanaryConvRot
+
+    eng = CanaryConvRot.from_folder(MODEL_DIR)
+    audio = torch.sin(torch.arange(16000 * 3, dtype=torch.float32) * .03).mul_(.1)
+    prompt = [{"role": "user", "content": f"Transcribe the following: {eng.audio_locator_tag}"}]
+    outputs = []
+    for batch_size in (1, 2, 3, 1):
+        gc.collect()
+        torch.cuda.empty_cache()
+        ids = eng.generate([prompt] * batch_size,
+                           audios=audio.repeat(batch_size, 1),
+                           audio_lens=torch.full((batch_size,), audio.numel()),
+                           max_new_tokens=8)
+        outputs.append(ids[0].cpu())
+    assert torch.equal(outputs[0], outputs[-1])

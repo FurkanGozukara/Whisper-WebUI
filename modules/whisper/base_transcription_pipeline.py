@@ -29,7 +29,7 @@ from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
 from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio, remove_ytaudio
 from modules.utils.files_manager import get_media_files, format_gradio_files, normalize_folder_path, read_file
-from modules.utils.audio_manager import coerce_audio_input_path, validate_audio
+from modules.utils.audio_manager import coerce_audio_input_path, validate_audio, is_digital_silence
 from modules.whisper.data_classes import *
 from modules.diarize.diarizer import Diarizer
 from modules.vad.silero_vad import SileroVAD
@@ -333,6 +333,18 @@ class BaseTranscriptionPipeline(ABC):
         primary_file_format = file_formats[0]
         params = self.validate_gradio_values(params)
         bgm_params, vad_params, whisper_params, diarization_params = params.bgm_separation, params.vad, params.whisper, params.diarization
+        if is_digital_silence(audio):
+            message = "The audio contains only digital silence; no speech was transcribed."
+            logger.info(message)
+            progress(1.0, desc=message)
+            if progress_callback is not None:
+                try:
+                    progress_callback(1.0, None, message)
+                except TypeError:
+                    pass
+            if not whisper_params.offload_to_ram and whisper_params.enable_offload and not self.defer_offload:
+                self.offload()
+            return [], time.time() - start_time
         self.prepare_models_for_run(whisper_params)
         self.log_selected_model(
             whisper_type=whisper_params.whisper_type,
@@ -370,37 +382,46 @@ class BaseTranscriptionPipeline(ABC):
         # (the deep copy duplicated up to hundreds of MB after the Background Music Remover)
         origin_audio = audio
 
-        if vad_params.vad_filter:
-            progress(0, desc="Filtering silent parts from audio..")
-            vad_options = VadOptions(
-                threshold=vad_params.threshold,
-                min_speech_duration_ms=vad_params.min_speech_duration_ms,
-                max_speech_duration_s=vad_params.max_speech_duration_s,
-                min_silence_duration_ms=vad_params.min_silence_duration_ms,
-                speech_pad_ms=vad_params.speech_pad_ms
-            )
+        try:
+            if vad_params.vad_filter:
+                progress(0, desc="Filtering silent parts from audio..")
+                vad_options = VadOptions(
+                    threshold=vad_params.threshold,
+                    min_speech_duration_ms=vad_params.min_speech_duration_ms,
+                    max_speech_duration_s=vad_params.max_speech_duration_s,
+                    min_silence_duration_ms=vad_params.min_silence_duration_ms,
+                    speech_pad_ms=vad_params.speech_pad_ms
+                )
 
-            vad_processed, speech_chunks = self.vad.run(
-                audio=audio,
-                vad_parameters=vad_options,
-                progress=progress
-            )
+                vad_processed, speech_chunks = self.vad.run(
+                    audio=audio,
+                    vad_parameters=vad_options,
+                    progress=progress
+                )
 
-            if vad_processed.size > 0:
+                if vad_processed.size == 0:
+                    message = "VAD detected no speech; no audio was transcribed."
+                    logger.info(message)
+                    progress(1.0, desc=message)
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(1.0, None, message)
+                        except TypeError:
+                            pass
+                    return [], time.time() - start_time
                 audio = vad_processed
-            else:
-                vad_params.vad_filter = False
 
-        result, elapsed_time_transcription = self.transcribe(
-            audio,
-            progress,
-            progress_callback,
-            *whisper_params.to_list()
-        )
-        if whisper_params.offload_to_ram:
-            pass  # the whole job ends with move_models_to_ram(); keep the model between files
-        elif whisper_params.enable_offload and not self.defer_offload:
-            self.offload()
+            result, elapsed_time_transcription = self.transcribe(
+                audio,
+                progress,
+                progress_callback,
+                *whisper_params.to_list()
+            )
+        finally:
+            # Also release a previously loaded model after no-speech VAD results or decode errors.
+            # RAM parking and batches retain their existing job-level cleanup behavior.
+            if not whisper_params.offload_to_ram and whisper_params.enable_offload and not self.defer_offload:
+                self.offload()
 
         if vad_params.vad_filter:
             restored_result = self.vad.restore_speech_timestamps(
@@ -900,6 +921,9 @@ class BaseTranscriptionPipeline(ABC):
             audio = audio.mean(axis=channel_axis)
         audio = np.ascontiguousarray(audio.squeeze(), dtype=np.float32)
 
+        if is_digital_silence(audio):
+            return ""
+
         params = TranscriptionPipelineParams.from_list(list(pipeline_params))
         params = self.validate_gradio_values(params)
         params.diarization.is_diarize = False
@@ -928,7 +952,7 @@ class BaseTranscriptionPipeline(ABC):
             if vad_processed.size > 0:
                 audio_to_transcribe = vad_processed
             else:
-                speech_chunks = None
+                return ""
 
         result, _ = self.transcribe(
             audio_to_transcribe,

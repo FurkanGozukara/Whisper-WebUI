@@ -19,6 +19,7 @@ import math
 from dataclasses import asdict, dataclass
 
 import torch
+from modules.whisper.convrot.cuda_graph import CudaGraph
 import torch.nn.functional as F
 
 from modules.whisper.convrot import kernels as WK
@@ -519,8 +520,8 @@ class _EncoderGraph:
                 for _ in range(2):  # Triton autotuning, cuDNN plans, cuFFT plans
                     enc._audio_forward(self.audio, self.lengths)
             torch.cuda.current_stream(dev).wait_stream(stream)
-            self.graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self.graph, capture_error_mode=CAPTURE_MODE):
+            self.graph = CudaGraph()
+            with self.graph.capture(capture_error_mode=CAPTURE_MODE):
                 self.out, self.out_lens = enc._audio_forward(self.audio, self.lengths)
 
     def __call__(self, audios: torch.Tensor, lengths: torch.Tensor):
@@ -815,8 +816,8 @@ class DecodeSession:
     def _capture(self):
         # Capture records the kernels without executing them, so the decoding state is untouched.
         torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode=CAPTURE_MODE):
+        graph = CudaGraph()
+        with graph.capture(capture_error_mode=CAPTURE_MODE):
             self._step_impl()
         torch.cuda.synchronize()
         self.graph = graph
@@ -839,7 +840,7 @@ class _PrefillGraph:
                 sess._prefill_layers(flat, b, p)
                 llm.logits(flat.index_select(0, self.last))
         torch.cuda.current_stream(dev).wait_stream(stream)
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph, capture_error_mode=CAPTURE_MODE):
+        self.graph = CudaGraph()
+        with self.graph.capture(capture_error_mode=CAPTURE_MODE):
             sess._prefill_layers(flat, b, p)
             self.logits = llm.logits(flat.index_select(0, self.last))

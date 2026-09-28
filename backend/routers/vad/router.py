@@ -7,14 +7,13 @@ from fastapi import (
 )
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 from typing import List, Dict
-from datetime import datetime
 
 from modules.vad.silero_vad import SileroVAD
 from modules.whisper.data_classes import VadParams
 from backend.common.audio import read_audio
 from backend.common.models import QueueResponse
 from backend.db.task.dao import add_task_to_db, update_task_status_in_db
-from backend.db.task.models import TaskStatus, TaskType
+from backend.db.task.models import TaskStatus, TaskType, utc_now
 
 vad_router = APIRouter(prefix="/vad", tags=["Voice Activity Detection"])
 
@@ -36,23 +35,23 @@ def run_vad(
         update_data={
             "uuid": identifier,
             "status": TaskStatus.IN_PROGRESS,
-            "updated_at": datetime.utcnow()
+            "updated_at": utc_now()
         }
     )
 
-    start_time = datetime.utcnow()
+    start_time = utc_now()
     audio, speech_chunks = get_vad_model().run(
         audio=audio,
         vad_parameters=params
     )
-    elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+    elapsed_time = (utc_now() - start_time).total_seconds()
 
     update_task_status_in_db(
         identifier=identifier,
         update_data={
             "uuid": identifier,
             "status": TaskStatus.COMPLETED,
-            "updated_at": datetime.utcnow(),
+            "updated_at": utc_now(),
             "result": speech_chunks,
             "duration": elapsed_time
         }
@@ -97,5 +96,4 @@ async def vad(
     background_tasks.add_task(run_vad, audio=audio, params=vad_options, identifier=identifier)
 
     return QueueResponse(identifier=identifier, status=TaskStatus.QUEUED, message="VAD task has queued")
-
 

@@ -63,7 +63,7 @@ def test_factory_creates_canary_qwen_inference(tmp_path):
 
 def test_canary_transcribe_batches_chunks_and_returns_chunk_timestamps(tmp_path):
     inferencer = build_inferencer(tmp_path)
-    audio = np.zeros(CanaryQwenInference.SAMPLE_RATE * 3, dtype=np.float32)
+    audio = np.ones(CanaryQwenInference.SAMPLE_RATE * 3, dtype=np.float32)
     params = WhisperParams(
         model_size=CanaryQwenInference.DEFAULT_MODEL_ID,
         lang="english",
@@ -104,7 +104,7 @@ def test_canary_merges_raw_generation_kwargs(tmp_path):
     )
 
     segments, _elapsed = inferencer.transcribe(
-        np.zeros(CanaryQwenInference.SAMPLE_RATE, dtype=np.float32),
+        np.ones(CanaryQwenInference.SAMPLE_RATE, dtype=np.float32),
         gr.Progress(),
         None,
         *params.to_list(),
@@ -133,7 +133,7 @@ def test_canary_clamps_unsafe_generation_kwargs(tmp_path):
     )
 
     inferencer.transcribe(
-        np.zeros(CanaryQwenInference.SAMPLE_RATE, dtype=np.float32),
+        np.ones(CanaryQwenInference.SAMPLE_RATE, dtype=np.float32),
         gr.Progress(),
         None,
         *params.to_list(),
@@ -165,6 +165,42 @@ def test_canary_clamps_nested_generation_config():
     assert generation_config.top_p == 1.0
 
 
+@pytest.mark.parametrize("raw", [
+    '{"num_beams": 2, "num_return_sequences": 2}',
+    '{"generation_config": {"num_beams": 2, "num_return_sequences": 2}}',
+])
+def test_canary_rejects_multiple_hypotheses_per_chunk(raw):
+    kwargs = CanaryQwenInference.parse_canary_generation_kwargs(raw)
+    with pytest.raises(ValueError, match="num_return_sequences=1"):
+        CanaryQwenInference.sanitize_generation_kwargs(kwargs)
+
+
+def test_canary_accepts_structured_generation_output(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    inferencer.model.generate = lambda **kwargs: types.SimpleNamespace(sequences=torch.tensor([[17]]))
+    params = WhisperParams(model_size=CanaryQwenInference.DEFAULT_MODEL_ID, compute_type="float32",
+                           canary_generation_kwargs='{"return_dict_in_generate": true}')
+    segments, _ = inferencer.transcribe(np.ones(16000, dtype=np.float32), gr.Progress(), None,
+                                       *params.to_list(), log_console=False, log_model_banner=False)
+    assert [s.text for s in segments] == ["chunk-17"]
+
+
+def test_canary_skips_digital_silence_and_preserves_real_timestamps(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    params = WhisperParams(model_size=CanaryQwenInference.DEFAULT_MODEL_ID, compute_type="float32",
+                           chunk_length=1, batch_size=2)
+    silence = np.zeros(16000, dtype=np.float32)
+    segments, _ = inferencer.transcribe(silence, gr.Progress(), None, *params.to_list(), log_console=False)
+    assert segments == []
+    assert inferencer.model.calls == []
+    # Even extremely quiet nonzero audio must be preserved; this is not an
+    # amplitude-based speech detector that can erase distant voices.
+    quiet = np.full(16000, 1e-8, dtype=np.float32)
+    segments, _ = inferencer.transcribe(np.concatenate([quiet, silence, quiet]), gr.Progress(), None,
+                                       *params.to_list(), log_console=False)
+    assert [(s.start, s.end) for s in segments] == [(0.0, 1.0), (2.0, 3.0)]
+
+
 def test_canary_merges_tiny_tail_into_previous_chunk(tmp_path):
     inferencer = build_inferencer(tmp_path)
     audio = np.zeros((CanaryQwenInference.SAMPLE_RATE * 2) + 273, dtype=np.float32)
@@ -176,6 +212,36 @@ def test_canary_merges_tiny_tail_into_previous_chunk(tmp_path):
         CanaryQwenInference.SAMPLE_RATE + 273,
     ]
     assert chunks[-1]["end_seconds"] == pytest.approx(audio.shape[-1] / CanaryQwenInference.SAMPLE_RATE)
+
+
+@pytest.mark.parametrize("samples,expected_first_end", [
+    (30 * 16000 - 1, 10.0),
+    (30 * 16000, 10.0),
+    (30 * 16000 + 1, 12.0),
+    (60 * 16000, 12.0),
+])
+def test_canary_automatic_chunks_preserve_short_speech_punctuation_policy(tmp_path, samples, expected_first_end):
+    inferencer = build_inferencer(tmp_path)
+    chunks = inferencer.build_audio_chunks(np.ones(samples, dtype=np.float32), chunk_length=0)
+    assert chunks[0]["end_seconds"] == expected_first_end
+    assert chunks[-1]["end_seconds"] == pytest.approx(samples / 16000)
+
+
+@pytest.mark.parametrize("duration,requested,expected_first_end", [
+    (20, 12, 12.0),
+    (60, 10, 10.0),
+    (60, 12, 12.0),
+    (60, None, 40.0),
+])
+def test_canary_manual_chunk_lengths_and_legacy_none_remain_explicit(tmp_path, duration, requested, expected_first_end):
+    inferencer = build_inferencer(tmp_path)
+    chunks = inferencer.build_audio_chunks(np.ones(duration * 16000, dtype=np.float32), requested)
+    assert chunks[0]["end_seconds"] == expected_first_end
+
+
+def test_canary_automatic_chunks_accept_empty_audio(tmp_path):
+    inferencer = build_inferencer(tmp_path)
+    assert inferencer.build_audio_chunks(np.array([], dtype=np.float32), chunk_length=0) == []
 
 
 def test_canary_skips_audio_shorter_than_safe_feature_window(tmp_path):

@@ -13,8 +13,6 @@ import gradio as gr
 from datetime import datetime
 
 from modules.utils.paths import UVR_MODELS_DIR, UVR_OUTPUT_DIR
-from modules.utils.files_manager import is_video
-from modules.diarize.audio_loader import load_audio
 from modules.utils.logger import get_logger
 logger = get_logger()
 
@@ -60,6 +58,10 @@ def load_uvr_mdx():
 
 
 class MusicSeparator:
+    # MDX's STFT bins and weights are trained at this rate. Its ndarray API ignores
+    # sampling_rate, so changing model.sample_rate does not resample the waveform.
+    MODEL_SAMPLE_RATE = 44100
+
     def __init__(self,
                  model_dir: Optional[str] = UVR_MODELS_DIR,
                  output_dir: Optional[str] = UVR_OUTPUT_DIR):
@@ -180,22 +182,21 @@ class MusicSeparator:
             output_filename, ext = os.path.basename(audio), ".wav"
             output_filename, orig_ext = os.path.splitext(output_filename)
 
-            if is_video(audio):
-                audio = load_audio(audio)
-                sample_rate = 16000
-            else:
-                audio, sample_rate = self.read_audio_file(audio)
+            # The PyAV fallback also reads video while preserving its stereo channels.
+            audio, sample_rate = self.read_audio_file(audio)
         else:
             timestamp = datetime.now().strftime("%m%d%H%M%S")
             output_filename, ext = f"UVR-{timestamp}", ".wav"
             sample_rate = 16000
-        # Set for every call: it kept the rate of an earlier audio file, so a video after it in a batch was
-        # resampled with the wrong rate and transcribed at the wrong speed.
+        audio = self.prepare_model_audio(audio, sample_rate)
+        # Returned stems are at the model's real rate; the ASR pipeline uses this to
+        # resample vocals to 16 kHz. Update on every call, including video/array inputs.
+        sample_rate = self.MODEL_SAMPLE_RATE
         self.audio_info = SimpleNamespace(sample_rate=sample_rate)
 
         model_config = self.build_model_config(segment_size)
 
-        # the MDX model runs on the samples it gets whatever their rate, so a new rate needs no reload
+        # Input resampling does not require reloading the model.
         if (self.model is None or
                 self.current_model_size != model_name or
                 self.model_config != model_config or
@@ -206,11 +207,10 @@ class MusicSeparator:
                 device=device,
                 segment_size=segment_size
             )
-        self.model.sample_rate = sample_rate
 
         progress(0, desc="Separating background music from the audio.. "
                          "(It will only display 0% until the job is complete.) ")
-        result = self.model(audio)
+        result = self.model(audio, sampling_rate=sample_rate)
         instrumental, vocals = result["instrumental"].T, result["vocals"].T
 
         file_paths = []
@@ -222,6 +222,30 @@ class MusicSeparator:
             file_paths += [instrumental_output_path, vocals_output_path]
 
         return instrumental, vocals, file_paths
+
+    @classmethod
+    def prepare_model_audio(cls, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Return nonempty stereo, channel-first PCM at MDX's trained sample rate."""
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim == 1:
+            audio = np.stack([audio, audio])
+        elif audio.ndim == 2:
+            if audio.shape[0] not in (1, 2) and audio.shape[1] in (1, 2):
+                audio = audio.T
+            if audio.shape[0] == 1:
+                audio = np.repeat(audio, 2, axis=0)
+        if audio.ndim != 2 or audio.shape[0] != 2 or audio.shape[1] == 0:
+            raise ValueError("UVR requires nonempty mono or stereo audio.")
+        if sample_rate <= 0:
+            raise ValueError("UVR requires a positive audio sample rate.")
+        audio = np.ascontiguousarray(audio)
+        if sample_rate != cls.MODEL_SAMPLE_RATE:
+            audio = torchaudio.functional.resample(
+                torch.from_numpy(audio), sample_rate, cls.MODEL_SAMPLE_RATE,
+                lowpass_filter_width=64, rolloff=0.9475937167399596,
+                resampling_method="sinc_interp_kaiser", beta=14.769656459379492,
+            ).numpy()
+        return np.ascontiguousarray(audio, dtype=np.float32)
 
     def separate_files(self,
                        files: List,
