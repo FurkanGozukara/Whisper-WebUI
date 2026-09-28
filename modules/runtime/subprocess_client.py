@@ -80,6 +80,9 @@ class RuntimeWorkerClient:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "bufsize": 0,
+            # The worker's output is read as UTF-8; on Windows a piped stderr used the ANSI code page, so file
+            # names and text outside it reached CMD and the error reports as "?", escape codes or garbled text.
+            "env": {**os.environ, "PYTHONIOENCODING": "utf-8"},
         }
         if persistent:
             popen_kwargs["stdin"] = subprocess.PIPE
@@ -406,6 +409,8 @@ class SubprocessWhisperProxy:
         self._active_lock = Lock()
         self._active_handle: Optional[WorkerHandle] = None
         self._active_handles: Dict[int, WorkerHandle] = {}
+        # Gradio session that started each worker: Cancel stops only the jobs of the session that pressed it
+        self._handle_sessions: Dict[int, Optional[str]] = {}
         self._cancelled_pids: set[int] = set()
         self._local_inferencers: Dict[str, Any] = {}
         # Long-lived worker used when "Offload Models to RAM When Idle" is on; it parks its models in RAM between jobs.
@@ -446,9 +451,38 @@ class SubprocessWhisperProxy:
 
     def _local_inferencer_for(self, whisper_type: Optional[str] = None):
         try:
-            return self._get_local_inferencer(whisper_type)
+            inferencer = self._get_local_inferencer(whisper_type)
         except TypeError:
-            return self._get_local_inferencer()
+            inferencer = self._get_local_inferencer()
+        self._unload_other_local_inferencers(inferencer)
+        return inferencer
+
+    def _unload_other_local_inferencers(self, keep) -> None:
+        """Only the engine of the current in-process job keeps its models. Each engine kept its own models (in
+        VRAM, or in RAM when parked) with its own UVR and diarization copies, so switching engines added up
+        memory and the next model could run out of VRAM."""
+        others = [whisper_type for whisper_type, inferencer in self._local_inferencers.items() if inferencer is not keep]
+        if not others:
+            return
+        from modules.whisper.base_transcription_pipeline import TRANSCRIPTION_LOCK
+
+        # a transcription still runs (a cancelled job's thread): the engines are unloaded by a later job
+        if not TRANSCRIPTION_LOCK.acquire(blocking=False):
+            return
+        try:
+            for whisper_type in others:
+                inferencer = self._local_inferencers.pop(whisper_type)
+                for owner in (inferencer, getattr(inferencer, "music_separator", None), getattr(inferencer, "diarizer", None)):
+                    offload = getattr(owner, "offload", None)
+                    if offload is None:
+                        continue
+                    try:
+                        offload()
+                    except Exception as exc:
+                        logger.warning("Could not unload %s models: %s: %s", whisper_type, type(exc).__name__, exc)
+                logger.info("Unloaded the %s models: this job uses another engine.", whisper_type)
+        finally:
+            TRANSCRIPTION_LOCK.release()
 
     @staticmethod
     def _use_subprocess(pipeline_params) -> bool:
@@ -620,7 +654,20 @@ class SubprocessWhisperProxy:
             return extra_args[0], list(extra_args[1:])
         return gr.Progress(), list(extra_args)
 
-    def cancel_active_generation(self) -> bool:
+    @staticmethod
+    def _current_session_hash() -> Optional[str]:
+        """The Gradio session of the event running in this thread, or None outside of an event."""
+        try:
+            from gradio.context import LocalContext
+
+            request = LocalContext.request.get(None)
+        except Exception:
+            return None
+        return getattr(request, "session_hash", None)
+
+    def cancel_active_generation(self, session_hash: Optional[str] = None) -> bool:
+        """Stop the running worker processes; with session_hash only those that this Gradio session started
+        (Cancel stopped every user's job before)."""
         with self._active_lock:
             self._prune_active_handles_locked()
             handles = dict(self._active_handles)
@@ -630,6 +677,11 @@ class SubprocessWhisperProxy:
                 and self._active_handle.process.pid not in handles
             ):
                 handles[self._active_handle.process.pid] = self._active_handle
+            if session_hash is not None:
+                handles = {
+                    pid: handle for pid, handle in handles.items()
+                    if self._handle_sessions.get(pid) == session_hash
+                }
 
             if not handles:
                 return False
@@ -646,14 +698,17 @@ class SubprocessWhisperProxy:
         for pid, handle in list(self._active_handles.items()):
             if handle.process.poll() is not None:
                 self._active_handles.pop(pid, None)
+                self._handle_sessions.pop(pid, None)
 
         if self._active_handle is not None and self._active_handle.process.poll() is not None:
             self._active_handle = None
 
     def _set_active_handle(self, handle: WorkerHandle) -> None:
+        session_hash = self._current_session_hash()
         with self._active_lock:
             self._active_handle = handle
             self._active_handles[handle.process.pid] = handle
+            self._handle_sessions[handle.process.pid] = session_hash
         logger.info("Registered active worker pid=%s.", handle.process.pid)
 
     def _clear_active_handle(self, handle: WorkerHandle) -> None:
@@ -661,6 +716,7 @@ class SubprocessWhisperProxy:
             if self._active_handle is handle:
                 self._active_handle = None
             self._active_handles.pop(handle.process.pid, None)
+            self._handle_sessions.pop(handle.process.pid, None)
         logger.info("Cleared active worker pid=%s.", handle.process.pid)
 
     def _terminate_unfinished_worker(self, handle: WorkerHandle) -> None:

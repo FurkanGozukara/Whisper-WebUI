@@ -193,6 +193,10 @@ def _sort_hypotheses(result: _BeamResult, max_hypotheses: int, keep_scores: bool
 class ConvRotWhisper:
     """Drop-in replacement for ``ctranslate2.models.Whisper`` (subset used by faster-whisper)."""
 
+    # Decoding sessions kept for reuse (see _evict_sessions). One is enough: a batched run over 7 files took the
+    # same time with 1 or 2, and 1 halved the VRAM (15.6 instead of 29.4 GB at batch size 16, beam size 5).
+    MAX_CACHED_SESSIONS = 1
+
     def __init__(self, model_path: str, device: str = "cuda", device_index: int | Sequence[int] = 0,
                  compute_type: str = "int8_convrot", use_cuda_graphs: bool = True,
                  weights_file: Optional[str] = None, tensors: Optional[dict] = None, dims: Optional[WhisperDims] = None,
@@ -253,7 +257,7 @@ class ConvRotWhisper:
         # Beam search inside the decode graph (no per-step host round trip); the CPU
         # port stays the reference and handles prefixes, penalties and sampling.
         self.gpu_beam_search = gpu_beam_search and use_cuda_graphs
-        self._sessions: dict = {}
+        self._sessions: dict = {}  # decoding sessions by (items, rows per item, audio frames, GPU beam search)
         self._suppress_cache: dict = {}
         self._arange_v = torch.arange(dims.n_vocab, device=self._torch_device)
         self._loaded = True
@@ -279,7 +283,7 @@ class ConvRotWhisper:
         return self._loaded
 
     def unload_model(self, to_cpu: bool = False):
-        """Free the GPU memory (CTranslate2 semantics). With ``to_cpu`` the weights stay in pinned RAM for a
+        """Free the GPU memory (CTranslate2 semantics). With ``to_cpu`` the weights stay in RAM for a
         fast ``load_model()``; otherwise they are dropped and ``load_model()`` reloads them from disk."""
         if not self._loaded:
             return
@@ -391,15 +395,33 @@ class ConvRotWhisper:
     # ------------------------------------------------------------------
     def _session(self, nb: int, group: int, t_audio: int, gpu_beam: bool = False) -> DecodeSession:
         key = (nb, group, t_audio, gpu_beam)
-        sess = self._sessions.get(key)
+        sess = self._sessions.pop(key, None)
         if sess is None:
+            self._evict_sessions(self.MAX_CACHED_SESSIONS - 1)
             cross = self.runtime.cross_kv_buffer(nb, t_audio)
             sess = DecodeSession(self.runtime, nb, group, cross, use_graph=self.use_cuda_graphs)
             if gpu_beam:
                 sess.beam_state = GpuBeamState(sess, self.eot_id, self.no_timestamps_id, self.timestamp_begin_id,
                                                self.timestamp_end_id, self.no_speech_id)
-            self._sessions[key] = sess
+        self._sessions[key] = sess  # the most recently used session is the last one
         return sess
+
+    def _evict_sessions(self, keep: int) -> None:
+        """Drop the least recently used decoding sessions (and their cross-attention buffers) beyond ``keep``.
+
+        A session holds the KV cache, cross-attention buffer and CUDA graph of one batch shape: about 10 GB at
+        batch size 16 with beam size 5 for large-v3. Batched runs made one for every size of a file's last batch
+        and kept them all, so a batch of files filled the VRAM (65 GB reserved after 7 files) and slowed down.
+        """
+        if len(self._sessions) <= keep:
+            return
+        while len(self._sessions) > keep:
+            self._sessions.pop(next(iter(self._sessions)))
+        self.runtime.release_cross_buffers(keep={(key[0], key[2]) for key in self._sessions})
+        import gc
+
+        gc.collect()  # a session and its beam state reference each other
+        torch.cuda.empty_cache()
 
     def _get_prompt_ids(self, prompts) -> List[List[int]]:
         out = []

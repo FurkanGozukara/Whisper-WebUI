@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import math
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from queue import Empty, Queue
 from threading import Thread
@@ -815,45 +815,42 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
 
         batch_pipeline = batch_pipeline_cls(model=self.model)
         progress(self.TRANSCRIPTION_PROGRESS_START, desc="Transcribing..")
-        repeat_initial_prompt = self.should_repeat_initial_prompt(params)
-        with self.repeat_initial_prompt_context(
-            self.model,
-            params.initial_prompt if repeat_initial_prompt else None,
-        ):
-            return batch_pipeline.transcribe(
-                audio=audio_array,
-                language=params.lang,
-                task="translate" if params.is_translate else "transcribe",
-                beam_size=params.beam_size,
-                log_prob_threshold=params.log_prob_threshold,
-                no_speech_threshold=params.no_speech_threshold,
-                best_of=params.best_of,
-                patience=params.patience,
-                temperature=params.temperature,
-                initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
-                compression_ratio_threshold=params.compression_ratio_threshold,
-                length_penalty=params.length_penalty,
-                repetition_penalty=params.repetition_penalty,
-                no_repeat_ngram_size=params.no_repeat_ngram_size,
-                prefix=params.prefix,
-                suppress_blank=params.suppress_blank,
-                suppress_tokens=params.suppress_tokens,
-                without_timestamps=False,
-                max_initial_timestamp=params.max_initial_timestamp,
-                word_timestamps=params.word_timestamps,
-                prepend_punctuations=params.prepend_punctuations,
-                append_punctuations=params.append_punctuations,
-                max_new_tokens=params.max_new_tokens,
-                chunk_length=params.chunk_length,
-                clip_timestamps=clip_timestamps,
-                hallucination_silence_threshold=params.hallucination_silence_threshold,
-                batch_size=max(1, int(params.batch_size)),
-                hotwords=params.hotwords,
-                language_detection_threshold=params.language_detection_threshold,
-                language_detection_segments=params.language_detection_segments,
-                condition_on_previous_text=params.condition_on_previous_text,
-                prompt_reset_on_temperature=params.prompt_reset_on_temperature,
-            )
+        # The batched pipeline puts the initial prompt in front of every batch by itself, so Repeat Initial
+        # Prompt Every Window needs no patch here (the patch was removed before the lazy segments were decoded).
+        return batch_pipeline.transcribe(
+            audio=audio_array,
+            language=params.lang,
+            task="translate" if params.is_translate else "transcribe",
+            beam_size=params.beam_size,
+            log_prob_threshold=params.log_prob_threshold,
+            no_speech_threshold=params.no_speech_threshold,
+            best_of=params.best_of,
+            patience=params.patience,
+            temperature=self.temperature_schedule(params.temperature),
+            initial_prompt=params.initial_prompt,
+            compression_ratio_threshold=params.compression_ratio_threshold,
+            length_penalty=params.length_penalty,
+            repetition_penalty=params.repetition_penalty,
+            no_repeat_ngram_size=params.no_repeat_ngram_size,
+            prefix=params.prefix,
+            suppress_blank=params.suppress_blank,
+            suppress_tokens=params.suppress_tokens,
+            without_timestamps=False,
+            max_initial_timestamp=params.max_initial_timestamp,
+            word_timestamps=params.word_timestamps,
+            prepend_punctuations=params.prepend_punctuations,
+            append_punctuations=params.append_punctuations,
+            max_new_tokens=params.max_new_tokens,
+            chunk_length=params.chunk_length,
+            clip_timestamps=clip_timestamps,
+            hallucination_silence_threshold=params.hallucination_silence_threshold,
+            batch_size=max(1, int(params.batch_size)),
+            hotwords=params.hotwords,
+            language_detection_threshold=params.language_detection_threshold,
+            language_detection_segments=params.language_detection_segments,
+            condition_on_previous_text=params.condition_on_previous_text,
+            prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+        )
 
     def _transcribe_with_standard_pipeline(
         self,
@@ -890,45 +887,59 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
                 "(batch_size=%d) for quality-preserving acceleration.",
                 encoder_batch_size,
             )
-        with cls.repeat_initial_prompt_context(
+        # model.transcribe() returns lazy segments: get_prompt runs for every window while they are consumed,
+        # so the Repeat Initial Prompt patch has to stay in place until then (it was removed on return and
+        # the prompt was dropped). The encoder batching patch is read inside transcribe() itself.
+        contexts = ExitStack()
+        contexts.enter_context(cls.repeat_initial_prompt_context(
             model,
             params.initial_prompt if repeat_initial_prompt else None,
-        ):
-            with cls.standard_encoder_batching_context(
-                model,
-                encoder_batch_size if use_encoder_batching else 1,
-            ):
-                return model.transcribe(
-                    audio=audio,
-                    language=params.lang,
-                    task="translate" if params.is_translate else "transcribe",
-                    beam_size=params.beam_size,
-                    log_prob_threshold=params.log_prob_threshold,
-                    no_speech_threshold=params.no_speech_threshold,
-                    best_of=params.best_of,
-                    patience=params.patience,
-                    temperature=params.temperature,
-                    initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
-                    compression_ratio_threshold=params.compression_ratio_threshold,
-                    length_penalty=params.length_penalty,
-                    repetition_penalty=params.repetition_penalty,
-                    no_repeat_ngram_size=params.no_repeat_ngram_size,
-                    prefix=params.prefix,
-                    suppress_blank=params.suppress_blank,
-                    suppress_tokens=params.suppress_tokens,
-                    max_initial_timestamp=params.max_initial_timestamp,
-                    word_timestamps=params.word_timestamps,
-                    prepend_punctuations=params.prepend_punctuations,
-                    append_punctuations=params.append_punctuations,
-                    max_new_tokens=params.max_new_tokens,
-                    chunk_length=params.chunk_length,
-                    hallucination_silence_threshold=params.hallucination_silence_threshold,
-                    hotwords=params.hotwords,
-                    language_detection_threshold=params.language_detection_threshold,
-                    language_detection_segments=params.language_detection_segments,
-                    condition_on_previous_text=params.condition_on_previous_text,
-                    prompt_reset_on_temperature=params.prompt_reset_on_temperature,
-                )
+        ))
+        contexts.enter_context(cls.standard_encoder_batching_context(
+            model,
+            encoder_batch_size if use_encoder_batching else 1,
+        ))
+        try:
+            segments, info = model.transcribe(
+                audio=audio,
+                language=params.lang,
+                task="translate" if params.is_translate else "transcribe",
+                beam_size=params.beam_size,
+                log_prob_threshold=params.log_prob_threshold,
+                no_speech_threshold=params.no_speech_threshold,
+                best_of=params.best_of,
+                patience=params.patience,
+                temperature=cls.temperature_schedule(params.temperature),
+                initial_prompt=None if repeat_initial_prompt else params.initial_prompt,
+                compression_ratio_threshold=params.compression_ratio_threshold,
+                length_penalty=params.length_penalty,
+                repetition_penalty=params.repetition_penalty,
+                no_repeat_ngram_size=params.no_repeat_ngram_size,
+                prefix=params.prefix,
+                suppress_blank=params.suppress_blank,
+                suppress_tokens=params.suppress_tokens,
+                max_initial_timestamp=params.max_initial_timestamp,
+                word_timestamps=params.word_timestamps,
+                prepend_punctuations=params.prepend_punctuations,
+                append_punctuations=params.append_punctuations,
+                max_new_tokens=params.max_new_tokens,
+                chunk_length=params.chunk_length,
+                hallucination_silence_threshold=params.hallucination_silence_threshold,
+                hotwords=params.hotwords,
+                language_detection_threshold=params.language_detection_threshold,
+                language_detection_segments=params.language_detection_segments,
+                condition_on_previous_text=params.condition_on_previous_text,
+                prompt_reset_on_temperature=params.prompt_reset_on_temperature,
+            )
+        except BaseException:
+            contexts.close()
+            raise
+        return cls._segments_with_contexts(segments, contexts), info
+
+    @staticmethod
+    def _segments_with_contexts(segments, contexts: ExitStack):
+        with contexts:
+            yield from segments
 
     def _transcribe_with_parallel_slices(
         self,
@@ -1578,21 +1589,36 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
         chunk_length: Optional[int],
         sampling_rate: int,
     ) -> List[dict]:
+        # In seconds: BatchedInferencePipeline multiplies clip_timestamps by the sampling rate, and sample
+        # offsets made every batched run fail with "non-negative timestamp expected".
         total_samples = int(audio.shape[-1]) if audio.size else 0
         if total_samples <= 0:
             return []
 
         if chunk_length is None or chunk_length <= 0:
-            return [{"start": 0, "end": total_samples}]
+            return [{"start": 0.0, "end": total_samples / sampling_rate}]
 
         chunk_samples = max(1, int(chunk_length * sampling_rate))
         return [
             {
-                "start": start,
-                "end": min(start + chunk_samples, total_samples),
+                "start": start / sampling_rate,
+                "end": min(start + chunk_samples, total_samples) / sampling_rate,
             }
             for start in range(0, total_samples, chunk_samples)
         ]
+
+    @staticmethod
+    def temperature_schedule(temperature) -> Tuple[float, ...]:
+        """Temperatures faster-whisper tries in turn when a window fails the compression ratio or log
+        probability check: the chosen value, then steps of 0.2 up to 1.0 (faster-whisper's default is
+        0.0, 0.2, ..., 1.0). A single value turned the retry off, so a looping window was kept."""
+        if isinstance(temperature, (list, tuple)):
+            return tuple(float(value) for value in temperature) or (0.0,)
+        start = min(max(float(temperature or 0.0), 0.0), 1.0)
+        schedule = [start]
+        while schedule[-1] + 0.2 <= 1.0 + 1e-6:
+            schedule.append(round(schedule[-1] + 0.2, 2))
+        return tuple(schedule)
 
     @staticmethod
     def estimate_chunk_windows(
@@ -1711,6 +1737,7 @@ class FasterWhisperInference(BaseTranscriptionPipeline):
             resolved_model=model_size_or_path,
             compute_type=compute_type,
         )
+        self.release_model_before_load()
         if self.is_convrot_model(model_size_or_path):
             from modules.whisper.convrot.faster_whisper_adapter import ConvRotFasterWhisperModel
 

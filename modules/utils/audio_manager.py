@@ -55,10 +55,16 @@ def validate_audio(audio: Optional[Union[str, Any]] = None):
         return False
 
     try:
-        from faster_whisper.audio import decode_audio
+        import av
 
-        decode_audio(audio_path)
-        return True
+        # Opening the file and decoding its first audio frame tells an unreadable file apart; the full decode
+        # done here before was thrown away and repeated by the transcription right after.
+        with av.open(audio_path, mode="r", metadata_errors="ignore") as container:
+            if not container.streams.audio:
+                raise ValueError("the file has no audio stream")
+            for _frame in container.decode(audio=0):
+                return True
+        raise ValueError("the audio stream has no decodable frames")
     except Exception as e:
         logger.info(f"The file {audio_path} is not able to open or corrupted. Please check the file. {e}")
         return False

@@ -118,7 +118,7 @@ def test_cancel_active_generation_runs_without_confirmation_input(monkeypatch):
     calls = []
 
     class DummyWhisperInference:
-        def cancel_active_generation(self):
+        def cancel_active_generation(self, session_hash=None):
             calls.append("cancel")
             return True
 
@@ -134,7 +134,7 @@ def test_cancel_active_generation_respects_explicit_confirmation_decline(monkeyp
     calls = []
 
     class DummyWhisperInference:
-        def cancel_active_generation(self):
+        def cancel_active_generation(self, session_hash=None):
             calls.append("cancel")
             return True
 
@@ -142,6 +142,25 @@ def test_cancel_active_generation_respects_explicit_confirmation_decline(monkeyp
 
     assert app_instance.cancel_active_generation(False) is False
     assert calls == []
+
+
+def test_cancel_active_generation_passes_the_callers_session(monkeypatch):
+    app_module = load_app_module(monkeypatch)
+    app_instance = app_module.App.__new__(app_module.App)
+    sessions = []
+
+    class DummyWhisperInference:
+        def cancel_active_generation(self, session_hash=None):
+            sessions.append(session_hash)
+            return True
+
+    class DummyRequest:
+        session_hash = "session-a"
+
+    app_instance.whisper_inf = DummyWhisperInference()
+
+    assert app_instance.cancel_active_generation(True, DummyRequest()) is True
+    assert sessions == ["session-a"]
 
 
 def test_cancel_confirm_js_returns_frontend_confirmation_payload(monkeypatch):
@@ -157,7 +176,7 @@ def test_cancel_mic_generation_runs_without_confirmation_input(monkeypatch):
     app_instance.build_record_mic_idle_status = lambda: "idle"
     calls = []
 
-    def fake_cancel(confirmed=True):
+    def fake_cancel(confirmed=True, request=None):
         calls.append(confirmed)
         return True
 
@@ -176,7 +195,7 @@ def test_cancel_mic_generation_respects_confirmation_decline(monkeypatch):
     app_instance.build_record_mic_idle_status = lambda: "idle"
     calls = []
 
-    def fake_cancel(confirmed=True):
+    def fake_cancel(confirmed=True, request=None):
         calls.append(confirmed)
         return True
 

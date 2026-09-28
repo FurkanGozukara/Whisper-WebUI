@@ -84,6 +84,12 @@ def configure_model_cache_env() -> None:
     # every later run reuses them, also on cloud pods where only the app folder persists.
     # An explicitly set TRITON_CACHE_DIR is respected.
     os.environ.setdefault("TRITON_CACHE_DIR", os.path.join(MODELS_DIR, "triton_cache"))
+    # The CUDA driver's cache of GPU code compiled at run time (flash-attn and cuBLAS kernels without a build for
+    # the GPU, such as an RTX 50). The per-user cache that all CUDA apps share was full (1 GB) and evicted them,
+    # so the first transcription after every start compiled them again: about 13 seconds of the 21 before the
+    # first INT8 result. Kept with the models like the Triton cache; explicitly set variables are respected.
+    os.environ.setdefault("CUDA_CACHE_PATH", os.path.join(MODELS_DIR, "cuda_cache"))
+    os.environ.setdefault("CUDA_CACHE_MAXSIZE", str(4 * 1024 ** 3))
     # After loading a .bin-only checkpoint (all three NLLB models) Transformers downloads a
     # .safetensors copy from the Hub's conversion PR in the background, which the app never loads:
     # +2.3 GB for nllb-200-distilled-600M, +17.6 GB for nllb-200-3.3B.

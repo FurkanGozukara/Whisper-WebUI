@@ -29,6 +29,31 @@ except Exception:  # pragma: no cover - flash-attn is part of the app requiremen
     flash_attn_with_kvcache = None
 
 
+def _raw_flash_attn_forward():
+    """The body of flash-attn's ``_flash_attn_forward`` op, or None when this flash-attn has another layout.
+
+    flash_attn_func reaches the kernel through the op's dispatcher wrapper, whose first call imports
+    torch._dynamo and registers the distributed tensor ops: about 8 seconds added to the first transcription of
+    every process. Calling the body runs the same kernel with the same arguments, so the results are the same.
+    """
+    expected = ["q", "k", "v", "dropout_p", "softmax_scale", "causal", "window_size_left", "window_size_right",
+                "softcap", "alibi_slopes", "return_softmax"]
+    try:
+        import inspect
+
+        from flash_attn.flash_attn_interface import _flash_attn_forward
+
+        forward = getattr(_flash_attn_forward, "_init_fn", None)
+        if forward is not None and list(inspect.signature(forward).parameters) == expected:
+            return forward
+    except Exception:
+        pass
+    return None
+
+
+_FLASH_ATTN_FORWARD = _raw_flash_attn_forward() if flash_attn_func is not None else None
+
+
 @dataclass
 class WhisperDims:
     n_mels: int
@@ -47,15 +72,13 @@ class WhisperDims:
 
 
 def _move(t: torch.Tensor | None, device: torch.device) -> torch.Tensor | None:
-    """Move a tensor; CPU copies are pinned so moving back to the GPU is fast."""
+    """Move a tensor. CPU copies use ordinary (pageable) RAM: pinned copies took about 530 MB more for
+    large-v3 (the pinned allocator rounds sizes up) and stayed locked in PyTorch's pinned cache after the model
+    went back to the GPU, for about 70 ms faster reloads."""
     if t is None:
         return None
     if device.type == "cpu":
-        if not t.is_cuda:
-            return t
-        parked = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=True)
-        parked.copy_(t)
-        return parked
+        return t.to("cpu") if t.is_cuda else t
     return t.to(device, non_blocking=True)
 
 
@@ -162,6 +185,9 @@ QUANT_FORMAT = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize
 def _attention(q, k, v, causal: bool = False):
     """[B, T, H, D] attention: flash-attn for fp16/bf16, SDPA otherwise (fp32 reference runs)."""
     if q.dtype in (torch.float16, torch.bfloat16) and flash_attn_func is not None:
+        if _FLASH_ATTN_FORWARD is not None and q.shape[-1] % 8 == 0:
+            # flash_attn_func's defaults: no dropout, scale 1/sqrt(head_dim), no window, no softcap
+            return _FLASH_ATTN_FORWARD(q, k, v, 0.0, q.shape[-1] ** -0.5, causal, -1, -1, 0.0, None, False)[0]
         return flash_attn_func(q, k, v, causal=causal)
     out = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=causal)
     return out.transpose(1, 2)
@@ -289,7 +315,7 @@ class WhisperRuntime:
 
     @torch.inference_mode()
     def to(self, device) -> None:
-        """Move every weight to ``device`` ("cpu" parks them in pinned RAM); scratch buffers are dropped."""
+        """Move every weight to ``device`` ("cpu" parks them in RAM); scratch buffers are dropped."""
         device = torch.device(device)
         self._cross_buffers.clear()
         for name in ("conv1_w", "conv1_b", "conv2_w", "conv2_b", "enc_pos", "tok_emb", "dec_pos"):
@@ -309,6 +335,11 @@ class WhisperRuntime:
     # ------------------------------------------------------------------
     # Decoder helpers
     # ------------------------------------------------------------------
+    def release_cross_buffers(self, keep=()) -> None:
+        """Free the cross-attention buffers of batch shapes that no decoding session uses any more."""
+        for key in [key for key in self._cross_buffers if key not in keep]:
+            del self._cross_buffers[key]
+
     def cross_kv_buffer(self, nb: int, t: int) -> torch.Tensor:
         """Persistent [L, nb, T, 2*d_model] buffer (fixed addresses for CUDA graphs)."""
         key = (nb, t)

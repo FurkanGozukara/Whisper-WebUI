@@ -45,10 +45,10 @@ def test_build_clip_timestamps_splits_fixed_windows():
     )
 
     assert clip_timestamps == [
-        {"start": 0, "end": 240000},
-        {"start": 240000, "end": 480000},
-        {"start": 480000, "end": 720000},
-        {"start": 720000, "end": 960000},
+        {"start": 0.0, "end": 15.0},
+        {"start": 15.0, "end": 30.0},
+        {"start": 30.0, "end": 45.0},
+        {"start": 45.0, "end": 60.0},
     ]
 
 
@@ -168,6 +168,49 @@ def test_standard_pipeline_repeats_initial_prompt_every_window():
         [101, 202, 22],
     ]
     assert inferencer.model.tokenizer.calls == [" Welcome to the school."]
+
+
+def test_standard_pipeline_repeats_initial_prompt_while_segments_are_consumed():
+    """faster-whisper asks for each window's prompt lazily, while the segments are iterated."""
+
+    class DummyTokenizer:
+        def encode(self, text):
+            return [101, 202]
+
+    class DummyModel:
+        def __init__(self):
+            self.tokenizer = DummyTokenizer()
+            self.prompt_inputs = []
+
+        def get_prompt(self, tokenizer, previous_tokens, without_timestamps=False, prefix=None, hotwords=None):
+            self.prompt_inputs.append(list(previous_tokens))
+            return list(previous_tokens)
+
+        def transcribe(self, **kwargs):
+            def segments():
+                for previous in ([11], [22]):
+                    self.get_prompt(self.tokenizer, previous, False, None, None)
+                    yield previous
+            return segments(), SimpleNamespace(duration=60.0)
+
+    inferencer = object.__new__(FasterWhisperInference)
+    inferencer.model = DummyModel()
+    params = WhisperParams(initial_prompt="Welcome to the school.", repeat_initial_prompt_every_window=True)
+
+    segments, _ = FasterWhisperInference._transcribe_with_standard_pipeline(
+        inferencer, np.zeros(16000, dtype=np.float32), params, DummyProgress(),
+    )
+    assert inferencer.model.prompt_inputs == []  # nothing decoded before iteration
+    assert list(segments) == [[11], [22]]
+    assert inferencer.model.prompt_inputs == [[101, 202, 11], [101, 202, 22]]
+    assert "get_prompt" not in vars(inferencer.model)  # the patch is removed once the segments are consumed
+
+
+def test_temperature_schedule_enables_faster_whisper_fallback():
+    assert FasterWhisperInference.temperature_schedule(0.0) == (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    assert FasterWhisperInference.temperature_schedule(0.5) == (0.5, 0.7, 0.9)
+    assert FasterWhisperInference.temperature_schedule(1.0) == (1.0,)
+    assert FasterWhisperInference.temperature_schedule((0.0, 0.4)) == (0.0, 0.4)
 
 
 def test_standard_encoder_prefetch_cache_batches_aligned_windows():
@@ -390,10 +433,10 @@ def test_transcribe_uses_batched_pipeline_with_requested_batch_size(monkeypatch)
     assert captured["without_timestamps"] is False
     assert captured["word_timestamps"] is True
     assert captured["clip_timestamps"] == [
-        {"start": 0, "end": 240000},
-        {"start": 240000, "end": 480000},
-        {"start": 480000, "end": 720000},
-        {"start": 720000, "end": 960000},
+        {"start": 0.0, "end": 15.0},
+        {"start": 15.0, "end": 30.0},
+        {"start": 30.0, "end": 45.0},
+        {"start": 45.0, "end": 60.0},
     ]
     assert callback_events == [
         (0.24666666666666667, "first chunk"),
@@ -473,12 +516,9 @@ def test_batched_pipeline_repeats_initial_prompt_every_window(monkeypatch):
 
     assert len(segments) == 1
     assert elapsed_time >= 0
-    assert captured["initial_prompt"] is None
-    assert inferencer.model.prompt_inputs == [
-        [303, 404, 1],
-        [303, 404, 2],
-    ]
-    assert inferencer.model.tokenizer.calls == [" Welcome to the school."]
+    # The batched pipeline puts the initial prompt in front of every batch itself
+    assert captured["initial_prompt"] == "Welcome to the school."
+    assert inferencer.model.prompt_inputs == [[1], [2]]
 
 
 def test_transcribe_uses_standard_pipeline_by_default(monkeypatch):

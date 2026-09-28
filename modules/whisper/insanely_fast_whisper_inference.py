@@ -670,12 +670,13 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         # Imported here: transformers.pipeline pulls in torchvision and took about 2.5 seconds on every app
         # start and every job, also for faster-whisper and Canary-Qwen, which never use it.
         from transformers import pipeline
+        self.release_model_before_load()
         self.model = pipeline(
             "automatic-speech-recognition",
             model=model_path,
             **self.pipeline_dtype_kwargs(torch_dtype),
             device=self.device,
-            model_kwargs=self.model_kwargs_for_torch_dtype(torch_dtype),
+            model_kwargs=self.model_kwargs_for_torch_dtype(torch_dtype, self.device),
         )
         self.disable_bpe_tokenizer_cleanup_warning(self.model)
         self.log_model_load_complete(
@@ -748,11 +749,27 @@ class InsanelyFastWhisperInference(BaseTranscriptionPipeline):
         return self.available_compute_types[0]
 
     @staticmethod
-    def model_kwargs_for_torch_dtype(torch_dtype) -> Dict:
+    def gpu_supports_flash_attention_2(device: Optional[str] = None) -> bool:
+        """FlashAttention 2 runs on Ampere (compute capability 8.0) and newer; loading it on an RTX 20 or GTX 16
+        card failed the whole transcription, although the flash-attn package is installed."""
+        if device is not None and not str(device).startswith("cuda"):
+            return False
+        try:
+            if not torch.cuda.is_available():
+                return False
+            index = torch.device(device).index if device and ":" in str(device) else None
+            if index is None:
+                index = torch.cuda.current_device()
+            return torch.cuda.get_device_capability(index) >= (8, 0)
+        except Exception:
+            return False
+
+    @classmethod
+    def model_kwargs_for_torch_dtype(cls, torch_dtype, device: Optional[str] = None) -> Dict:
         from transformers.utils import is_flash_attn_2_available
 
         supports_flash_dtype = torch_dtype in (torch.float16, torch.bfloat16)
-        if supports_flash_dtype and is_flash_attn_2_available():
+        if supports_flash_dtype and is_flash_attn_2_available() and cls.gpu_supports_flash_attention_2(device):
             return {"attn_implementation": "flash_attention_2"}
         return {"attn_implementation": "sdpa"}
 

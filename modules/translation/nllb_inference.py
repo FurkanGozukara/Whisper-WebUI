@@ -1,5 +1,6 @@
 from huggingface_hub import snapshot_download
 import gradio as gr
+import json
 import os
 import re
 import torch
@@ -73,45 +74,88 @@ class NLLBInference(TranslationBase):
         if model_size != self.current_model_size or self.model is None:
             print("\nInitializing NLLB Model..\n")
             progress(0, desc="Initializing NLLB Model..")
-            self.current_model_size = model_size
-            local_files_only = self.is_model_exists(self.current_model_size)
+            # the previous model leaves the GPU first, so switching models never holds both
+            self.offload()
+            self.current_model_size = None
+            local_files_only = self.is_model_exists(model_size)
             if not local_files_only:
-                # from_pretrained downloads without a progress bar here (up to 17.6 GB for nllb-200-3.3B):
-                # fetch the files into the same cache first, with the download progress shown in CMD.
-                print(f"Downloading NLLB model '{model_size}' to '{self.model_dir}' (first use only)..")
-                progress(0, desc=f"Downloading NLLB model {model_size} (first use only, progress in CMD)..")
-                snapshot_download(repo_id=model_size, cache_dir=self.model_dir,
-                                  allow_patterns=["*.json", "*.bin", "*.model"],
-                                  tqdm_class=DownloadProgressTqdm)
-            # Imported here: the app start only needs the language lists of this module, not transformers
-            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=model_size,
-                                                               cache_dir=self.model_dir,
-                                                               local_files_only=local_files_only)
-            self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_size,
-                                                           cache_dir=os.path.join(self.model_dir, "tokenizers"),
-                                                           local_files_only=local_files_only)
-            self.model.to(self.device).eval()
+                self.download_model(model_size, progress)
+            try:
+                model, tokenizer = self.load_model_and_tokenizer(model_size, local_files_only)
+            except Exception as exc:
+                if not local_files_only:
+                    raise
+                # The local copy does not load (an interrupted download or a missing tokenizer): the files that
+                # are missing are downloaded, which resumes the download; it was never retried before.
+                print(f"The local NLLB model '{model_size}' could not be loaded ({type(exc).__name__}: {exc}). "
+                      "Downloading the missing files..")
+                self.download_model(model_size, progress)
+                model, tokenizer = self.load_model_and_tokenizer(model_size, local_files_only=False)
+            self.model = model.to(self.device).eval()
+            self.tokenizer = tokenizer
+            self.current_model_size = model_size
 
         self.tokenizer.src_lang = src_lang
         self.tgt_lang = tgt_lang
 
+    def download_model(self, model_size: str, progress: gr.Progress = gr.Progress()):
+        # from_pretrained downloads without a progress bar here (up to 17.6 GB for nllb-200-3.3B):
+        # fetch the files into the same cache first, with the download progress shown in CMD.
+        print(f"Downloading NLLB model '{model_size}' to '{self.model_dir}' (first use only)..")
+        progress(0, desc=f"Downloading NLLB model {model_size} (first use only, progress in CMD)..")
+        snapshot_download(repo_id=model_size, cache_dir=self.model_dir,
+                          allow_patterns=["*.json", "*.bin", "*.model"],
+                          tqdm_class=DownloadProgressTqdm)
+
+    def load_model_and_tokenizer(self, model_size: str, local_files_only: bool):
+        # Imported here: the app start only needs the language lists of this module, not transformers
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=model_size,
+                                                      cache_dir=self.model_dir,
+                                                      local_files_only=local_files_only)
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_size,
+                                                  cache_dir=os.path.join(self.model_dir, "tokenizers"),
+                                                  local_files_only=local_files_only)
+        return model, tokenizer
+
     def is_model_exists(self,
                         model_size: str):
-        """Check if model exists or not (Only facebook model)"""
-        prefix = "models--facebook--"
-        _id, model_size_name = model_size.split("/")
-        model_dir_name = prefix + model_size_name
-        model_dir_path = os.path.join(self.model_dir, model_dir_name)
-        if os.path.exists(model_dir_path) and os.listdir(model_dir_path):
-            return True
-        for model_dir_name in os.listdir(self.model_dir):
-            if (model_size in model_dir_name or model_size_name in model_dir_name) and \
-                    os.listdir(os.path.join(self.model_dir, model_dir_name)):
+        """Whether the model is complete in the local cache: a snapshot with its config and every weight file.
+
+        A non-empty model folder counted before, so an interrupted download was loaded offline and failed on
+        every later run instead of being resumed."""
+        snapshots_dir = os.path.join(self.model_dir, "models--" + model_size.replace("/", "--"), "snapshots")
+        if not os.path.isdir(snapshots_dir):
+            return False
+        for snapshot in os.listdir(snapshots_dir):
+            snapshot_dir = os.path.join(snapshots_dir, snapshot)
+            if os.path.isfile(os.path.join(snapshot_dir, "config.json")) and self._has_all_weights(snapshot_dir):
                 return True
         return False
 
+    @staticmethod
+    def _has_all_weights(snapshot_dir: str) -> bool:
+        def present(name: str) -> bool:
+            path = os.path.join(snapshot_dir, name)
+            # a link to a blob that was never completed does not count
+            return os.path.isfile(path) and os.path.getsize(path) > 0
 
+        for weights_name in ("model.safetensors", "pytorch_model.bin"):
+            if present(weights_name):
+                return True
+        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            if present(index_name):
+                try:
+                    with open(os.path.join(snapshot_dir, index_name), encoding="utf-8") as index_file:
+                        shard_names = set(json.load(index_file).get("weight_map", {}).values())
+                except (OSError, ValueError):
+                    return False
+                return bool(shard_names) and all(present(name) for name in shard_names)
+        return False
+
+
+# Codes as the NLLB tokenizer knows them: it has no token for arb_Latn or min_Arab (not listed) and names
+# Santali sat_Beng; an unknown code was sent to the model as <unk> and produced no real translation.
 NLLB_AVAILABLE_LANGS = {
     "Acehnese (Arabic script)": "ace_Arab",
     "Acehnese (Latin script)": "ace_Latn",
@@ -124,7 +168,6 @@ NLLB_AVAILABLE_LANGS = {
     "Amharic": "amh_Ethi",
     "North Levantine Arabic": "apc_Arab",
     "Modern Standard Arabic": "arb_Arab",
-    "Modern Standard Arabic (Romanized)": "arb_Latn",
     "Najdi Arabic": "ars_Arab",
     "Moroccan Arabic": "ary_Arab",
     "Egyptian Arabic": "arz_Arab",
@@ -229,7 +272,6 @@ NLLB_AVAILABLE_LANGS = {
     "Maithili": "mai_Deva",
     "Malayalam": "mal_Mlym",
     "Marathi": "mar_Deva",
-    "Minangkabau (Arabic script)": "min_Arab",
     "Minangkabau (Latin script)": "min_Latn",
     "Macedonian": "mkd_Cyrl",
     "Plateau Malagasy": "plt_Latn",
@@ -263,7 +305,7 @@ NLLB_AVAILABLE_LANGS = {
     "Russian": "rus_Cyrl",
     "Sango": "sag_Latn",
     "Sanskrit": "san_Deva",
-    "Santali": "sat_Olck",
+    "Santali": "sat_Beng",
     "Sicilian": "scn_Latn",
     "Shan": "shn_Mymr",
     "Sinhala": "sin_Sinh",

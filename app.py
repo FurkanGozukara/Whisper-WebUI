@@ -48,6 +48,7 @@ from modules.ui.presets import (
     get_default_startup_ui_preset,
     get_last_used_ui_preset,
     get_nested_value,
+    get_ui_preset_display_name,
     is_locked_ui_preset,
     is_user_ui_preset,
     list_ui_presets,
@@ -58,7 +59,7 @@ from modules.ui.presets import (
     set_last_used_ui_preset,
 )
 from modules.utils.cli_manager import str2bool
-from modules.utils.files_manager import MEDIA_EXTENSION, is_video, load_yaml
+from modules.utils.files_manager import MEDIA_EXTENSION, is_video, load_yaml, normalize_folder_path
 from modules.utils.i18n import Translate, _
 from modules.utils.logger import get_logger
 from modules.utils.audio_manager import coerce_audio_input_path
@@ -84,7 +85,7 @@ logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
 APP_NAME = "Whisper TTS Premium App by SECourses"
-APP_VERSION = "12.8"
+APP_VERSION = "12.9"
 APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
 APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
 TIMESTAMP_INFO = (
@@ -94,6 +95,11 @@ TIMESTAMP_INFO = (
 )
 BATCH_SIZE_CALIBRATION_FILENAME = "batch_size_calibration.json"
 BATCH_SIZE_CALIBRATION_MEMORY_TOLERANCE_GB = 1.0
+# Every job that runs a model on the GPU waits in one Gradio queue and runs alone. Each button had its own queue
+# before, so a file job, a YouTube job and a BGM separation (from any tab or user) could run at once and replace
+# or park each other's models.
+GPU_JOB_CONCURRENCY_ID = "gpu_job"
+
 CANCEL_CONFIRM_JS = """
 () => {
     return [window.confirm("Terminate the running transcription subprocess?")];
@@ -686,10 +692,13 @@ class App:
         )
 
     def resolve_file_output_folder(self, output_dir, batch_input, batch_enabled):
-        if output_dir and str(output_dir).strip():
-            return str(output_dir).strip()
-        if batch_enabled and batch_input and str(batch_input).strip():
-            return str(batch_input).strip()
+        # quotes from Explorer's "Copy as path" are removed, as the batch itself does
+        output_dir = normalize_folder_path(output_dir)
+        batch_input = normalize_folder_path(batch_input)
+        if output_dir:
+            return output_dir
+        if batch_enabled and batch_input:
+            return batch_input
         return self.args.output_dir
 
     def open_file_output_folder(self, output_dir, batch_input, batch_enabled):
@@ -835,7 +844,8 @@ class App:
             yield last_live_output, last_result_str, self.prepare_download_output(last_paths)
         except Exception as exc:
             self.log_persistent_error("File transcription", exc)
-            yield last_live_output, self.format_persistent_error("File transcription", exc), self.prepare_download_output([])
+            # the files finished before the error stay downloadable
+            yield last_live_output, self.format_persistent_error("File transcription", exc), self.prepare_download_output(last_paths)
 
     def transcribe_youtube_with_progress(self,
                                          youtube_link: str,
@@ -899,6 +909,23 @@ class App:
         if not steps:
             return ""
         return "Nothing was translated. Please " + ", ".join(steps) + ", then click TRANSLATE SUBTITLE FILE again."
+
+    def separate_bgm_files(self, files, model_size, device, segment_size, save_file=True):
+        """BGM Separation tab. Without a file, or when the separation failed, it showed a bare "Error"."""
+        if not files:
+            # a warning, not an error: nothing failed, and Gradio printed a traceback in CMD for gr.Error
+            gr.Warning("Upload at least one audio or video file first, then click SEPARATE BACKGROUND MUSIC.")
+            return None, None
+        try:
+            paths = self.whisper_inf.music_separator.separate_files(files, model_size, device, segment_size, save_file)
+        except gr.Error:
+            raise
+        except Exception as exc:
+            self.log_persistent_error("BGM separation", exc)
+            raise gr.Error(self.format_persistent_error("BGM separation", exc)) from exc
+        paths = list(paths or [])
+        # the instrumental and the vocals of the last file
+        return (paths + [None, None])[:2]
 
     def translate_subtitles_nllb(self, fileobjs, model_size, source_lang, target_lang, max_length=200, add_timestamp=True):
         missing = self.missing_translation_inputs(fileobjs, source_lang, target_lang)
@@ -1328,7 +1355,7 @@ class App:
             gr.update(interactive=False),
         )
 
-    def cancel_mic_generation(self, confirmed: bool = True):
+    def cancel_mic_generation(self, confirmed: bool = True, request: gr.Request = None):
         if not confirmed:
             logger.info("Cancellation prompt dismissed by user.")
             return (
@@ -1338,7 +1365,7 @@ class App:
                 "Cancellation dismissed. Generation is still running.",
             )
 
-        terminated = self.cancel_active_generation(True)
+        terminated = self.cancel_active_generation(True, request)
         progress_message = (
             "Generation cancelled. Ready for a new recording."
             if terminated
@@ -1394,7 +1421,10 @@ class App:
         def run_preview():
             try:
                 with self._live_preview_model_lock:
-                    job["transcript"] = self.whisper_inf.transcribe_live_preview(audio, *pipeline_params)
+                    transcript = self.whisper_inf.transcribe_live_preview(audio, *pipeline_params)
+                # None: another transcription was running, so this preview was skipped (the next one retries)
+                if transcript is not None:
+                    job["transcript"] = transcript
             except Exception as exc:
                 self.log_persistent_error("Live microphone preview", exc)
                 job["error"] = f"{type(exc).__name__}: {exc}"
@@ -1535,12 +1565,14 @@ class App:
             *pipeline_params,
         )
 
-    def cancel_active_generation(self, confirmed: bool = True):
+    def cancel_active_generation(self, confirmed: bool = True, request: gr.Request = None):
         if confirmed is False:
             logger.info("Cancellation prompt dismissed by user.")
             return False
 
-        if self.whisper_inf.cancel_active_generation():
+        # only the jobs this browser session started; Cancel stopped every user's job before
+        session_hash = getattr(request, "session_hash", None)
+        if self.whisper_inf.cancel_active_generation(session_hash=session_hash):
             logger.info("Cancellation requested from UI. Active subprocess termination was triggered.")
             gr.Info("Cancellation requested. Terminating the running subprocess.")
             return True
@@ -2114,6 +2146,8 @@ class App:
                             fn=self.transcribe_file_with_download,
                             inputs=file_inputs + file_transcription_ui["pipeline"],
                             outputs=[tb_live_transcription, file_output, file_download_btn],
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         file_transcription_ui["cancel_button"].click(
                             fn=self.cancel_active_generation,
@@ -2186,6 +2220,8 @@ class App:
                             fn=self.transcribe_youtube_with_live_output,
                             inputs=youtube_inputs + youtube_transcription_ui["pipeline"],
                             outputs=[youtube_live_transcription, youtube_output, youtube_outputs],
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         youtube_transcription_ui["cancel_button"].click(
                             fn=self.cancel_active_generation,
@@ -2343,6 +2379,8 @@ class App:
                             inputs=[live_mic_capture, mic_transcription_ui["file_formats"], mic_transcription_ui["add_timestamp"]] + mic_transcription_ui["pipeline"],
                             outputs=[mic_generation_progress, mic_output, mic_outputs],
                             show_progress="hidden",
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
 
                         record_mic_input.start_recording(
@@ -2385,6 +2423,8 @@ class App:
                             fn=self.transcribe_mic_with_download,
                             inputs=mic_inputs + mic_transcription_ui["pipeline"],
                             outputs=[mic_generation_progress, mic_output, mic_outputs],
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         mic_run_event.then(
                             fn=self.finish_record_mic_generation,
@@ -2512,6 +2552,8 @@ class App:
                             fn=self.translate_subtitles_nllb,
                             inputs=[file_subs, nllb_model_size, nllb_source_lang, nllb_target_lang, nb_max_length, nllb_add_timestamp],
                             outputs=[nllb_output, nllb_outputs],
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         nllb_open_btn.click(
                             fn=lambda: self.open_folder(os.path.join(self.args.output_dir, "translations")),
@@ -2558,9 +2600,11 @@ class App:
                                 )
 
                         uvr_run_btn.click(
-                            fn=self.whisper_inf.music_separator.separate_files,
+                            fn=self.separate_bgm_files,
                             inputs=[files_audio, dd_uvr_model_size, dd_uvr_device, nb_uvr_segment_size, cb_uvr_save_file],
                             outputs=[ad_instrumental, ad_vocals],
+                            concurrency_limit=1,
+                            concurrency_id=GPU_JOB_CONCURRENCY_ID,
                         )
                         btn_open_instrumental_folder.click(
                             inputs=None,
@@ -2805,6 +2849,9 @@ class App:
 
                         if path in dropdown_choice_specs:
                             default_value = get_nested_value(defaults, path)
+                            if path[-1] == "diarization_device" and default_value not in dropdown_choice_specs[path]:
+                                # the default "cuda" does not exist on a CPU-only PC
+                                default_value = self.whisper_inf.diarizer.device
                             value = _match_dropdown_value(value, dropdown_choice_specs[path], default_value, path=path)
                         values.append(value)
                     return values
@@ -2846,42 +2893,43 @@ class App:
                     values, status = _load_preset_values_and_status(preset_name)
                     return (*values, status)
 
-                def _autoload_preset_for_model_type(selected_whisper_type: str, current_preset_name: str):
+                def _section_whisper_paths(section_key: str):
+                    return [path for path in config_keys if path[0] == section_key and path[1:2] == ("whisper",)]
+
+                def _section_whisper_components(section_key: str):
+                    return [
+                        component for path, component in zip(config_keys, config_components)
+                        if path[0] == section_key and path[1:2] == ("whisper",)
+                    ]
+
+                def _autoload_preset_for_model_type(section_key: str, selected_whisper_type: str, current_preset_name: str):
+                    """Switching the engine of a tab loads the model settings of the engine's built-in preset into
+                    that tab only. The whole preset was loaded before, which also changed the engines of the other
+                    tabs and reset settings such as the output folder, diarization and the translation tab."""
+                    section_paths = _section_whisper_paths(section_key)
+                    unchanged = [gr.update() for _ in section_paths]
                     if is_user_ui_preset(current_preset_name):
                         return (
+                            *unchanged,
                             gr.update(),
-                            *[gr.update() for _ in config_components],
-                            *[gr.update() for _ in config_info_components],
                             f"Preset **{current_preset_name}** is user-saved, so model switch did not auto-load a built-in preset.",
                         )
 
                     whisper_type = self.normalize_primary_whisper_type(selected_whisper_type)
                     preset_name = get_default_ui_preset_for_whisper_type(whisper_type)
                     if not preset_name:
-                        return (
-                            gr.update(),
-                            *[gr.update() for _ in config_components],
-                            *[gr.update() for _ in config_info_components],
-                            "No built-in preset is available for the selected base model.",
-                        )
+                        return (*unchanged, gr.update(), "No built-in preset is available for the selected base model.")
 
                     cfg = load_ui_preset(preset_name, default_params=self.default_params)
                     if not cfg:
-                        return (
-                            gr.update(),
-                            *[gr.update() for _ in config_components],
-                            *[gr.update() for _ in config_info_components],
-                            f"Preset **{preset_name}** could not be loaded.",
-                        )
+                        return (*unchanged, gr.update(), f"Preset **{preset_name}** could not be loaded.")
 
-                    set_last_used_ui_preset(preset_name)
-                    values = _ui_config_to_values(cfg)
-                    info_text = self.model_type_details_for_whisper_type(whisper_type)
+                    values_by_path = dict(zip(config_keys, _ui_config_to_values(cfg)))
+                    display_name = get_ui_preset_display_name(preset_name) or preset_name
                     return (
-                        gr.update(choices=list_ui_presets(), value=preset_name),
-                        *values,
-                        *[info_text for _ in config_info_components],
-                        f"Loaded preset **{preset_name}**",
+                        *[values_by_path[path] for path in section_paths],
+                        self.model_type_details_for_whisper_type(whisper_type),
+                        f"Loaded the model settings of **{display_name}** into this tab; the other settings were kept.",
                     )
 
                 def _reset_defaults_ui():
@@ -2942,12 +2990,22 @@ class App:
                     queue=False,
                     show_progress="hidden",
                 )
-                for transcription_ui in (file_transcription_ui, youtube_transcription_ui, mic_transcription_ui):
+                for section_key, transcription_ui in (
+                    ("file_tab", file_transcription_ui),
+                    ("youtube_tab", youtube_transcription_ui),
+                    ("mic_tab", mic_transcription_ui),
+                ):
+                    def _autoload_for_section(selected_whisper_type, current_preset_name, section_key=section_key):
+                        return _autoload_preset_for_model_type(section_key, selected_whisper_type, current_preset_name)
+
                     # After the engine defaults, in order (both on .change used to race on every preset load)
                     transcription_ui["engine_reset_event"].then(
-                        fn=_autoload_preset_for_model_type,
+                        fn=_autoload_for_section,
                         inputs=[transcription_ui["model_type_radio"], ui_preset_dropdown],
-                        outputs=[ui_preset_dropdown] + config_components + config_info_components + [ui_preset_status],
+                        outputs=(
+                            _section_whisper_components(section_key)
+                            + [transcription_ui["model_type_info"], ui_preset_status]
+                        ),
                         queue=False,
                         show_progress="hidden",
                     )

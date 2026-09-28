@@ -23,6 +23,9 @@ class WhisperImpl(Enum):
 
 
 class Segment(BaseModel):
+    # extra keys are kept: diarization adds "speaker", which exists only on diarized results
+    model_config = ConfigDict(extra="allow")
+
     id: Optional[int] = Field(default=None, description="Incremental id for the segment")
     seek: Optional[int] = Field(default=None, description="Seek of the segment from chunked audio")
     text: Optional[str] = Field(default=None, description="Transcription text of the segment")
@@ -66,6 +69,8 @@ class Segment(BaseModel):
 
 
 class Word(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     start: Optional[float] = Field(default=None, description="Start time of the word")
     end: Optional[float] = Field(default=None, description="Start time of the word")
     word: Optional[str] = Field(default=None, description="Word text")
@@ -191,10 +196,14 @@ class DiarizationParams(BaseParams):
                 value=defaults.get("is_diarize", cls.__fields__["is_diarize"].default),
                 info="Speaker diarization identifies who is speaking and adds speaker labels to the transcription."
             ))
+            selected_device = defaults.get("diarization_device", defaults.get("device", device))
+            if available_devices is not None and selected_device not in available_devices:
+                # a CPU-only PC showed "cuda", which it cannot use, and diarization was skipped
+                selected_device = device if device in available_devices else available_devices[0]
             inputs.append(gr.Dropdown(
                 label=_("Device"),
                 choices=["cpu", "cuda", "xpu"] if available_devices is None else available_devices,
-                value=defaults.get("diarization_device", defaults.get("device", device)),
+                value=selected_device,
                 info="Device for the diarization model. Use CUDA when available for best speed."
             ))
             inputs.append(gr.Textbox(
@@ -437,8 +446,16 @@ class WhisperParams(BaseParams):
         import ast
         try:
             if isinstance(v, str):
-                suppress_tokens = ast.literal_eval(v)
-                if not isinstance(suppress_tokens, list):
+                text = v.strip()
+                if not text:
+                    return []  # an emptied field: suppress nothing
+                suppress_tokens = ast.literal_eval(text)
+                # "-1" and "1, 2" are accepted as well as "[-1]" and "[1, 2]"
+                if isinstance(suppress_tokens, int):
+                    suppress_tokens = [suppress_tokens]
+                elif isinstance(suppress_tokens, tuple):
+                    suppress_tokens = list(suppress_tokens)
+                if not isinstance(suppress_tokens, list) or not all(isinstance(token, int) for token in suppress_tokens):
                     raise ValueError("Invalid Suppress Tokens. The value must be type of List[int]")
                 return suppress_tokens
             if isinstance(v, list):

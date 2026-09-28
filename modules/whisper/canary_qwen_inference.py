@@ -28,6 +28,11 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
     MAX_CHUNK_SECONDS = 40.0
     MIN_CHUNK_SECONDS = 0.1
     MIN_CHUNK_SAMPLES = int(SAMPLE_RATE * MIN_CHUNK_SECONDS)
+    # A chunk ends at the quietest moment of its last seconds (at most a third of the chunk) instead of exactly
+    # at the chunk length, which cut through words that were then lost or garbled on both sides of the cut.
+    PAUSE_SEARCH_SECONDS = 3.0
+    PAUSE_FRAME_SECONDS = 0.02
+    PAUSE_SMOOTHING_FRAMES = 5
     DEFAULT_MAX_NEW_TOKENS = 256
     MAX_SAFE_MAX_NEW_TOKENS = 512
     MAX_SAFE_NUM_BEAMS = 8
@@ -181,6 +186,7 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 compute_type=compute_type,
             )
 
+            self.release_model_before_load()
             model = salm_cls.from_pretrained(
                 model_target,
                 cache_dir=self.get_hf_hub_cache_dir(),
@@ -188,9 +194,12 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 token=os.environ.get("HF_TOKEN") or None,
             )
         model.eval()
-        model.to(self.device)
+        # One move that also casts: the float32 weights (about 10 GB) were moved to the GPU first and cast
+        # there, which ran out of memory on 8-12 GB cards; PyTorch casts each weight before copying it.
         if dtype != torch.float32:
-            model.to(dtype=dtype)
+            model.to(device=self.device, dtype=dtype)
+        else:
+            model.to(self.device)
 
         self.model = model
         self.current_model_size = model_size
@@ -446,6 +455,8 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
                 break
 
             end_sample = min(start_sample + chunk_samples, total_samples)
+            if end_sample < total_samples:
+                end_sample = self.find_pause_cut(audio, start_sample, end_sample)
             chunks.append(
                 {
                     "audio": audio[start_sample:end_sample],
@@ -455,6 +466,27 @@ class CanaryQwenInference(BaseTranscriptionPipeline):
             )
             start_sample = end_sample
         return chunks
+
+    @classmethod
+    def find_pause_cut(cls, audio: np.ndarray, start_sample: int, end_sample: int) -> int:
+        """The sample where a chunk ending at end_sample should end: the middle of the quietest 100 ms in its
+        last PAUSE_SEARCH_SECONDS (no more than a third of the chunk). Equally quiet audio keeps end_sample."""
+        frame = max(1, int(round(cls.PAUSE_FRAME_SECONDS * cls.SAMPLE_RATE)))
+        search = min(int(cls.PAUSE_SEARCH_SECONDS * cls.SAMPLE_RATE), (end_sample - start_sample) // 3)
+        frame_count = search // frame
+        if frame_count < cls.PAUSE_SMOOTHING_FRAMES * 2:
+            return end_sample
+
+        region = audio[end_sample - frame_count * frame:end_sample]
+        energy = np.square(region.reshape(frame_count, frame), dtype=np.float64).mean(axis=1)
+        smoothing = cls.PAUSE_SMOOTHING_FRAMES
+        smoothed = np.convolve(energy, np.full(smoothing, 1.0 / smoothing), mode="valid")
+        # the latest of equally quiet windows, so silence (or steady noise) keeps the full chunk length
+        quietest = len(smoothed) - 1 - int(np.argmin(smoothed[::-1]))
+        if quietest == len(smoothed) - 1:
+            return end_sample
+        cut = end_sample - frame_count * frame + (quietest * frame) + (smoothing * frame) // 2
+        return int(min(max(cut, start_sample + cls.MIN_CHUNK_SAMPLES), end_sample))
 
     @staticmethod
     def collate_audio_batch(chunks: List[dict]) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -115,6 +115,7 @@ if "modules.utils.files_manager" not in sys.modules:
     fake_files_manager.MEDIA_EXTENSION = [".wav", ".mp3", ".mp4"]
     fake_files_manager.get_media_files = lambda *args, **kwargs: []
     fake_files_manager.format_gradio_files = lambda files: files
+    fake_files_manager.normalize_folder_path = lambda path: path.strip().strip("\"'") if path else path
     fake_files_manager.is_video = lambda file_path: str(file_path).lower().endswith(".mp4")
     fake_files_manager.read_file = lambda file_path: Path(file_path).read_text(encoding="utf-8")
     fake_files_manager.load_yaml = lambda *args, **kwargs: {}
@@ -221,9 +222,11 @@ class BannerLoggingPipeline(BaseTranscriptionPipeline):
         return None
 
 
-def test_run_logs_selected_base_model_and_model_name(caplog, tmp_path):
+def test_run_logs_selected_base_model_and_model_name(caplog, tmp_path, monkeypatch):
     media_file = tmp_path / "clip.wav"
     media_file.write_bytes(b"fake")
+    # The fake audio_manager at the top of this file is only installed when this module is imported first
+    monkeypatch.setattr("modules.whisper.base_transcription_pipeline.validate_audio", lambda audio: True)
     pipeline = BannerLoggingPipeline(output_dir=tmp_path)
     pipeline_params = TranscriptionPipelineParams(
         whisper=WhisperParams(
@@ -423,10 +426,12 @@ def test_find_existing_outputs_distinguishes_main_srt_from_plain_companion(tmp_p
         writer_options={"highlight_words": True},
     )
 
-    main_srt = tmp_path / "clip-123.srt"
-    no_word_srt = tmp_path / "clip_noword_timestaps-123.srt"
+    main_srt = tmp_path / "clip-0928003433667204.srt"
+    no_word_srt = tmp_path / "clip_noword_timestaps-0928003433667204.srt"
     main_srt.write_text("main", encoding="utf-8")
     no_word_srt.write_text("plain", encoding="utf-8")
+    # The output of another input (clip-2.mp4), not a run timestamp
+    (tmp_path / "clip-2.srt").write_text("other input", encoding="utf-8")
 
     existing_outputs = pipeline._find_existing_outputs(str(tmp_path), output_specs)
 
@@ -614,3 +619,40 @@ def test_transcribe_youtube_channel_batch_uses_video_titles(monkeypatch, tmp_pat
         str(tmp_path / "First Video_2.srt"),
     ]
     assert all(not path.exists() for path in audio_paths)
+
+
+class UnreadableFilePipeline(DummyLivePipeline):
+    def run(self, audio, progress=None, file_format="SRT", add_timestamp=True, progress_callback=None, *pipeline_params):
+        # what run() does for a file it cannot open: an empty placeholder result
+        self.last_input_unreadable = str(audio).endswith("broken.mp4")
+        if self.last_input_unreadable:
+            return [Segment()], 0
+        return super().run(audio, progress, file_format, add_timestamp, progress_callback, *pipeline_params)
+
+
+def test_live_batch_reports_an_unreadable_file_as_failed_and_goes_on(monkeypatch, tmp_path):
+    good_file = tmp_path / "good.wav"
+    broken_file = tmp_path / "broken.mp4"
+    good_file.write_bytes(b"fake")
+    broken_file.write_bytes(b"fake")
+    written = []
+
+    def fake_generate_file(**kwargs):
+        path = str(tmp_path / f"{kwargs['output_file_name']}.srt")
+        written.append(path)
+        return "subtitle", path
+
+    monkeypatch.setattr("modules.whisper.base_transcription_pipeline.generate_file", fake_generate_file)
+
+    pipeline = UnreadableFilePipeline(output_dir=tmp_path)
+    pipeline_params = TranscriptionPipelineParams(whisper=WhisperParams(word_timestamps=False)).to_list()
+    updates = list(pipeline.transcribe_file_with_live_output(
+        [str(broken_file), str(good_file)], False, None, False, False, str(tmp_path), ["SRT"], False, None,
+        *pipeline_params,
+    ))
+
+    final_live_output, final_result, final_paths = updates[-1]
+    assert "1 of 2 files failed" in final_result
+    assert "broken.mp4" in final_result and "could not be opened" in final_result
+    assert written == [str(tmp_path / "good.srt")]
+    assert final_paths == [str(tmp_path / "good.srt")]

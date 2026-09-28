@@ -28,7 +28,7 @@ from modules.utils.logger import get_logger
 from modules.utils.subtitle_manager import *
 from modules.utils.subtitle_manager import safe_filename
 from modules.utils.youtube_manager import get_latest_channel_videos, get_ytdata, get_ytaudio, remove_ytaudio
-from modules.utils.files_manager import get_media_files, format_gradio_files, read_file
+from modules.utils.files_manager import get_media_files, format_gradio_files, normalize_folder_path, read_file
 from modules.utils.audio_manager import coerce_audio_input_path, validate_audio
 from modules.whisper.data_classes import *
 from modules.diarize.diarizer import Diarizer
@@ -36,6 +36,13 @@ from modules.vad.silero_vad import SileroVAD
 
 
 logger = get_logger()
+
+
+# One transcription at a time in this process. The engines share the GPU and keep their models loaded between jobs;
+# a second job (another tab or user, or a new job while a cancelled one still finishes its file in a background
+# thread) replaced, offloaded or parked the model under the running one and both failed. run() holds the lock in
+# the thread that uses the model, so it is released only when that work has really ended.
+TRANSCRIPTION_LOCK = Lock()
 
 
 class BaseTranscriptionPipeline(ABC):
@@ -53,6 +60,9 @@ class BaseTranscriptionPipeline(ABC):
     defer_offload = False
     # What a job is doing before its first segment, for the Live Transcription heartbeat
     live_phase = None
+    # Set by run(): the last input could not be opened, so it returned an empty placeholder result
+    last_input_unreadable = False
+    UNREADABLE_INPUT_MESSAGE = "the file could not be opened (corrupted or unsupported format); nothing was written"
     LIVE_PHASE_DOWNLOADING = "downloading the model (first use only; the progress is shown in CMD)"
     LIVE_PHASE_LOADING = "loading the model"
 
@@ -237,6 +247,31 @@ class BaseTranscriptionPipeline(ABC):
             progress_callback: Optional[Callable] = None,
             *pipeline_params,
             ) -> Tuple[List[Segment], float]:
+        """Transcribe one input (see _run_unlocked) once no other transcription runs in this process."""
+        if not TRANSCRIPTION_LOCK.acquire(blocking=False):
+            message = "Waiting for the running transcription to finish.."
+            logger.info(message)
+            self.ensure_progress_callable(progress)(0, desc=message)
+            if progress_callback is not None:
+                try:
+                    progress_callback(None, None, message)
+                except TypeError:
+                    pass
+            TRANSCRIPTION_LOCK.acquire()
+        try:
+            return self._run_unlocked(audio, progress, file_format, add_timestamp, progress_callback,
+                                      *pipeline_params)
+        finally:
+            TRANSCRIPTION_LOCK.release()
+
+    def _run_unlocked(self,
+                      audio: Union[str, BinaryIO, np.ndarray],
+                      progress: gr.Progress = gr.Progress(),
+                      file_format: Union[str, List[str]] = "SRT",
+                      add_timestamp: bool = True,
+                      progress_callback: Optional[Callable] = None,
+                      *pipeline_params,
+                      ) -> Tuple[List[Segment], float]:
         """
         Run transcription with conditional pre-processing and post-processing.
         The VAD will be performed to remove noise from the audio input in pre-processing, if enabled.
@@ -281,7 +316,9 @@ class BaseTranscriptionPipeline(ABC):
         logger.info(f"   Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("="*80 + "\n")
 
+        self.last_input_unreadable = False
         if not validate_audio(audio):
+            self.last_input_unreadable = True
             # Only CMD showed why; the UI reported "Done! 0 segments" for an unreadable file.
             if progress_callback is not None:
                 try:
@@ -329,7 +366,9 @@ class BaseTranscriptionPipeline(ABC):
                 self.music_separator.offload()
             elapsed_time_bgm_sep = time.time() - start_time
 
-        origin_audio = deepcopy(audio)
+        # A reference is enough: VAD and the engines return new arrays and never change the audio in place
+        # (the deep copy duplicated up to hundreds of MB after the Background Music Remover)
+        origin_audio = audio
 
         if vad_params.vad_filter:
             progress(0, desc="Filtering silent parts from audio..")
@@ -430,9 +469,13 @@ class BaseTranscriptionPipeline(ABC):
                 raise ValueError("Input folder path is required when batch processing is enabled.")
 
             if batch_mode and input_folder_path:
+                input_folder_path = normalize_folder_path(input_folder_path)
+                if not os.path.isdir(input_folder_path):
+                    raise ValueError(f"Input folder not found: {input_folder_path}")
                 files = get_media_files(input_folder_path, include_sub_directory=include_subdirectory)
+            output_dir = normalize_folder_path(output_dir)
 
-            files = self.format_input_files(files)
+            files = self._unique_input_files(self.format_input_files(files))
             if not files:
                 raise ValueError("No input files provided for transcription.")
 
@@ -451,143 +494,162 @@ class BaseTranscriptionPipeline(ABC):
                     live_output_lines.extend(normalized_lines)
                     return "\n".join(live_output_lines)
 
+            used_output_names = set()
+            failures: List[str] = []
             with self.batch_offload_scope(len(files), params):
                 for file in files:
-                    file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
-                    target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
-                    output_specs = self._build_output_specs(file_name, file_formats, writer_options)
-                    existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
+                    try:
+                        target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
+                        file_name = self._output_name_for_input(file, target_output_dir, used_output_names)
+                        output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+                        existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
-                    live_output = append_live_lines(f"📂 Processing: {file_name}", "=" * 60, "")
-                    yield live_output, "", collected_paths
+                        live_output = append_live_lines(f"📂 Processing: {file_name}", "=" * 60, "")
+                        yield live_output, "", collected_paths
 
-                    if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
-                        skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
-                        collected_paths.extend(skipped_paths)
-                        live_output = append_live_lines(
-                            f"⏩ Skipped (outputs already exist in {target_output_dir})",
-                            "",
-                        )
-                        result_str = f"Skipped {file_name}: outputs already present."
-                        yield live_output, result_str, collected_paths
-                        continue
-
-                    segment_count = [0]  # Use list to allow modification in nested function
-                    live_update_queue: Queue = Queue()
-                    worker_result = {}
-                    worker_error = {}
-
-                    def live_progress_callback(progress_value, segment=None, status=None):
-                        del progress_value
-                        if status:
-                            live_update_queue.put(append_live_lines(str(status)))
-                        elif segment:
-                            segment_count[0] += 1
-                            start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
-                            end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
-                            text = segment.text if hasattr(segment, 'text') else ""
-                            live_update_queue.put(append_live_lines(f"[{start_time} → {end_time}] {text}"))
-
-                    def run_with_live_callback():
-                        try:
-                            transcribed_segments, time_for_task = self.run(
-                                file,
-                                progress,
-                                file_formats[0],
-                                add_timestamp,
-                                live_progress_callback,
-                                *pipeline_params,
+                        if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
+                            skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
+                            collected_paths.extend(skipped_paths)
+                            live_output = append_live_lines(
+                                f"⏩ Skipped (outputs already exist in {target_output_dir})",
+                                "",
                             )
-                            worker_result["segments"] = transcribed_segments
-                            worker_result["time_for_task"] = time_for_task
-                        except Exception as e:
-                            worker_error["exception"] = e
-                        finally:
-                            live_update_queue.put(None)
+                            result_str = f"Skipped {file_name}: outputs already present."
+                            yield live_output, result_str, collected_paths
+                            continue
 
-                    worker_thread = Thread(target=run_with_live_callback, daemon=True)
-                    worker_thread.start()
-                    heartbeat_started_at = time.time()
-                    next_heartbeat_at = heartbeat_started_at + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+                        segment_count = [0]  # Use list to allow modification in nested function
+                        live_update_queue: Queue = Queue()
+                        worker_result = {}
+                        worker_error = {}
 
-                    while True:
-                        try:
-                            queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
-                        except Empty:
-                            if worker_thread.is_alive():
-                                now = time.time()
-                                if now >= next_heartbeat_at:
-                                    heartbeat = self.build_live_transcription_heartbeat(
-                                        heartbeat_started_at,
-                                        segment_count[0],
-                                    )
-                                    self.log_live_heartbeat(heartbeat)
-                                    yield append_live_lines(heartbeat), "", collected_paths
-                                    next_heartbeat_at = now + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
-                                continue
-                            break
+                        def live_progress_callback(progress_value, segment=None, status=None):
+                            del progress_value
+                            if status:
+                                live_update_queue.put(append_live_lines(str(status)))
+                            elif segment:
+                                segment_count[0] += 1
+                                start_time = self.format_timestamp(segment.start) if hasattr(segment, 'start') else "00:00:00.000"
+                                end_time = self.format_timestamp(segment.end) if hasattr(segment, 'end') else "00:00:00.000"
+                                text = segment.text if hasattr(segment, 'text') else ""
+                                live_update_queue.put(append_live_lines(f"[{start_time} → {end_time}] {text}"))
 
-                        latest_update = queued_update
-                        saw_sentinel = queued_update is None
+                        def run_with_live_callback():
+                            try:
+                                transcribed_segments, time_for_task = self.run(
+                                    file,
+                                    progress,
+                                    file_formats[0],
+                                    add_timestamp,
+                                    live_progress_callback,
+                                    *pipeline_params,
+                                )
+                                worker_result["segments"] = transcribed_segments
+                                worker_result["time_for_task"] = time_for_task
+                            except Exception as e:
+                                worker_error["exception"] = e
+                            finally:
+                                live_update_queue.put(None)
+
+                        worker_thread = Thread(target=run_with_live_callback, daemon=True)
+                        worker_thread.start()
+                        heartbeat_started_at = time.time()
+                        next_heartbeat_at = heartbeat_started_at + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
                         while True:
                             try:
-                                queued_update = live_update_queue.get_nowait()
+                                queued_update = live_update_queue.get(timeout=self.LIVE_TRANSCRIPTION_POLL_INTERVAL_SEC)
                             except Empty:
+                                if worker_thread.is_alive():
+                                    now = time.time()
+                                    if now >= next_heartbeat_at:
+                                        heartbeat = self.build_live_transcription_heartbeat(
+                                            heartbeat_started_at,
+                                            segment_count[0],
+                                        )
+                                        self.log_live_heartbeat(heartbeat)
+                                        yield append_live_lines(heartbeat), "", collected_paths
+                                        next_heartbeat_at = now + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+                                    continue
                                 break
 
-                            if queued_update is None:
-                                saw_sentinel = True
-                                continue
-
                             latest_update = queued_update
+                            saw_sentinel = queued_update is None
 
-                        if latest_update is not None:
-                            yield latest_update, "", collected_paths
-                            next_heartbeat_at = time.time() + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
+                            while True:
+                                try:
+                                    queued_update = live_update_queue.get_nowait()
+                                except Empty:
+                                    break
 
-                        if saw_sentinel and not worker_thread.is_alive():
-                            break
+                                if queued_update is None:
+                                    saw_sentinel = True
+                                    continue
 
-                    worker_thread.join()
+                                latest_update = queued_update
 
-                    if "exception" in worker_error:
-                        raise worker_error["exception"]
+                            if latest_update is not None:
+                                yield latest_update, "", collected_paths
+                                next_heartbeat_at = time.time() + self.LIVE_TRANSCRIPTION_HEARTBEAT_INTERVAL_SEC
 
-                    transcribed_segments = worker_result["segments"]
-                    time_for_task = worker_result["time_for_task"]
-                    reported_segment_count = segment_count[0] or self.count_transcribed_segments(transcribed_segments)
+                            if saw_sentinel and not worker_thread.is_alive():
+                                break
 
-                    # Calculate transcription speed
-                    if transcribed_segments and len(transcribed_segments) > 0:
-                        last_segment = transcribed_segments[-1]
-                        audio_duration = last_segment.end if hasattr(last_segment, 'end') and last_segment.end else 0
-                        if audio_duration > 0 and time_for_task > 0:
-                            speed_ratio = audio_duration / time_for_task
-                            append_live_lines(
-                                "",
-                                f"⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})",
-                            )
+                        worker_thread.join()
 
-                    # Generate final output(s)
-                    _, generated_paths = self._write_output_files(
-                        output_specs=output_specs,
-                        output_dir=target_output_dir,
-                        result=transcribed_segments,
-                        add_timestamp=add_timestamp,
-                        existing_outputs=existing_outputs,
-                        batch_mode=batch_mode,
-                        overwrite_existing=overwrite_existing,
-                    )
+                        if "exception" in worker_error:
+                            raise worker_error["exception"]
 
-                    collected_paths.extend(generated_paths)
-                    live_output = append_live_lines(
-                        f"✅ Completed in {self.format_time(time_for_task)}",
-                        "",
-                    )
-                    result_str = f"Done! {reported_segment_count} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
+                        if self.last_input_unreadable:
+                            # counted as a failed file (empty subtitle files were written and "Done!" reported)
+                            raise ValueError(self.UNREADABLE_INPUT_MESSAGE)
+                        transcribed_segments = worker_result["segments"]
+                        time_for_task = worker_result["time_for_task"]
+                        reported_segment_count = segment_count[0] or self.count_transcribed_segments(transcribed_segments)
 
-                    yield live_output, result_str, collected_paths
+                        # Calculate transcription speed
+                        if transcribed_segments and len(transcribed_segments) > 0:
+                            last_segment = transcribed_segments[-1]
+                            audio_duration = last_segment.end if hasattr(last_segment, 'end') and last_segment.end else 0
+                            if audio_duration > 0 and time_for_task > 0:
+                                speed_ratio = audio_duration / time_for_task
+                                append_live_lines(
+                                    "",
+                                    f"⚡ Speed: {speed_ratio:.2f}x realtime ({self.format_time(audio_duration)} audio in {self.format_time(time_for_task)})",
+                                )
+
+                        # Generate final output(s)
+                        _, generated_paths = self._write_output_files(
+                            output_specs=output_specs,
+                            output_dir=target_output_dir,
+                            result=transcribed_segments,
+                            add_timestamp=add_timestamp,
+                            existing_outputs=existing_outputs,
+                            batch_mode=batch_mode,
+                            overwrite_existing=overwrite_existing,
+                        )
+
+                        collected_paths.extend(generated_paths)
+                        live_output = append_live_lines(
+                            f"✅ Completed in {self.format_time(time_for_task)}",
+                            "",
+                        )
+                        result_str = f"Done! {reported_segment_count} segments in {self.format_time(time_for_task)}. Saved to {target_output_dir}"
+
+                        yield live_output, result_str, collected_paths
+                    except Exception as exc:
+                        if len(files) == 1:
+                            raise
+                        # One bad file (corrupt, out of memory) ended the whole batch and cleared the
+                        # download list; the other files now go on and the failures are listed at the end
+                        logger.error("File '%s' failed: %s: %s", file, type(exc).__name__, exc, exc_info=True)
+                        failures.append(f"{os.path.basename(str(file))}: {type(exc).__name__}: {exc}")
+                        live_output = append_live_lines(f"❌ Failed: {os.path.basename(str(file))}: {exc}", "")
+                        yield live_output, "", collected_paths
+
+            if failures:
+                summary = self._batch_failure_summary(failures, len(files))
+                yield append_live_lines(summary), summary, collected_paths
 
         except Exception as e:
             # The UI only gets the message; the traceback goes to CMD so saved console logs show the cause.
@@ -649,9 +711,13 @@ class BaseTranscriptionPipeline(ABC):
                 raise ValueError("Input folder path is required when batch processing is enabled.")
 
             if batch_mode and input_folder_path:
+                input_folder_path = normalize_folder_path(input_folder_path)
+                if not os.path.isdir(input_folder_path):
+                    raise ValueError(f"Input folder not found: {input_folder_path}")
                 files = get_media_files(input_folder_path, include_sub_directory=include_subdirectory)
+            output_dir = normalize_folder_path(output_dir)
 
-            files = self.format_input_files(files)
+            files = self._unique_input_files(self.format_input_files(files))
             if not files:
                 raise ValueError("No input files provided for transcription.")
 
@@ -659,51 +725,63 @@ class BaseTranscriptionPipeline(ABC):
             all_paths: List[str] = []
             total_time = 0
 
+            used_output_names = set()
+            failures: List[str] = []
             with self.batch_offload_scope(len(files), params):
                 for file in files:
-                    file_name = safe_filename(os.path.splitext(os.path.basename(file))[0])
-                    target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
-                    output_specs = self._build_output_specs(file_name, file_formats, writer_options)
-                    existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
+                    try:
+                        target_output_dir = self._get_output_dir_for_file(output_dir, file, batch_mode, input_folder_path)
+                        file_name = self._output_name_for_input(file, target_output_dir, used_output_names)
+                        output_specs = self._build_output_specs(file_name, file_formats, writer_options)
+                        existing_outputs = self._find_existing_outputs(target_output_dir, output_specs)
 
-                    if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
-                        skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
-                        all_paths.extend(skipped_paths)
+                        if batch_mode and (not overwrite_existing) and len(existing_outputs) == len(output_specs):
+                            skipped_paths = [sorted(paths)[-1] for paths in existing_outputs.values()]
+                            all_paths.extend(skipped_paths)
+                            files_info[file_name] = {
+                                "subtitle": read_file(skipped_paths[0]) if skipped_paths else "",
+                                "time_for_task": 0,
+                                "paths": skipped_paths,
+                                "skipped": True
+                            }
+                            continue
+
+                        transcribed_segments, time_for_task = self.run(
+                            file,
+                            progress,
+                            file_formats[0],
+                            add_timestamp,
+                            None,
+                            *pipeline_params,
+                        )
+                        if self.last_input_unreadable:
+                            raise ValueError(self.UNREADABLE_INPUT_MESSAGE)
+
+                        subtitle_preview, generated_paths = self._write_output_files(
+                            output_specs=output_specs,
+                            output_dir=target_output_dir,
+                            result=transcribed_segments,
+                            add_timestamp=add_timestamp,
+                            existing_outputs=existing_outputs,
+                            batch_mode=batch_mode,
+                            overwrite_existing=overwrite_existing,
+                        )
+
+                        all_paths.extend(generated_paths)
                         files_info[file_name] = {
-                            "subtitle": read_file(skipped_paths[0]) if skipped_paths else "",
-                            "time_for_task": 0,
-                            "paths": skipped_paths,
-                            "skipped": True
+                            "subtitle": subtitle_preview,
+                            "time_for_task": time_for_task,
+                            "paths": generated_paths,
+                            "skipped": False
                         }
-                        continue
-
-                    transcribed_segments, time_for_task = self.run(
-                        file,
-                        progress,
-                        file_formats[0],
-                        add_timestamp,
-                        None,
-                        *pipeline_params,
-                    )
-
-                    subtitle_preview, generated_paths = self._write_output_files(
-                        output_specs=output_specs,
-                        output_dir=target_output_dir,
-                        result=transcribed_segments,
-                        add_timestamp=add_timestamp,
-                        existing_outputs=existing_outputs,
-                        batch_mode=batch_mode,
-                        overwrite_existing=overwrite_existing,
-                    )
-
-                    all_paths.extend(generated_paths)
-                    files_info[file_name] = {
-                        "subtitle": subtitle_preview,
-                        "time_for_task": time_for_task,
-                        "paths": generated_paths,
-                        "skipped": False
-                    }
-                    total_time += time_for_task
+                        total_time += time_for_task
+                    except Exception as exc:
+                        if len(files) == 1:
+                            raise
+                        # One bad file (corrupt, out of memory) ended the whole batch and cleared the
+                        # download list; the other files now go on and the failures are listed at the end
+                        logger.error("File '%s' failed: %s: %s", file, type(exc).__name__, exc, exc_info=True)
+                        failures.append(f"{os.path.basename(str(file))}: {type(exc).__name__}: {exc}")
 
             total_result = ''
             for file_name, info in files_info.items():
@@ -715,6 +793,8 @@ class BaseTranscriptionPipeline(ABC):
                     total_result += f'{info["subtitle"]}'
 
             result_str = f"Done in {self.format_time(total_time)}! Subtitle files saved to selected output folders.\n\n{total_result}"
+            if failures:
+                result_str = f"{self._batch_failure_summary(failures, len(files))}\n\n{result_str}"
             result_file_path = all_paths
 
             return result_str, result_file_path
@@ -791,15 +871,25 @@ class BaseTranscriptionPipeline(ABC):
                        self,
                        audio: np.ndarray,
                        *pipeline_params,
-                       ) -> str:
+                       ) -> Optional[str]:
         """
         Generate a lightweight live preview transcript from streaming microphone audio.
 
         This intentionally disables diarization and background-music separation because
         those are too expensive and unstable for short streaming chunks.
+
+        Returns None, without waiting, while another transcription runs: the preview is skipped then.
         """
         if audio is None:
             return ""
+        if not TRANSCRIPTION_LOCK.acquire(blocking=False):
+            return None
+        try:
+            return self._transcribe_live_preview_unlocked(audio, *pipeline_params)
+        finally:
+            TRANSCRIPTION_LOCK.release()
+
+    def _transcribe_live_preview_unlocked(self, audio: np.ndarray, *pipeline_params) -> str:
 
         audio = np.asarray(audio, dtype=np.float32)
         if audio.size == 0:
@@ -1341,6 +1431,42 @@ class BaseTranscriptionPipeline(ABC):
             yield error_msg, error_msg, []
 
     @staticmethod
+    def _batch_failure_summary(failures: List[str], file_count: int) -> str:
+        listed = "; ".join(failures[:5]) + (" ..." if len(failures) > 5 else "")
+        return f"⚠️ {len(failures)} of {file_count} files failed (full errors in CMD): {listed}"
+
+    @staticmethod
+    def _unique_input_files(files: List[str]) -> List[str]:
+        """Each input once, in the given order (a file listed twice was transcribed twice)."""
+        seen = set()
+        unique = []
+        for file in files:
+            key = os.path.normcase(os.path.abspath(str(file)))
+            if key not in seen:
+                seen.add(key)
+                unique.append(file)
+        return unique
+
+    @staticmethod
+    def _output_name_for_input(input_file: str, target_output_dir: str, used_output_names: set) -> str:
+        """Output name of one input of a job: its file name without extension, plus the extension when another
+        input of the same job already writes that name into the same folder (talk.mp4 and talk.wav shared
+        talk.srt, and the second one was skipped as "outputs already exist" or overwrote the first)."""
+        stem, extension = os.path.splitext(os.path.basename(str(input_file)))
+        folder = os.path.normcase(os.path.abspath(target_output_dir))
+        candidates = [stem]
+        if extension:
+            candidates.append(f"{stem}_{extension.lstrip('.')}")
+        candidates.extend(f"{stem}_{number}" for number in range(2, 10000))
+        for candidate in candidates:
+            name = safe_filename(candidate)
+            key = (folder, os.path.normcase(name))
+            if key not in used_output_names:
+                used_output_names.add(key)
+                return name
+        return safe_filename(stem)
+
+    @staticmethod
     def _unique_output_file_name(base_name: str, used_output_names: dict[str, int]) -> str:
         count = used_output_names.get(base_name, 0) + 1
         used_output_names[base_name] = count
@@ -1457,7 +1583,9 @@ class BaseTranscriptionPipeline(ABC):
                 remainder = stem[len(spec["output_file_name"]):] if stem.startswith(spec["output_file_name"]) else None
                 if remainder is None:
                     continue
-                if remainder == "" or (remainder.startswith("-") and remainder[1:].isdigit()):
+                # Only a run timestamp counts ("-" + 16 digits, 10 digits in older versions): any number did, so
+                # lecture-2.srt was taken for the output of lecture.mp4 and lecture.mp4 was skipped
+                if remainder == "" or (remainder.startswith("-") and remainder[1:].isdigit() and len(remainder) - 1 in (10, 16)):
                     matches.append(match)
             if matches:
                 existing[spec["lookup_key"]] = matches
@@ -1552,7 +1680,19 @@ class BaseTranscriptionPipeline(ABC):
                     time.time() - started)
 
     def move_models_to_ram(self) -> None:
-        """Park the loaded models in system RAM and release their VRAM until the next job."""
+        """Park the loaded models in system RAM and release their VRAM until the next job.
+
+        Skipped while a transcription runs: a cancelled job's thread can still be using the model, and this can be
+        called from Gradio's event loop when it closes that job."""
+        if not TRANSCRIPTION_LOCK.acquire(blocking=False):
+            logger.info("The models stay loaded: a transcription is still running.")
+            return
+        try:
+            self._move_models_to_ram_unlocked()
+        finally:
+            TRANSCRIPTION_LOCK.release()
+
+    def _move_models_to_ram_unlocked(self) -> None:
         started = time.time()
         free_before = self._cuda_free_mb()
         moved = []
@@ -1587,6 +1727,13 @@ class BaseTranscriptionPipeline(ABC):
         except Exception:
             return None
 
+    def release_model_before_load(self) -> None:
+        """Unload the current model before another one loads. The old model stayed in VRAM until the new one was
+        ready, so switching models or compute types needed room for both and could run out of VRAM."""
+        if self.model is not None:
+            logger.info("Unloading the current model before loading the selected one.")
+            self.offload()
+
     def offload(self):
         """Offload the model and free up the memory"""
         self.models_in_ram = False
@@ -1617,14 +1764,19 @@ class BaseTranscriptionPipeline(ABC):
             yield
         finally:
             self.defer_offload = False
-            # The offloads run() skipped, with the same conditions
-            if params.bgm_separation.is_separate_bgm and params.bgm_separation.enable_offload:
-                self.music_separator.offload()
-            if not params.whisper.offload_to_ram:
-                if params.whisper.enable_offload:
-                    self.offload()
-                if params.diarization.is_diarize and params.diarization.enable_offload:
-                    self.diarizer.offload()
+            # The offloads run() skipped, with the same conditions; not while a transcription still runs (the
+            # batch was cancelled and its current file continues in a background thread)
+            if TRANSCRIPTION_LOCK.acquire(blocking=False):
+                try:
+                    if params.bgm_separation.is_separate_bgm and params.bgm_separation.enable_offload:
+                        self.music_separator.offload()
+                    if not params.whisper.offload_to_ram:
+                        if params.whisper.enable_offload:
+                            self.offload()
+                        if params.diarization.is_diarize and params.diarization.enable_offload:
+                            self.diarizer.offload()
+                finally:
+                    TRANSCRIPTION_LOCK.release()
 
     @staticmethod
     def format_time(elapsed_time: float) -> str:
@@ -1723,8 +1875,10 @@ class BaseTranscriptionPipeline(ABC):
             params.whisper.max_new_tokens = None
         if params.whisper.hallucination_silence_threshold == GRADIO_NONE_NUMBER_MIN:
             params.whisper.hallucination_silence_threshold = None
-        if params.whisper.language_detection_threshold == GRADIO_NONE_NUMBER_MIN:
-            params.whisper.language_detection_threshold = None
+        # 0 is a valid threshold (accept the first detection); turning it into None made faster-whisper
+        # compare the probability with None and fail before transcribing
+        if params.whisper.language_detection_threshold is None:
+            params.whisper.language_detection_threshold = 0.5
         if params.vad.max_speech_duration_s == GRADIO_NONE_NUMBER_MAX:
             params.vad.max_speech_duration_s = float('inf')
         return params

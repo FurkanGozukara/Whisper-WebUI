@@ -54,6 +54,13 @@ class Diarizer:
 
         if device is None:
             device = self.device
+        if device not in self.available_device:
+            # a preset made on another PC can name a device this one does not have (cuda on a CPU-only PC)
+            fallback_device = self.get_device()
+            logging.getLogger(__name__).warning(
+                "Diarization device '%s' is not available; using '%s'.", device, fallback_device
+            )
+            device = fallback_device
 
         if device != self.device or self.pipe is None:
             self.update_pipe(
@@ -71,22 +78,23 @@ class Diarizer:
         from modules.diarize.diarize_pipeline import assign_word_speakers
 
         diarization_segments = self.pipe(audio)
+        # A segment outside every speaker turn gets the nearest speaker; it was labelled "None" before.
         diarized_result = assign_word_speakers(
             diarization_segments,
-            {"segments": transcribed_result}
+            {"segments": transcribed_result},
+            fill_nearest=True
         )
 
         segments_result = []
         for segment in diarized_result["segments"]:
-            speaker = "None"
-            if "speaker" in segment:
-                speaker = segment["speaker"]
-            diarized_text = speaker + "|" + segment["text"].strip()
-            segments_result.append(Segment(
-                start=segment["start"],
-                end=segment["end"],
-                text=diarized_text
-            ))
+            text = (segment.get("text") or "").strip()
+            speaker = segment.get("speaker")
+            # The words (with their timestamps) are kept, so word-level subtitles still work with diarization;
+            # the writers label every cue with the segment's speaker.
+            segments_result.append(Segment(**{
+                **segment,
+                "text": f"{speaker}|{text}" if speaker else text,
+            }))
 
         elapsed_time = time.time() - start_time
         return segments_result, elapsed_time

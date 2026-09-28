@@ -1,4 +1,5 @@
-from typing import Optional, Union, List, Dict
+from types import SimpleNamespace
+from typing import Optional, Union, List, Dict, Tuple
 import numpy as np
 from modules.utils.torch_compat import enable_torchaudio_2_9_compat, torch_load_safe_globals
 
@@ -71,12 +72,18 @@ class MusicSeparator:
         vocals_output_dir = os.path.join(self.output_dir, "vocals")
         os.makedirs(instrumental_output_dir, exist_ok=True)
         os.makedirs(vocals_output_dir, exist_ok=True)
+        # sample_rate of the audio separated last; the transcription pipeline resamples the vocals with it
         self.audio_info = None
         self.available_models = ["UVR-MDX-NET-Inst_HQ_4", "UVR-MDX-NET-Inst_3"]
         self.default_model = self.available_models[0]
         self.current_model_size = self.default_model
-        self.model_config = {
-            "segment": 256,
+        self.model_config = self.build_model_config(256)
+
+    @staticmethod
+    def build_model_config(segment_size: int) -> dict:
+        # uvr reads "segment_size"; the "segment" key used before was ignored, so Segment Size stayed 256
+        return {
+            "segment_size": int(segment_size),
             "split": True
         }
 
@@ -95,18 +102,53 @@ class MusicSeparator:
         device = self.resolve_device(device)
 
         self.device = device
-        self.model_config = {
-            "segment": segment_size,
-            "split": True
-        }
+        self.model_config = self.build_model_config(segment_size)
         MDX = load_uvr_mdx()
         # Some UVR checkpoints can be loaded via torch.load internally; make it robust on torch>=2.6.
         with torch_load_safe_globals():
+            # uvr adds its own keys to the dict it gets; a copy keeps model_config comparable, which reloaded
+            # the model for every file before
             self.model = MDX(name=model_name,
-                             other_metadata=self.model_config,
+                             other_metadata=dict(self.model_config),
                              device=self.device,
                              logger=None,
                              model_dir=self.model_dir)
+        # recorded so switching the UVR model takes effect (it never changed, so the first model stayed loaded)
+        self.current_model_size = model_name
+
+    @staticmethod
+    def read_audio_file(path: str) -> Tuple[np.ndarray, int]:
+        """The samples (2, n) float32 and the sample rate of an audio file, in its own sample rate.
+
+        soundfile reads WAV, FLAC, OGG and MP3. Other formats (.m4a, .aac, .wma, .opus, ...) failed before; they
+        are decoded with PyAV, which the transcription already uses. PyAV also mixes surround audio down to stereo.
+        """
+        try:
+            data, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+            if data.shape[1] <= 2 and data.shape[0] > 0:
+                data = data.T
+                if data.shape[0] == 1:
+                    data = np.concatenate([data, data])
+                return np.ascontiguousarray(data), int(sample_rate)
+        except Exception:
+            pass
+
+        import av
+
+        with av.open(path, mode="r", metadata_errors="ignore") as container:
+            if not container.streams.audio:
+                raise ValueError(f"{os.path.basename(path)} has no audio stream")
+            stream = container.streams.audio[0]
+            sample_rate = int(stream.codec_context.sample_rate or stream.rate or 44100)
+            resampler = av.AudioResampler(format="fltp", layout="stereo", rate=sample_rate)
+            chunks = []
+            for frame in container.decode(stream):
+                frame.pts = None
+                chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(frame))
+            chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(None))
+        if not chunks:
+            raise ValueError(f"{os.path.basename(path)} has no decodable audio")
+        return np.ascontiguousarray(np.concatenate(chunks, axis=1), dtype=np.float32), sample_rate
 
     def separate(self,
                  audio: Union[str, np.ndarray],
@@ -142,22 +184,21 @@ class MusicSeparator:
                 audio = load_audio(audio)
                 sample_rate = 16000
             else:
-                self.audio_info = torchaudio.info(audio)
-                sample_rate = self.audio_info.sample_rate
+                audio, sample_rate = self.read_audio_file(audio)
         else:
             timestamp = datetime.now().strftime("%m%d%H%M%S")
             output_filename, ext = f"UVR-{timestamp}", ".wav"
             sample_rate = 16000
+        # Set for every call: it kept the rate of an earlier audio file, so a video after it in a batch was
+        # resampled with the wrong rate and transcribed at the wrong speed.
+        self.audio_info = SimpleNamespace(sample_rate=sample_rate)
 
-        model_config = {
-            "segment": segment_size,
-            "split": True
-        }
+        model_config = self.build_model_config(segment_size)
 
+        # the MDX model runs on the samples it gets whatever their rate, so a new rate needs no reload
         if (self.model is None or
                 self.current_model_size != model_name or
                 self.model_config != model_config or
-                self.model.sample_rate != sample_rate or
                 self.device != device):
             progress(0, desc="Initializing UVR Model..")
             self.update_model(
@@ -165,7 +206,7 @@ class MusicSeparator:
                 device=device,
                 segment_size=segment_size
             )
-            self.model.sample_rate = sample_rate
+        self.model.sample_rate = sample_rate
 
         progress(0, desc="Separating background music from the audio.. "
                          "(It will only display 0% until the job is complete.) ")
@@ -191,6 +232,9 @@ class MusicSeparator:
                        progress: gr.Progress = gr.Progress()) -> List[str]:
         """Separate the background music from the audio files. Returns only last Instrumental and vocals file paths
         to display into gr.Audio()"""
+        if not files:
+            raise gr.Error("Upload at least one audio or video file first.")
+        file_paths = []
         for file_path in files:
             instrumental, vocals, file_paths = self.separate(
                 audio=file_path,

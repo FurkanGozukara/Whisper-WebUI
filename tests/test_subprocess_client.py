@@ -380,6 +380,29 @@ def test_explicit_cancel_terminates_real_worker_and_next_generation_starts(monke
     assert handles[1].process.poll() == 0
 
 
+def test_cancel_with_session_stops_only_that_sessions_worker(monkeypatch):
+    proxy = build_proxy()
+    handles = {
+        "session-a": start_test_worker("sleep", "first"),
+        "session-b": start_test_worker("sleep", "second"),
+    }
+
+    try:
+        for session_hash, handle in handles.items():
+            monkeypatch.setattr(proxy, "_current_session_hash", lambda session_hash=session_hash: session_hash)
+            proxy._set_active_handle(handle)
+
+        assert proxy.cancel_active_generation(session_hash="session-c") is False
+        assert proxy.cancel_active_generation(session_hash="session-a") is True
+
+        assert handles["session-a"].process.poll() is not None
+        assert handles["session-b"].process.poll() is None
+    finally:
+        for handle in handles.values():
+            proxy._client.terminate_worker(handle)
+            proxy._client.finalize_worker(handle)
+
+
 def test_explicit_cancel_terminates_every_registered_active_worker():
     proxy = build_proxy()
     handles = [

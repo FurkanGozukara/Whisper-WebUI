@@ -306,51 +306,44 @@ class DiarizationPipeline:
         return diarize_df
 
 
+def _speaker_for_span(diarize_df, start, end, fill_nearest):
+    diarize_df['intersection'] = np.minimum(diarize_df['end'], end) - np.maximum(diarize_df['start'], start)
+    diarize_df['union'] = np.maximum(diarize_df['end'], end) - np.minimum(diarize_df['start'], start)
+
+    intersected = diarize_df[diarize_df["intersection"] > 0]
+    if len(intersected) > 0:
+        # Choosing most strong intersection
+        return intersected.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
+    if fill_nearest:
+        # Otherwise choosing closest
+        return diarize_df.sort_values(by=["intersection"], ascending=False)["speaker"].values[0]
+    return None
+
+
 def assign_word_speakers(diarize_df, transcript_result, fill_nearest=False):
     transcript_segments = transcript_result["segments"]
     if transcript_segments and isinstance(transcript_segments[0], Segment):
         transcript_segments = [seg.model_dump() for seg in transcript_segments]
+    if diarize_df is None or len(diarize_df) == 0:
+        # no speaker turns were found: nothing to assign (the nearest-speaker lookup needs at least one turn)
+        return {"segments": transcript_segments}
+
     for seg in transcript_segments:
         # assign speaker to segment (if any)
-        diarize_df['intersection'] = np.minimum(diarize_df['end'], seg['end']) - np.maximum(diarize_df['start'],
-                                                                                            seg['start'])
-        diarize_df['union'] = np.maximum(diarize_df['end'], seg['end']) - np.minimum(diarize_df['start'], seg['start'])
-
-        intersected = diarize_df[diarize_df["intersection"] > 0]
-
-        speaker = None
-        if len(intersected) > 0:
-            # Choosing most strong intersection
-            speaker = intersected.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
-        elif fill_nearest:
-            # Otherwise choosing closest
-            speaker = diarize_df.sort_values(by=["intersection"], ascending=False)["speaker"].values[0]
-
-        if speaker is not None:
-            seg["speaker"] = speaker
+        if seg.get('start') is not None and seg.get('end') is not None:
+            speaker = _speaker_for_span(diarize_df, seg['start'], seg['end'], fill_nearest)
+            if speaker is not None:
+                seg["speaker"] = speaker
 
         # assign speaker to words
         if 'words' in seg and seg['words'] is not None:
             for word in seg['words']:
-                if 'start' in word:
-                    diarize_df['intersection'] = np.minimum(diarize_df['end'], word['end']) - np.maximum(
-                        diarize_df['start'], word['start'])
-                    diarize_df['union'] = np.maximum(diarize_df['end'], word['end']) - np.minimum(diarize_df['start'],
-                                                                                                  word['start'])
-
-                    intersected = diarize_df[diarize_df["intersection"] > 0]
-
-                    word_speaker = None
-                    if len(intersected) > 0:
-                        # Choosing most strong intersection
-                        word_speaker = \
-                            intersected.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
-                    elif fill_nearest:
-                        # Otherwise choosing closest
-                        word_speaker = diarize_df.sort_values(by=["intersection"], ascending=False)["speaker"].values[0]
-
-                    if word_speaker is not None:
-                        word["speaker"] = word_speaker
+                # the last word of some engines has no end time
+                if word.get('start') is None or word.get('end') is None:
+                    continue
+                word_speaker = _speaker_for_span(diarize_df, word['start'], word['end'], fill_nearest)
+                if word_speaker is not None:
+                    word["speaker"] = word_speaker
 
     return {"segments": transcript_segments}
 

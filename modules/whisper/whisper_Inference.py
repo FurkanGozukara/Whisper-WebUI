@@ -207,6 +207,7 @@ class WhisperInference(BaseTranscriptionPipeline):
         )
         # PyTorch 2.6 changed torch.load default to weights_only=True. Some Whisper checkpoints
         # include TorchVersion metadata which must be allowlisted for weights-only loading.
+        self.release_model_before_load()
         with torch_load_safe_globals():
             self.model = whisper.load_model(
                 name=model_size,

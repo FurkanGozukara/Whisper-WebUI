@@ -7,7 +7,7 @@ from modules.utils import paths
 
 CACHE_VARIABLES = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR",
                    "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_TOKEN_PATH", "TRITON_CACHE_DIR",
-                   "DISABLE_SAFETENSORS_CONVERSION")
+                   "DISABLE_SAFETENSORS_CONVERSION", "CUDA_CACHE_PATH", "CUDA_CACHE_MAXSIZE")
 
 
 def inside_models_dir(path: str) -> bool:
@@ -23,8 +23,10 @@ def test_model_cache_env_overrides_global_caches(monkeypatch, tmp_path):
 
     paths.configure_model_cache_env()
 
-    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR", "TRITON_CACHE_DIR"):
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "TORCH_HOME", "NEMO_CACHE_DIR", "TRITON_CACHE_DIR",
+                 "CUDA_CACHE_PATH"):
         assert inside_models_dir(os.environ[name]), name
+    assert os.environ["CUDA_CACHE_MAXSIZE"] == str(4 * 1024 ** 3)
     assert "TRANSFORMERS_CACHE" not in os.environ
     assert "HF_TOKEN_PATH" not in os.environ
     assert os.environ["DISABLE_SAFETENSORS_CONVERSION"] == "1"

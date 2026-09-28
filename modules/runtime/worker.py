@@ -60,8 +60,24 @@ def create_whisper_inferencer(args: Namespace):
         output_dir=args.output_dir,
     )
     if key is not None:
+        _unload_cached_inferencers()
         _INFERENCERS[key] = inferencer
     return inferencer
+
+
+def _unload_cached_inferencers() -> None:
+    """Serve mode keeps one engine: the cached inferencers of other engines kept their models (parked in RAM)
+    and their own UVR and diarization copies, so switching engines added up memory in the worker."""
+    for key in list(_INFERENCERS):
+        inferencer = _INFERENCERS.pop(key)
+        for owner in (inferencer, getattr(inferencer, "music_separator", None), getattr(inferencer, "diarizer", None)):
+            offload = getattr(owner, "offload", None)
+            if offload is None:
+                continue
+            try:
+                offload()
+            except Exception as exc:
+                sys.stderr.write(f"Could not unload the models of an unused engine: {type(exc).__name__}: {exc}\n")
 
 
 def selected_whisper_type(request: Dict[str, Any]) -> str:

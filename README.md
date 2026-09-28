@@ -12,6 +12,43 @@
 
 <img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
 
+### 28 September 2026 - Version 12.9
+
+- Starting two jobs at once (two tabs, two users, or a new job right after Cancel) no longer crashes: all GPU jobs (File, YouTube, Mic, BGM Separation, NLLB translation) now wait in one queue and run one after another
+- Batch processing
+  - One broken file no longer stops the batch: the other files are transcribed and the failed files are listed at the end, and the files that finished stay downloadable
+  - A file that cannot be opened is reported as failed instead of writing empty subtitle files
+  - Folder paths copied with Explorer's "Copy as path" (with quotes) now work, also for OPEN OUTPUTS FOLDER
+  - Files with the same name (talk.mp3 and talk.wav) no longer overwrite each other's subtitles (talk.srt and talk_wav.srt), .webm files are no longer transcribed twice, and upper-case extensions such as .MP4 are found on Linux too
+  - An existing lecture-2.srt no longer makes lecture.mp4 count as already done
+- Use Batched Inference no longer stops with an error, and its INT8 memory use no longer grows with every file: it reached 64 GB of VRAM after 7 files at batch size 16, now 15.6 GB, at the same speed
+- The first INT8 transcription after starting the app no longer spends about 16 seconds compiling GPU code again (a 30 second file: 18.4 → 1.5 seconds): the compiled code is now kept in models\cuda_cache, so the first few starts after this update are still slow while it fills
+- Long files start sooner: the check that a file can be opened no longer decodes the whole file before the transcription decodes it again
+- Canary-Qwen
+  - Audio is cut into chunks at pauses instead of every 10 seconds exactly, so words are no longer split at the cuts: word error rate 11.8% → 8.2% on our 5 minute test video
+  - Loading no longer puts the 32-bit model (about 10 GB) on the GPU before converting it, which ran out of memory on 8-12 GB GPUs
+- Switching the Base Model loads its best quality model settings into that tab only: before, it also changed the Base Model of the other tabs and reset settings such as the output folder
+- Changing the model or the Base Model unloads the previous model first, and only the engine in use keeps its models, so memory no longer adds up when you switch models
+- Saved presets keep decimal values (Hallucination Silence Threshold 0.5 was saved as 0)
+- Diarization keeps the word timestamps (word-level and highlighted subtitles work with speaker labels) and labels every subtitle with a speaker: "None|" is gone
+- Background Music Remover
+  - Separates .m4a, .aac, .wma and .opus files
+  - Changing the UVR model or Segment Size now takes effect, and the model is no longer reloaded for every file
+  - A video after an audio file in the same batch is no longer transcribed at the wrong speed
+  - The SEPARATE BACKGROUND MUSIC button explains what is missing instead of showing only "Error"
+- Subtitles
+  - Chinese, Japanese and Thai subtitles no longer get spaces between words when word timestamps are on
+  - Highlighted word subtitles no longer contain every line twice
+  - Silent files no longer break the txt and TSV outputs
+- Temperature fallback now works (a window whose output repeats is decoded again with more randomness), and Repeat Initial Prompt Every Window now really repeats the prompt
+- Insanely Fast Whisper no longer fails on RTX 20 and GTX 16 GPUs (it used flash-attention 2, which needs an RTX 30 or newer)
+- Translation
+  - YouTube captions (.vtt) translate correctly, including their first lines
+  - An interrupted NLLB model download is resumed on the next run instead of failing every time; Santali translates, and two languages that NLLB cannot translate were removed from the list
+- Cancel Generation stops only your own job, not the jobs of other users
+- Diarization works on PCs without an NVIDIA GPU (the device was stuck on cuda); Language Detection Threshold 0 no longer fails; CMD shows non-English file names and errors from sub process jobs correctly
+- INT8 models waiting in RAM use about 530 MB less RAM
+
 ### 28 September 2026 - Version 12.8
 
 - New defaults in all built-in presets: Offload Models to RAM When Idle is on, Start As Sub Process and Offload model when finished are off

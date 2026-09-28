@@ -1,3 +1,4 @@
+import math
 import json
 from copy import deepcopy
 from datetime import datetime
@@ -339,10 +340,17 @@ def _coerce_like_default(value: Any, default: Any) -> Any:
         return value if isinstance(value, bool) else default
 
     if isinstance(default, int) and not isinstance(default, bool):
+        # Whole numbers stay integers, fractions are kept: fields whose default is a whole number also take
+        # decimals (Hallucination Silence Threshold 0.5 was saved as 0, Max Speech Duration 15.5 as 15).
         try:
-            return int(value)
+            number = float(value)
         except (TypeError, ValueError):
             return default
+        if not math.isfinite(number):
+            return default
+        if isinstance(value, bool) or number.is_integer():
+            return int(number)
+        return number
 
     if isinstance(default, float):
         try:
