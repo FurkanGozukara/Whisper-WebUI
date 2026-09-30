@@ -86,7 +86,7 @@ startup_log("Interface libraries loaded.")
 logger = get_logger()
 
 FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.svg")
-APP_NAME = "Whisper TTS Premium App by SECourses"
+APP_NAME = "Whisper ASR Premium App by SECourses"
 APP_VERSION = "13"
 APP_URL = "https://www.patreon.com/posts/whisper-webui-to-145395299"
 APP_TITLE = f"{APP_NAME} V{APP_VERSION} : {APP_URL}"
