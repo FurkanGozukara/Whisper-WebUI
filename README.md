@@ -4,399 +4,294 @@
 
 > https://www.patreon.com/posts/145395299
 
-## English accuracy and verification — 28 September 2026 (version 12.11)
-
-- Tested through the app on 14 public English test sets with human transcripts (2,700 short clips and 120 long recordings, 48 hours, many accents). With 12.11 the INT8 models reach the published accuracy of the original models: average WER on the Open ASR Leaderboard sets Canary-Qwen 5.62% (published 5.63%), Whisper large-v3 7.22% (7.44%), large-v1 7.87% (7.94%)
-- Presets: Whisper beam 5 with word timestamps; large-v3 turns previous-text context off for English recordings over 30 seconds, large-v1 keeps it. Canary-Qwen uses automatic chunks and a batch size chosen from the GPU's VRAM at startup (6 GB: 2, 8 GB: 4, 10-12 GB: 8, 16 GB and more: 16)
-- Results, method and reproduction: [English benchmarks](docs/english-benchmarks.md). Coverage and limits: [Chrome feature verification](docs/chrome-verification.md) and [distribution compatibility](docs/compatibility-verification.md). Native Windows, physical 6-16 GB GPUs, YouTube downloads and DeepL could not be tested here
-
-## Quick Info
-- This app has the combination of perfect implementation of the following repos and their advanced forks with so many additional new features and improvements (models auto downloaded, everything automatically installed into Python 3.12 venv, best quality presets fully ready):
-  -   Whisper from OpenAI : [https://github.com/openai/whisper](https://github.com/openai/whisper)
-  -   NVIDIA NeMo Canary-Qwen-2.5B : [https://huggingface.co/nvidia/canary-qwen-2.5b](https://huggingface.co/nvidia/canary-qwen-2.5b)
--   Full tutorial video (2 May 2026) : [https://www.youtube.com/watch?v=4lAk6sf1qF8](https://www.youtube.com/watch?v=4lAk6sf1qF8)
-
-<img  height="600" alt="image" src="https://github.com/user-attachments/assets/ffd01d11-ba2d-48a4-b5b0-be723218e38b" />
-
-### 28 September 2026 - Version 12.11
-
-- Much lower word error rate (WER), measured through the app on 14 public English test sets (LibriSpeech, Common Voice, VoxPopuli, TED-LIUM, Earnings-21/22, AMI, GigaSpeech, SPGISpeech, Rev16 podcasts, Colbert monologues), on a half of the files that was not used for tuning:
-  - Whisper large-v3 INT8: short clips 8.37% → 7.45% (LibriSpeech test-other 9.02% → 3.40%), long recordings 8.88% → 8.84%
-  - Whisper large-v1 INT8: short clips 8.03% → 7.99%, long recordings 9.55% → 9.46%
-  - Canary-Qwen INT8: short clips 5.89% → 5.62%, long recordings 10.47% → 8.59%, with much better punctuation on long recordings (F1 44 → 55)
-  - The INT8 models now reach the published WER of the original models on the same test sets (see the section above)
-- Whisper no longer invents words at the end of files ("you", "Thank you.", "For more information visit www.fema.org"): the last fraction of a second after the final window is only transcribed when it contains speech
-- Canary-Qwen
-  - Recordings up to 40 seconds are transcribed in one piece, as the model was trained (they were cut into 10-second pieces, which lost words and punctuation at every cut); longer recordings are cut at the clearest pause into 15-30 second pieces
-  - A piece that starts repeating itself ("Kwame Kwame Kwame ...") is transcribed again in two halves
-  - Running out of VRAM (for example when another program takes GPU memory) no longer makes every following file fail: Canary-Qwen frees its cached GPU graphs and continues, with a smaller batch size if needed
-  - 6 GB GPUs now use batch 2 (about 1.3x faster than batch 1); every VRAM tier completed a 1,400-file session on simulated 6-16 GB GPUs without a failed file
-  - Long recordings take about 20% longer than in 12.10 because the pieces are longer (in exchange for 18% fewer word errors); short files are faster
-- Whisper large-v1 keeps the previous-text context on recordings over 30 minutes (turning it off there cost accuracy)
-- Use Batched Inference loses fewer words: speech that Whisper left out at the end of a window is transcribed again (long recordings 9.5% → 8.9% word errors; the default standard mode has 7.9%)
-- Short files are about 1.7x faster with every model: each file started with a 0.2-0.3 second Python garbage collection in faster-whisper's audio loading
-- Jobs with several files end with a summary ("Done! 3 files, 10 segments in 11 seconds. Saved to ...") instead of the last file's message
-- Load From File Path shows "File not found: ..." for a wrong path instead of doing nothing
-- `start-webui.sh` and `Install.sh` are executable again on Linux (`./start-webui.sh` gave "Permission denied")
-- Installer requirements pin faster-whisper to 1.2.1, the version the app's decoding changes are built on: use the latest installer files and run Windows_Install_Update.bat to update
-
-### 28 September 2026 - Version 12.10
-
-- New INT8 ConvRot Canary-Qwen model: `canary-qwen-2.5b-int8-convrot`
-  - About 10x faster than the NeMo model with the same accuracy: 5 hours of test videos took 158 seconds instead of 1679 seconds (28 minutes), with 10.82% WER instead of 10.80% (RTX 5090, Canary Qwen Best Quality preset)
-  - A 10 second chunk takes about 0.07 seconds instead of 1.1 seconds, and a 1 hour video about 40 seconds
-  - Closer to the full-precision model than the BF16 model used before (next-token KL divergence against FP32: 0.00003 instead of 0.00024)
-  - Model file is 2.9 GB instead of 5.1 GB
-  - Automatically downloaded from Hugging Face the first time you select it
-  - Canary Qwen Best Quality preset and the Canary-Qwen default model now use it
-  - Needs an RTX 3000 series (Ampere) or newer GPU; on older GPUs the app automatically uses `nvidia/canary-qwen-2.5b`
-  - Beam search, sampling and Canary Generation Kwargs keep working
-  - The first transcription on a new PC compiles and tunes its GPU kernels once (about 30 seconds, shown in CMD and Live Transcription); later runs reuse them
-
-### 28 September 2026 - Version 12.9
-
-- Starting two jobs at once (two tabs, two users, or a new job right after Cancel) no longer crashes: all GPU jobs (File, YouTube, Mic, BGM Separation, NLLB translation) now wait in one queue and run one after another
-- Batch processing
-  - One broken file no longer stops the batch: the other files are transcribed and the failed files are listed at the end, and the files that finished stay downloadable
-  - A file that cannot be opened is reported as failed instead of writing empty subtitle files
-  - Folder paths copied with Explorer's "Copy as path" (with quotes) now work, also for OPEN OUTPUTS FOLDER
-  - Files with the same name (talk.mp3 and talk.wav) no longer overwrite each other's subtitles (talk.srt and talk_wav.srt), .webm files are no longer transcribed twice, and upper-case extensions such as .MP4 are found on Linux too
-  - An existing lecture-2.srt no longer makes lecture.mp4 count as already done
-- Use Batched Inference no longer stops with an error, and its INT8 memory use no longer grows with every file: it reached 64 GB of VRAM after 7 files at batch size 16, now 15.6 GB, at the same speed
-- The first INT8 transcription after starting the app no longer spends about 16 seconds compiling GPU code again (a 30 second file: 18.4 → 1.5 seconds): the compiled code is now kept in models\cuda_cache, so the first few starts after this update are still slow while it fills
-- Long files start sooner: the check that a file can be opened no longer decodes the whole file before the transcription decodes it again
-- Canary-Qwen
-  - Audio is cut into chunks at pauses instead of every 10 seconds exactly, so words are no longer split at the cuts: word error rate 11.8% → 8.2% on our 5 minute test video
-  - Loading no longer puts the 32-bit model (about 10 GB) on the GPU before converting it, which ran out of memory on 8-12 GB GPUs
-- Switching the Base Model loads its best quality model settings into that tab only: before, it also changed the Base Model of the other tabs and reset settings such as the output folder
-- Changing the model or the Base Model unloads the previous model first, and only the engine in use keeps its models, so memory no longer adds up when you switch models
-- Saved presets keep decimal values (Hallucination Silence Threshold 0.5 was saved as 0)
-- Diarization keeps the word timestamps (word-level and highlighted subtitles work with speaker labels) and labels every subtitle with a speaker: "None|" is gone
-- Background Music Remover
-  - Separates .m4a, .aac, .wma and .opus files
-  - Changing the UVR model or Segment Size now takes effect, and the model is no longer reloaded for every file
-  - A video after an audio file in the same batch is no longer transcribed at the wrong speed
-  - The SEPARATE BACKGROUND MUSIC button explains what is missing instead of showing only "Error"
-- Subtitles
-  - Chinese, Japanese and Thai subtitles no longer get spaces between words when word timestamps are on
-  - Highlighted word subtitles no longer contain every line twice
-  - Silent files no longer break the txt and TSV outputs
-- Temperature fallback now works (a window whose output repeats is decoded again with more randomness), and Repeat Initial Prompt Every Window now really repeats the prompt
-- Insanely Fast Whisper no longer fails on RTX 20 and GTX 16 GPUs (it used flash-attention 2, which needs an RTX 30 or newer)
-- Translation
-  - YouTube captions (.vtt) translate correctly, including their first lines
-  - An interrupted NLLB model download is resumed on the next run instead of failing every time; Santali translates, and two languages that NLLB cannot translate were removed from the list
-- Cancel Generation stops only your own job, not the jobs of other users
-- Diarization works on PCs without an NVIDIA GPU (the device was stuck on cuda); Language Detection Threshold 0 no longer fails; CMD shows non-English file names and errors from sub process jobs correctly
-- INT8 models waiting in RAM use about 530 MB less RAM
-
-### 28 September 2026 - Version 12.8
-
-- New defaults in all built-in presets: Offload Models to RAM When Idle is on, Start As Sub Process and Offload model when finished are off
-  - Jobs run inside the app and the models wait in RAM between jobs: from the second job on, a 5 minute file takes 7 seconds instead of about 20 seconds per job before (RTX 5090)
-  - Cancel Generation can only stop a running job when Start As Sub Process is enabled
-- Faster app start, and CMD now shows every startup step with its time instead of staying empty until the web address appears
-  - Normal start: 9.2 → 5.6 seconds; first start after an install or update: 21.6 → 11.7 seconds (RTX 5090 test PC)
-  - The Background Music Remover, Insanely Fast Whisper (Transformers) and NLLB libraries are loaded only when they are used
-  - The installers now compile the Python libraries during install, so the first start no longer looks frozen: use the latest installer files and run Windows_Install_Update.bat to update
-- Batch processing keeps the models loaded until the whole batch is done: before, the Whisper model (and the Background Music Remover and Diarization models when enabled) was unloaded and reloaded for every file
-- Download Transcription
-  - The zip is made once, when the job finishes: before, a new and bigger zip was written into outputs\_download_bundles on every live update of a batch, and none were ever deleted (zips older than a day are now removed)
-  - The zip keeps the batch subfolders (partA/segment.srt and partB/segment.srt instead of segment.srt and segment_2.srt)
-- The first download of an Insanely Fast Whisper or NLLB model now shows its progress in CMD (before, up to 17.6 GB were downloaded with no output)
-- While a model downloads or loads, Live Transcription says so ("Still working... downloading the model") instead of "waiting for the first segment", and these lines no longer break the download bar in CMD
-- Presets
-  - Deleting a preset asks for confirmation, keeps your current settings and shows "Deleted preset" (before, every setting was reset to the defaults and the message was replaced by "No preset selected")
-  - Loading a saved preset of another Base Model keeps its settings (its model was reset to the default of that Base Model)
-  - Choosing a Base Model or a preset no longer starts several competing updates, which could leave a setting such as Condition On Previous Text different from the preset
-- Canary-Qwen no longer moves the Hugging Face cache of the other models into its own folder
-- The startup message names the real default Base Model (faster-whisper), the classic console no longer shows "�" instead of emoji, and --allowed_paths is no longer read with eval()
-- YouTube: ffmpeg no longer prints about 50 lines of build information into CMD for every video
-
-### 27 September 2026 - Version 12.7
-
-- Fixed the installer stopping with `CERTIFICATE_VERIFY_FAILED ... self-signed certificate in certificate chain` while downloading the diarization models, on PCs with antivirus HTTPS scanning (for example Kaspersky) or a company proxy
-  - Downloads are now verified with the Windows certificate store, as browsers and pip do: use the latest installer files and run Windows_Install_Update.bat to update
-- Insanely Fast Whisper: `large-v1` and `turbo` no longer fail with "404 Repository Not Found"
-  - `large-v1` now downloads a 3.1 GB FP16 copy of OpenAI's large-v1 (the original is 6.2 GB FP32) from our Hugging Face repo
-  - `turbo` and `large` now load `large-v3-turbo` and `large-v3`, the same models these names mean in the Whisper (faster-whisper) list
-- Batch processing with an Output Folder now keeps the input subfolders: before, two files with the same name in different subfolders shared one output, and the second one was skipped as "outputs already exist"
-
-### 27 September 2026 - Version 12.6
-
-- Fixed Canary-Qwen on new installs: a new fsspec release made the installer pick a 2020 version of `datasets`, and Canary-Qwen stopped with `module 'pyarrow' has no attribute 'PyExtensionType'`
-  - The requirements now require `datasets` 4.0 or newer: use the latest installer files and run Windows_Install_Update.bat to update
-- Live Mic now keeps the whole recording: before, about half of the audio was lost (7 seconds saved from a 14 second recording) and the button showed "Waiting" instead of "Stop"
-  - The live preview runs in the background, so it never interrupts the recording
-  - With Auto transcribe while recording turned off, Stop still saves and transcribes the whole recording
-- YouTube tab: Live Transcription now shows the download, every segment and the result as they happen, also for Mass Transcribe Latest Channel Videos
-- NLLB translation
-  - No more repeating lines such as "İran'ın, İran'ın, İran'ın…" (beam search and a length limit tied to each line)
-  - Speaker labels from Diarization (`SPEAKER_00|`) are kept in the translated subtitles
-  - Clicking Translate without a file or languages now tells you what is missing instead of doing nothing
-- DeepL: a missing or wrong API key now shows a clear message (for example HTTP 403) instead of failing silently
-- The first use of a model now shows "Downloading model ..." in Live Transcription instead of only "waiting for the first segment"
-- When a job fails, the full error is now printed in CMD too, so saved console logs show the cause
-- A file that cannot be opened (corrupted or unsupported) now shows a warning instead of "Done! 0 segments"
-- A Hugging Face token saved with `hf auth login` is now used, so model downloads are no longer unauthenticated
-- YouTube audio is downloaded into a temporary folder that is removed after each job (it was written into the Whisper-WebUI folder)
-- Advanced Parameters: decimal settings such as No Speech Threshold now change in 0.05 or 0.1 steps with the arrow keys (they jumped from 0.6 to 1)
-
-### 27 September 2026 - Version 12.5
-
-- Redesigned interface in the style of the IndexTTS app
-  - Every button has its own color and icon, dark theme by default with a Light / dark theme switch, and an Open / close all sections button
-  - Smoother: no constantly animated buttons and lighter page scripts
-- Uploaded videos are previewed directly, without any conversion
-  - MKV (H.264, VP9, HEVC) plays as soon as it is uploaded; formats the browser cannot play (such as AVI) show a note and still transcribe normally
-  - Load From File Path no longer copies the file: a 3 GB MKV loads in 0.2 seconds instead of 6 seconds
-- Fixed Insanely Fast Whisper hallucinations: audio is now decoded in windows of up to 30 seconds that end in a pause (test video WER 57% → 16%)
-- Fixed Canary-Qwen on new installs (the latest NeMo needs lhotse 2.0.0a6)
-- Fixed NLLB subtitle translation with Transformers 5, and it no longer downloads a second, unused copy of each NLLB model
-- INT8 ConvRot models: the one-time Triton kernel tuning now shows its progress in CMD and in Live Transcription, and the tuned kernels are cached in `Whisper-WebUI\models\triton_cache` and reused by every later run (a 5 minute file then takes about 7 seconds on an RTX 5090)
-- All output formats of one run now share the same timestamp in their file names, and durations read like "1 minute 6 seconds"
-- Requirements updated (Transformers 5.17.0, lhotse 2.0.0a6): use the latest installer files and run Windows_Install_Update.bat to update
-
-### 27 September 2026 - Version 12.4
-
-- New INT8 ConvRot Whisper models: `large-v3-int8-convrot` and `large-v1-int8-convrot`
-  - About 3x faster than the standard models with the same accuracy: on held-out test videos Large-v3 finished in 104 seconds instead of 327 seconds, with 7.92% WER instead of 8.21%
-  - Model files are 1.6 GB instead of 3.1 GB
-  - Automatically downloaded from Hugging Face the first time you select them
-  - Fast Whisper Best Quality preset now uses `large-v3-int8-convrot` by default
-  - Needs an RTX 3000 series (Ampere) or newer GPU; on older GPUs the app automatically uses the standard model
-- New option: Offload Models to RAM When Idle
-  - After each job the loaded models move to system RAM and free the VRAM; the next job moves them back to the GPU in under a second instead of loading them from disk again
-  - Works with Whisper, Insanely Fast Whisper, Canary-Qwen and speaker diarization, with or without Start As Subprocess
-- All model downloads and caches now stay inside the `Whisper-WebUI\models` folder
-- The background music remover model is no longer downloaded again every time it is used
-- Just run Windows_Install_Update.bat to update
-
-### 15 June 2026 - Version 12.3 
-
-- Now when downloading model - when you first time use that model - it will show download progress on CMD
-- Now it will show selected and used model on CMD
-- Just run Windows_Install_Update.bat to update / install
-
-<img width="3516" height="425" alt="image" src="https://github.com/user-attachments/assets/41c62156-51ac-45c7-bee9-de42f78978f9" />
-
-### 8 June 2026 - Version 12.2 
-
--   -   This is a major quality upgrade        
-    -   Both Whisper and Canary models made more robust        
-        -   Thus, if you were getting random errors on random files, it should not happen any more            
-        -   Even though they were rare edge cases we fixed this issue            
-    -   Whisper models seperated into below 2 model selection        
-        -   Whisper (faster-whisper / CTranslate2)            
-        -   Insanely Fast Whisper (Transformers)            
-    -   Process based executing improved and cancel feature improved, now cancel immediately works properly        
-    -   For Whisper models, the displayed messages during processing improved        
-        -   Now you will see all messages on CMD and Gradio accurately            
-    -   Default system presets updated to Fast Whisper Best Quality, Insane Fast Whisper Best Quality, Canary Qwen Best Quality        
-    -   Now default selected preset / model is Fast Whisper Best Quality with Whisper Large-v3        
-        -   Whisper Large-v3 model is the most capable robust model that excels at 100+ languages            
-    -   I have done a very through research and experimentation to remake these presets with improved accuracy        
-        -   Our accuracy is improved over 80% now            
-    -   Now Word Timestamps is automatically selected along with new option Normalize Word Timestamp Output        
-        -   This ensures that you get sentence level accurate subtitles / transcription not just 30 second long speeches            
-    -   You can see newest quality research and new preset results tested on very hard to transcribe audio files as below        
-    
-    <img height="600" alt="image" src="https://github.com/user-attachments/assets/d5a6b565-6262-4633-bc77-9310a7c4d115" />
+**Whisper-WebUI Premium turns any video or audio into accurate subtitles and transcripts on your own PC.** On an RTX 5090, our own INT8 ConvRot engine transcribed a 1 hour 29 minute lecture in 32 seconds. Every setting comes ready with researched best-quality presets. Below you will see every feature with real screenshots from the app.
 
-### Word Error Rate (WER)
--   -   WER means Word Error Rate.        
-        -   It measures word-level transcription mistakes:            
-    -   WER = (substituted words + deleted words + inserted words) / reference words        
-        -   So if the real subtitle has 100 words and the transcription has 6 total word mistakes, WER is 6%.            
-    -   WER catches:        
-        -   \- missing words            
-        -   \- wrong words            
-        -   \- extra/repeated words            
+## Why Whisper-WebUI Premium
 
-### CER means Character Error Rate.
--   -   It is the same idea, but measured at the character level instead of word level:        
-        -   CER = (substituted chars + deleted chars + inserted chars) / reference chars
-                -   CER catches smaller spelling/detail mistakes better.        
-        -   Example:            
-            -   Reference:                
-                -   Wan 2.2 training                    
-                -   Prediction:                    
-                -   One 2.2 trainings                    
-        -   WER may be high because Wan became One and training became trainings.            
-        -   CER may be lower because most letters are still similar.            
-    -   For our use case, WER is the main metric because you care about missing words, wrong words, repeated words, and hallucinated extra words. CER is useful secondary evidence for spelling accuracy.
-        
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/63c1cee0-4d0b-4e80-9fe9-fe364e8a3f00" />
+- **Our own INT8 ConvRot engines:** Whisper large-v3 runs 3.4x faster and NVIDIA Canary-Qwen 2.5B runs 8.9x faster than the standard models, on the same video and the same GPU.
+- **Same accuracy as the original models:** measured through the app on 14 public English test sets, 48 hours of audio.
+- **Real speed:** a 10 minute video in 9 seconds, a 1.5 hour lecture in 32 seconds.
+- **3 engines in one app:** Whisper, Insanely Fast Whisper and NVIDIA Canary-Qwen 2.5B, with 21 Whisper models and 100 languages.
+- **Ready presets:** researched best-quality settings for every engine, plus your own saved presets.
+- **6 output formats in one run:** SRT, WebVTT, TXT, LRC, JSON and TSV, with a one-click ZIP download.
+- **Everything in one place:** batch folders, YouTube links and whole channels, live microphone, speaker labels, background music remover, voice detection filter and subtitle translation to 200 languages.
+- **1-click installers:** Windows, RunPod, SimplePod, Massed Compute and Linux, with PyTorch 2.13, CUDA 13 and precompiled Flash Attention, xFormers, SageAttention and Triton.
+- **Automatic model downloads** with live progress, **frequent updates** and support.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/c8a05c8a-8f2e-4210-8fd3-ffdfa53bcc75" />
+Here is the app right after a job. A 10 minute 54 second video was transcribed in 9 seconds, 70 times faster than real time.
 
-### 26 May 2026 - Version 12.0 
--   With new zip file below errors fixed    
-    -   Token: not provided Note: pyannote gated files require --token or HF\_TOKEN on first download. \[ERROR\] Dependency source does not expose pytorch\_model.bin: MonsterMMORPG/Wan\_GGUF/pyannote\_segmentation3
-        
-### 2 May 2026 - Version 11.1
--   Some installer bugs fixed    
--   Enable Background Music Remover Filter - fixed    
--   Enable Silero VAD Filter - fixed
+![Whisper-WebUI Premium main screen after transcribing a 10 minute video in 9 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/WiVw0_0XI6sZy69wl853g.png)
 
-## 30 April 2026 - Version 10.0
+1: pick a ready preset. 2: download all subtitle files in one ZIP. 3: preview your video instantly. 4: watch the transcription live. 5: choose from 3 engines and our INT8 ConvRot models.
 
-- This is a quite big upgrade to our application
+## Speed: Our INT8 ConvRot Engines
 
-- We now fully support NVIDIA NeMo Canary-Qwen-2.5B is an English speech recognition model : https://huggingface.co/nvidia/canary-qwen-2.5b
+We built INT8 ConvRot versions of Whisper large-v3, Whisper large-v1 and NVIDIA Canary-Qwen 2.5B, and our own GPU engine to run them. The model files are smaller too: 1.6 GB instead of 3.1 GB for Whisper, and 2.9 GB instead of 5.1 GB for Canary-Qwen. Here is the same video on the same RTX 5090 with the same settings:
 
-- This model is currently State Of The Art (SOTA) Speech to Text model for English language
+![Speed chart: Whisper large-v3 31 s vs 9 s, Canary-Qwen 71 s vs 8 s on the same video and GPU](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/Ku3fPZK9eVTFtq0ZvfAPm.png)
 
-- I have done extensive research and testing and it is set to best default parameters
+Long files are just as fast. Our 1 hour 29 minute lecture took 1 minute 15 seconds with our INT8 Whisper large-v3 (71x real time) and only 32 seconds with Canary-Qwen (168x real time). This is the Canary-Qwen run in CMD:
 
-- Fully supporting all of the features our Whisper app were already supporting
+![CMD log: a 1 hour 29 minute lecture transcribed in 32 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/8rc0vV6JbCEn3vhUGgzYI.png)
 
-- Get the zip file, overwrite all previous files and run installer for update / upgrade
+After each job the model waits in RAM and your VRAM is free. The next job moves it back to the GPU in under a second, so it starts right away.
 
-- The model will be auto downloaded when you first time run
+## Same Accuracy as the Original Models
 
-<img width="3567" height="602" alt="image" src="https://github.com/user-attachments/assets/583647bc-9120-4c6e-ad67-1f5ad1ee24ab" />
+Speed only matters with accuracy. We measured every model through the app on 14 public English test sets with human transcripts: 2,700 short clips and 120 long recordings, 48 hours in total.
 
-- I also have compared with Whisper best configurations are here the comparison results - best results of Whisper taken
+![Word error rate chart: our INT8 models match the published full-precision accuracy](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/6RpxsrpyYEVRkwifcL3SI.png)
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/9baabf10-6511-4b63-a4bb-60b4b3c998fc" />
+On the Open ASR Leaderboard's 8 English test sets, our INT8 models reach the published accuracy of the full-precision originals. Canary-Qwen 2.5B scored 5.62% word error rate against the published 5.63%, and Whisper large-v3 scored 7.22% against 7.44%.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/0a45ac6b-4898-4e15-a629-41381a9d6169" />
+## 1-Click Installation
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/65d60c04-06f1-404f-957d-420420fc664d" />
+### What You Download
 
-- As you can see NVIDIA NeMo Canary-Qwen-2.5B is not only significantly better but also faster 
+You get one small zip file with the installers for every platform.
 
+![The files inside WhisperWeb_UI_v13.zip](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/KfwaHvJPmSPSUoI0Ln5l8.png)
 
-## 15 April 2026 - Version 8.0
+Extract it into any folder. On Windows, double-click Windows_Install_Update.bat, then start the app with Windows_Start_app.bat. Run the same installer again at any time to update.
 
-- Diarization had some error and this is fixed
+### Latest PyTorch, CUDA 13 and Precompiled Libraries
 
-- Mic tab completey remade and now both live transcription from microphone and offline transcription from microphone working
+The installer makes its own Python 3.12 virtual environment, so your other apps stay untouched. It installs PyTorch 2.13 with CUDA 13 and our precompiled Flash Attention, xFormers, SageAttention and Triton for Windows. You never compile anything.
 
-  - Live transcription quality is not that great
+![Installer log: PyTorch 2.13 with CUDA 13, Transformers, Triton for Windows and precompiled xFormers](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/QQZCx7bo_Q4AECx9iDYp-.png)
 
-  - Both live transcription and offline transcription recordings from microphone will be saved in outputs folder
+Every package version is tested with the app. This is the end of a real fresh install on our PC:
 
-  - Live transcription will auto run but for offline transcription first record voice with microphone and then click Generate Subtitles button
+![Installer log: speaker models downloaded automatically, installation finished](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/TrZCXxI-LwYQ0HtAqnCt2.png)
 
-- Don't forget to select your working microphone and give permission for app to use your microphone from your browser
+At the end, the installer downloads the speaker label models from our mirror. You do not need a Hugging Face token or any model approval.
 
-- For update / install get the latest zip file, overwrite older files and run Windows_Install_Update.bat
+### Start the App
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/961d6b7a-fd78-434c-977a-6785d12148a8" />
+Double-click Windows_Start_app.bat. CMD shows every startup step with its time.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/bf4e6bf1-af92-47a7-9df0-b1782bb0bd63" />
+![App startup log: ready in 6.5 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/cGGIfyZD6zLjXUEoeske6.png)
 
+On our RTX 5090 the app was ready in 6.5 seconds. Open the local address in your browser and start transcribing.
 
-## 14 April 2026 - Version 7.0
+### Cloud GPUs: RunPod, SimplePod and Massed Compute
 
-- Now auto downloads Diarization files and thus you don't need to enter Hugging Face token and get permission
+You can also run the app on a cloud GPU. The cloud installers set up Python 3.12, FFmpeg n9.0 and everything else with one command, and a Gradio share link lets you use the app from any device.
 
-- Now you can copy paste any YouTube link and generate subtitles
+- **SimplePod:** [register here](https://simplepod.ai/ref?user=secourses) and use [this template](https://dash.simplepod.ai/account/explore/100/ref-secourses/).
+- **RunPod:** [register here](https://get.runpod.io/955rkuppqv4h) and use [this template](https://get.runpod.io/SECourses_CU13).
+- **Massed Compute:** [register here](https://vm.massedcompute.com/signup?linkId=lp_034338&sourceId=secourses&tenantId=massed-compute) and use our coupon **SECourses**.
 
-  - This was broken and now fixed
+The step-by-step commands are in the instruction files inside the zip.
 
-  - It will save generated files with same name as the video title
+### Requirements
 
-- Now you can batch generate subtitles for YouTube video channels
+On Windows you need Python 3.12, Git, FFmpeg, CUDA 13, cuDNN 9.17 and Visual Studio with C++ tools. [This tutorial](https://youtu.be/DrhUHnYfwC0) shows every step, and the same setup runs all our AI apps. The app runs on NVIDIA GPUs from the GTX 16 and RTX 20 series up to the RTX 50 series. Our INT8 ConvRot engines use the RTX 30 series and newer, and other GPUs switch to the standard models automatically.
 
-- Paste the video channel, enable batch and it will generate subtitles for every video
+## Config Presets
 
-  - Set how many videos you want (scans latest ones)
+Every engine comes with a locked best-quality preset. We researched each value on real test sets, so you get top results without changing a single setting.
 
-  - You may get rate limited by YouTube
+**Where to find it:** Config Presets sits at the top of the page and stays there on every tab.
 
-- For update / install get the latest zip file, overwrite older files and run Windows_Install_Update.bat
+![Where to find Config Presets: the top of the page, above the tabs](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/RrDpnQC9IimrUsF7yxser.png)
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/023176ee-146f-4886-b92c-07a7904435eb" />
+Open the Select Preset list to see every preset:
 
-## 8 April 2026 - Version 5.0 
+![Config Presets: built-in best-quality presets and a saved user preset](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/U13I6OBIa67p0yl5rLh9w.png)
 
-- This is a massive update with so many new features
+Change anything you like, type a name and click Save to keep your own preset. The app remembers your last preset and loads it at every start.
 
-  - Get the latest zip file and make a fresh install please > https://www.patreon.com/posts/145395299
+## Three Engines and 21 Whisper Models
 
-  - 1-Click to install on Windows, RunPod, SimplePod, Massed Compute, Linux
- 
-  - <img height="500" alt="image" src="https://github.com/user-attachments/assets/27909c4a-bd77-408f-824a-ab8fc9837379" />
+Choose the engine in Base Model: Whisper (faster-whisper), Insanely Fast Whisper (Transformers) or NVIDIA Canary-Qwen 2.5B. Each engine loads its best settings when you select it.
 
-- New preset save and load system with locked best-quality presets for faster-whisper, Insanely Fast Whisper, and Canary-Qwen
+**Where to find it:** open the File tab and scroll to Base Model. The Model list is right under it, and the Youtube and Mic tabs have the same controls.
 
-  - Presets are automatically loaded as you change them and also last used preset is remembered when you restart the app
+![Where to find Base Model and Model: File tab, below the upload and batch area](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/GzX13DmX8A3YNbVJj8SJq.png)
 
-  - Word Timestamps is enabled by default to improve quality but it also generates regular version as well automatically
+Open the Model list to see every model:
 
-- Download transcription button 
+![Base Model engines and the Whisper model list with our INT8 ConvRot models](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/ca0KWkCbeJVFzGfKoJz7E.png)
 
-- Open outputs folder button (all transcriptions automatically saved)
+You get every Whisper model from tiny to large-v3, plus turbo, distil and our two INT8 ConvRot models. A model downloads automatically the first time you use it.
 
-- Load video / audio file directly from path (useful for platforms like RunPod where Gradio upload is slow)
+### NVIDIA Canary-Qwen 2.5B
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/95b70223-04bc-4ecf-a65e-6af3c025c190" />
+Canary-Qwen 2.5B is one of the most accurate open English speech models on the Open ASR Leaderboard (September 2026). Our INT8 ConvRot build runs it with Triton kernels and CUDA graphs.
 
-- The fast preset uses new custom in house implemented batch size 32 feature and it is literally blazing fast compared to all other existing Whisper apps and repos
+**Where to find it:** pick Canary Qwen Best Quality in Select Preset, or choose Canary-Qwen (NVIDIA NeMo) in Base Model.
 
-- Fully supporting all kind of video and audio formats upload with full preview
+![Where to select Canary-Qwen: the Select Preset list or Base Model](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/R_-GrMoXmsmJopoK7chdt.png)
 
-- Batch folder processing process given folder all files automatically
+The Canary settings then load automatically:
 
-- Live transcription Window that shows latest transcription live while processing
+![Canary-Qwen engine with the INT8 ConvRot model, batch 16 and a 1.5 hour lecture done in 36 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/f8IvYe3EuuNYll85ayADg.png)
 
-- At batch size 1 with best quality, 11x real time transcription speed (depends on GPU)
+The app reads your GPU memory at startup and picks the batch size for you: batch 2 on 6 GB, 4 on 8 GB, 8 on 10 to 12 GB and 16 on 16 GB and more. Here it chose batch 16 on the 32 GB RTX 5090 and finished the 1 hour 29 minute lecture in 36 seconds.
 
-- At batch size 32 fast preset 15x to 30x real time transcription speed (depends on GPU)
+### Automatic Model Downloads
 
-- New feature Repeat Initial Prompt Every Window
+You never download models by hand. The first time you use a model, the app downloads it and shows the progress in Live Transcription and in CMD.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/64ec2ff9-bbbe-400b-a26d-5df4edc44a76" />
+![Live Transcription showing the Canary-Qwen model download progress](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/qEAtR8vkgn_Ma2X0JZ1ZG.png)
 
-- Supports all Whisper models like Large V1, Large V3, Turbo, Distill Large, Tiny, etc
+All models and caches stay inside the app's own models folder, so the rest of your PC stays clean.
 
-- Supports following format outputs you can have checked all so all generated at the same time : SRT, WebVTT, txt, LRC,JSON, TSV
+## 100 Languages and Translation to English
 
-  - All outputs will have the same name as your input file name
+Whisper understands 100 languages, and Automatic Detection finds the language for you.
 
-- With sub process working system, you can cancel any processing immediately with 0 RAM or VRAM leak
+**Where to find it:** in the File tab, the Language list and the Translate to English checkbox sit next to the Model list.
 
-- Fully supports Windows and Linux (use Massed Compute installer)
+![Where to find Language and Translate to English: File tab, next to the Model list](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/qR-ZrOVkbp-e0S5Dfx30E.png)
 
-- Based on Python 3.11 VENV and CUDA 13 and Torch 2.9.1 with pre-compiled libraries like Flash Attention
+Open the Language list to see every language:
 
-- If you don't like output, try to enable / disable Condition On Previous Text it makes big difference
+![Language list with 100 languages and Translate to English](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/PCeqYkmNS7NCYkEYaqqTh.png)
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/a3f9fc54-11dd-4d94-b8af-72184453b5f3" />
+Turn on Translate to English and Whisper writes English subtitles directly from speech in any language.
 
-- The app supports 100 languages and 32 models
+## Output Formats and Run Controls
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/0af42f4f-ad2f-4b87-ac1b-d965faf59604" />
+All the main controls sit in one clear panel under the model settings.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/04aedf3e-8d95-48c9-8063-625491534870" />
+**Where to find it:** in the File tab, right under the Model row. Tick your formats, then click GENERATE SUBTITLE FILE.
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/c5d3ab44-fb34-479e-b5a6-8cc596a7ee14" />
+![Where to find File Formats and GENERATE SUBTITLE FILE: File tab, under the Model row](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/DMniPxbKoWBYZULjoP6Dj.png)
 
-- Lots of Advanced Parameters and all set to best quality 
+Here are the formats and run controls up close:
 
-- Built in Background Music Remover Filter
+![File formats, Generate and Cancel buttons, batch size and extra settings](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/7A19brZz1Xv_JMbmmXsxW.png)
 
-- Built in Voice Detection Filter
+1: tick as many formats as you like. 2 and 3: start and stop jobs. 4: previous-text context is tuned for long files automatically. 5: open the extra sections for advanced settings, the music remover, the voice filter and speaker labels. 6: every job ends with a clear summary. One run writes all six files, named after your input file:
 
-- <img height="600" alt="image" src="https://github.com/user-attachments/assets/50672e86-d55c-4aba-b761-4f1aacbae020" />
+![SRT, WebVTT, TXT, LRC, JSON and TSV output of one run with speaker labels](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/RUNMacJnj7vgZdvtKd4bd.png)
 
-- Fully detailed CMD output to watch entire progress
+The best-quality presets use word timestamps. You get clean sentence-level subtitles, or word-level highlighted SRT and WebVTT when you want them.
 
-- Extremely optimized VRAM usage as low as 6 GB GPUs
+## Advanced Parameters
 
-<img width="1722" height="399" alt="image" src="https://github.com/user-attachments/assets/dd93da42-c52f-42d7-b55f-c2070cb74013" />
+**Where to find it:** open the File tab, scroll down and click Advanced Parameters. The Open / close all sections button at the top opens it too, together with every other section.
 
-- Some other utility features like YouTube, record from a Mic, T2T Translation, BGM Seperation
+![Where to find Advanced Parameters: File tab, then the Advanced Parameters section near the bottom](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/eCkJJ860iIrfJp1IjR9he.png)
 
-<img height="600" alt="image" src="https://github.com/user-attachments/assets/f0647197-25f5-4e7b-9ab6-dd3740f743af" />
+The panel opens with every decoding setting, each with a short explanation under it:
 
+![Advanced Parameters panel with beam size, prompts, word timestamps, hotwords and RAM offload](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/DQ4KZie5FTBIGmghPwz73.png)
 
-### Full Page Screenshot
+Use Hotwords or the Initial Prompt for names and terms. Turn on Use Batched Inference for extra speed on long files. Offload Models to RAM When Idle keeps your models ready while your VRAM stays free.
 
-<img height="1200" alt="screencapture-127-0-0-1-7861-2026-05-02-05_09_06" src="https://github.com/user-attachments/assets/78cffef8-e3d1-42dc-a58b-e346cd74dc7e" />
+## Music Remover, Voice Filter and Speaker Labels
 
+Three built-in filters prepare your audio before transcription.
 
+**Where to find it:** in the File tab, scroll down. The three sections sit right under Advanced Parameters; click a title to open it.
 
+![Where to find the music remover, voice filter and Diarization: File tab, under Advanced Parameters](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/9BXfvdCES5POLaZFm0l40.png)
+
+Here are the three sections opened:
+
+![Background Music Remover, Silero voice detection and Diarization settings](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/DT3n7S1ip7raHI02MfU8j.png)
+
+The Background Music Remover separates speech from music with UVR MDX-Net. The Silero voice filter skips silence. Diarization adds speaker labels such as SPEAKER_00 and SPEAKER_01 without a Hugging Face token. In our test it labelled every turn of a two-person interview correctly.
+
+## Batch Processing Whole Folders
+
+Transcribe a whole folder in one click, subfolders included.
+
+**Where to find it:** in the File tab, on the right side, next to the upload box.
+
+![Where to find Batch Processing: File tab, right side, next to the upload box](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/ND4_QO4sHtxIjOtoL3N6u.png)
+
+Tick Enable Batch Processing and set your folders:
+
+![Batch processing: 3 videos in subfolders transcribed in 26 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/ZRMfIVJjkmuqvTI753UOn.png)
+
+Here 3 videos in 3 subfolders, 18 minutes in total, were finished in 26 seconds. The output folder mirrors your folder tree, finished files are skipped on the next run, and one broken file never stops the batch.
+
+## YouTube Videos and Whole Channels
+
+Paste a YouTube link and the app loads the thumbnail, title and description.
+
+**Where to find it:** click the Youtube tab. The Youtube Link box is at the top.
+
+![Where to find the YouTube features: the Youtube tab](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/Ixfg7O_sBC9CTOKVN4QLn.png)
+
+The link loads the video details right away:
+
+![YouTube tab with the video link, thumbnail, title and channel mass transcribe option](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/q1n1Zi6M5LtOTDt90Opl7.png)
+
+Click Generate and the app downloads the audio and transcribes it. Our 12 minute video went from link to finished subtitles in about 15 seconds. Turn on Mass Transcribe Latest Channel Videos to process the latest videos of a whole channel, one after another.
+
+## Live Microphone
+
+Speak and watch the text appear. The Mic tab has two modes.
+
+**Where to find it:** click the Mic tab. Live Mic is on the left and Record Then Generate on the right.
+
+![Where to find the microphone features: the Mic tab](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/7MsPWZ5j97F8IJSAedk0v.png)
+
+Press Live Mic Record and start speaking:
+
+![Live Mic with the live transcription preview](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/rg3AYAng0YzGpnSIEDLoQ.png)
+
+Live Mic shows a preview while you speak and updates it every 2 seconds. When you stop, the whole recording is transcribed with the full model and saved as subtitle files. Record Then Generate lets you record first and create the subtitles after.
+
+## Subtitle Translation to 200 Languages
+
+Translate your subtitle files with Meta NLLB, right inside the app.
+
+**Where to find it:** click the T2T Translation tab, drop your subtitle files, then open the NLLB tab. DeepL API is right next to it.
+
+![Where to find subtitle translation: the T2T Translation tab, then NLLB or DeepL API](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/L0cLk4koKD9U3JhxURIUE.png)
+
+Choose the languages and click TRANSLATE SUBTITLE FILE:
+
+![NLLB translation of an English subtitle file to Spanish with speaker labels kept](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/vCDHVd046bmHV_pa1ZS2C.png)
+
+Choose the source and target language, click Translate and download the new file. Timestamps and speaker labels stay in place. A DeepL API tab is included too, for your own DeepL key.
+
+## Background Music Separation
+
+The BGM Separation tab splits any audio file into music and voice.
+
+**Where to find it:** click the BGM Separation tab, drop your audio files and click SEPARATE BACKGROUND MUSIC.
+
+![Where to find background music separation: the BGM Separation tab](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/oIBPR0xY9Iq4jMKOvxpeU.png)
+
+After the separation you get two tracks:
+
+![BGM Separation tab with separate music and voice tracks](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/9Q6j5ONNJaoPMO-CseyW2.png)
+
+You get a music-only track and a clean voice track, both saved in your outputs folder.
+
+## Light and Dark Theme
+
+The app starts in dark mode, and one click switches to the light theme.
+
+![The app in light theme](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/FsRcW-BcDVWcsA8Lkd_sq.png)
+
+The Open / close all sections button opens or closes every panel at once.
+
+## Latest Updates
+
+Whisper-WebUI Premium gets frequent updates. Versions 12.4 to 13 came out between 27 and 29 September 2026:
+
+- New INT8 ConvRot models for Whisper large-v3, large-v1 and Canary-Qwen 2.5B, downloaded automatically.
+- Lower word error rate in English: the INT8 models now match the published accuracy of the originals.
+- Canary-Qwen transcribes recordings up to 40 seconds in one piece and cuts longer ones at pauses.
+- Canary batch size is picked from your GPU memory, with automatic recovery when VRAM runs short.
+- Models wait in RAM between jobs, so the next job starts in under a second.
+- Faster start, with every startup step shown in CMD.
+- Batch processing keeps your subfolders, skips finished files and lists any failed files at the end.
+- All GPU jobs wait in one queue and run one after another, so two jobs never clash.
+- A redesigned interface with light and dark themes.
+
+## Get Whisper-WebUI Premium
+
+Download the latest zip file attached to this post, extract it and run the installer for your platform. To update, get the newest zip, overwrite the old files and run Windows_Install_Update.bat again.
+
+- **Full tutorial video:** [watch it on YouTube](https://www.youtube.com/watch?v=4lAk6sf1qF8).
+- **Requirements tutorial:** [Python, Git, FFmpeg, CUDA and C++ tools step by step](https://youtu.be/DrhUHnYfwC0).
+- **Support:** [our Discord channel](https://discord.com/channels/772774097734074388/1079506787734134844).
