@@ -1,9 +1,5 @@
 # Whisper-WebUI Premium made for SECourses Patreon followers only : https://www.patreon.com/posts/145395299
 
-## Download Installers and App
-
-> https://www.patreon.com/posts/145395299
-
 **Whisper-WebUI Premium turns any video or audio into accurate subtitles and transcripts on your own PC.** On an RTX 5090, our own INT8 ConvRot engine transcribed a 1 hour 29 minute lecture in 32 seconds. Every setting comes ready with researched best-quality presets. Below you will see every feature with real screenshots from the app.
 
 ## Why Whisper-WebUI Premium
@@ -15,7 +11,6 @@
 - **Ready presets:** researched best-quality settings for every engine, plus your own saved presets.
 - **6 output formats in one run:** SRT, WebVTT, TXT, LRC, JSON and TSV, with a one-click ZIP download.
 - **Everything in one place:** batch folders, YouTube links and whole channels, live microphone, speaker labels, background music remover, voice detection filter and subtitle translation to 200 languages.
-- **1-click installers:** Windows, RunPod, SimplePod, Massed Compute and Linux, with PyTorch 2.13, CUDA 13 and precompiled Flash Attention, xFormers, SageAttention and Triton.
 - **Automatic model downloads** with live progress, **frequent updates** and support.
 
 Here is the app right after a job. A 10 minute 54 second video was transcribed in 9 seconds, 70 times faster than real time.
@@ -43,50 +38,6 @@ Speed only matters with accuracy. We measured every model through the app on 14 
 ![Word error rate chart: our INT8 models match the published full-precision accuracy](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/6RpxsrpyYEVRkwifcL3SI.png)
 
 On the Open ASR Leaderboard's 8 English test sets, our INT8 models reach the published accuracy of the full-precision originals. Canary-Qwen 2.5B scored 5.62% word error rate against the published 5.63%, and Whisper large-v3 scored 7.22% against 7.44%.
-
-## 1-Click Installation
-
-### What You Download
-
-You get one small zip file with the installers for every platform.
-
-![The files inside WhisperWeb_UI_v13.zip](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/KfwaHvJPmSPSUoI0Ln5l8.png)
-
-Extract it into any folder. On Windows, double-click Windows_Install_Update.bat, then start the app with Windows_Start_app.bat. Run the same installer again at any time to update.
-
-### Latest PyTorch, CUDA 13 and Precompiled Libraries
-
-The installer makes its own Python 3.12 virtual environment, so your other apps stay untouched. It installs PyTorch 2.13 with CUDA 13 and our precompiled Flash Attention, xFormers, SageAttention and Triton for Windows. You never compile anything.
-
-![Installer log: PyTorch 2.13 with CUDA 13, Transformers, Triton for Windows and precompiled xFormers](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/QQZCx7bo_Q4AECx9iDYp-.png)
-
-Every package version is tested with the app. This is the end of a real fresh install on our PC:
-
-![Installer log: speaker models downloaded automatically, installation finished](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/TrZCXxI-LwYQ0HtAqnCt2.png)
-
-At the end, the installer downloads the speaker label models from our mirror. You do not need a Hugging Face token or any model approval.
-
-### Start the App
-
-Double-click Windows_Start_app.bat. CMD shows every startup step with its time.
-
-![App startup log: ready in 6.5 seconds](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/cGGIfyZD6zLjXUEoeske6.png)
-
-On our RTX 5090 the app was ready in 6.5 seconds. Open the local address in your browser and start transcribing.
-
-### Cloud GPUs: RunPod, SimplePod and Massed Compute
-
-You can also run the app on a cloud GPU. The cloud installers set up Python 3.12, FFmpeg n9.0 and everything else with one command, and a Gradio share link lets you use the app from any device.
-
-- **SimplePod:** [register here](https://simplepod.ai/ref?user=secourses) and use [this template](https://dash.simplepod.ai/account/explore/100/ref-secourses/).
-- **RunPod:** [register here](https://get.runpod.io/955rkuppqv4h) and use [this template](https://get.runpod.io/SECourses_CU13).
-- **Massed Compute:** [register here](https://vm.massedcompute.com/signup?linkId=lp_034338&sourceId=secourses&tenantId=massed-compute) and use our coupon **SECourses**.
-
-The step-by-step commands are in the instruction files inside the zip.
-
-### Requirements
-
-On Windows you need Python 3.12, Git, FFmpeg, CUDA 13, cuDNN 9.17 and Visual Studio with C++ tools. [This tutorial](https://youtu.be/DrhUHnYfwC0) shows every step, and the same setup runs all our AI apps. The app runs on NVIDIA GPUs from the GTX 16 and RTX 20 series up to the RTX 50 series. Our INT8 ConvRot engines use the RTX 30 series and newer, and other GPUs switch to the standard models automatically.
 
 ## Config Presets
 
@@ -290,8 +241,6 @@ Whisper-WebUI Premium gets frequent updates. Versions 12.4 to 13 came out betwee
 
 ## Get Whisper-WebUI Premium
 
-Download the latest zip file attached to this post, extract it and run the installer for your platform. To update, get the newest zip, overwrite the old files and run Windows_Install_Update.bat again.
+Whisper-WebUI Premium is available to [SECourses Patreon members](https://www.patreon.com/posts/145395299).
 
-- **Full tutorial video:** [watch it on YouTube](https://www.youtube.com/watch?v=4lAk6sf1qF8).
-- **Requirements tutorial:** [Python, Git, FFmpeg, CUDA and C++ tools step by step](https://youtu.be/DrhUHnYfwC0).
 - **Support:** [our Discord channel](https://discord.com/channels/772774097734074388/1079506787734134844).
