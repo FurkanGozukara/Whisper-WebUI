@@ -13,6 +13,7 @@ import gradio as gr
 from datetime import datetime
 
 from modules.utils.paths import UVR_MODELS_DIR, UVR_OUTPUT_DIR
+from modules.utils.media import open_media_input
 from modules.utils.logger import get_logger
 logger = get_logger()
 
@@ -137,7 +138,7 @@ class MusicSeparator:
 
         import av
 
-        with av.open(path, mode="r", metadata_errors="ignore") as container:
+        with open_media_input(path) as container:
             if not container.streams.audio:
                 raise ValueError(f"{os.path.basename(path)} has no audio stream")
             stream = container.streams.audio[0]

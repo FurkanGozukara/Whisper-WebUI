@@ -65,6 +65,7 @@ from modules.utils.files_manager import MEDIA_EXTENSION, is_video, load_yaml, no
 from modules.utils.i18n import Translate, _
 from modules.utils.logger import get_logger
 from modules.utils.audio_manager import coerce_audio_input_path
+from modules.utils.media import open_media_input
 from modules.utils.paths import (
     DEFAULT_PARAMETERS_CONFIG_PATH,
     CANARY_QWEN_MODELS_DIR,
@@ -531,7 +532,7 @@ class App:
         try:
             import av
 
-            with av.open(absolute_path) as container:
+            with open_media_input(absolute_path) as container:
                 if container.duration is not None:
                     return float(container.duration / av.time_base)
 

@@ -1,10 +1,9 @@
 from typing import Optional, Union, Any
-import soundfile as sf
 import os
 import numpy as np
 
-from modules.utils.files_manager import is_video
 from modules.utils.logger import get_logger
+from modules.utils.media import open_media_input
 
 logger = get_logger()
 
@@ -21,7 +20,7 @@ def decode_audio(input_file: Any, sampling_rate: int = 16000) -> np.ndarray:
     resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=sampling_rate)
     raw_buffer = io.BytesIO()
     dtype = None
-    with av.open(input_file, mode="r", metadata_errors="ignore") as container:
+    with open_media_input(input_file) as container:
         frames = _resample_frames(_group_frames(_ignore_invalid_frames(container.decode(audio=0)), 500000), resampler)
         for frame in frames:
             array = frame.to_ndarray()
@@ -46,10 +45,8 @@ def is_digital_silence(audio: Any) -> bool:
     if path is None:
         return False
     try:
-        import av
-
         has_samples = False
-        with av.open(path, mode="r", metadata_errors="ignore") as container:
+        with open_media_input(path) as container:
             for frame in container.decode(audio=0):
                 samples = frame.to_ndarray()
                 if np.any(samples):
@@ -106,17 +103,19 @@ def validate_audio(audio: Optional[Union[str, Any]] = None):
         logger.info(f"The file {audio_path} does not exist. Please check the path.")
         return False
 
-    try:
-        import av
+    import av
 
+    try:
         # Opening the file and decoding its first audio frame tells an unreadable file apart; the full decode
         # done here before was thrown away and repeated by the transcription right after.
-        with av.open(audio_path, mode="r", metadata_errors="ignore") as container:
+        with open_media_input(audio_path) as container:
             if not container.streams.audio:
                 raise ValueError("the file has no audio stream")
             for _frame in container.decode(audio=0):
                 return True
         raise ValueError("the audio stream has no decodable frames")
-    except Exception as e:
-        logger.info(f"The file {audio_path} is not able to open or corrupted. Please check the file. {e}")
+    except (av.error.FFmpegError, OSError, EOFError, ValueError) as e:
+        # An API/configuration failure (e.g. TypeError) is an application error,
+        # not evidence that the user's media is corrupted. Let it reach the UI.
+        logger.info(f"Cannot read audio from {audio_path}: {type(e).__name__}: {e}")
         return False
